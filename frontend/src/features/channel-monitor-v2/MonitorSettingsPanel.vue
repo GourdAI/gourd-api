@@ -393,6 +393,7 @@ function platformLabel(value: string) {
       minimax: 'MiniMax',
       workbuddy: 'WorkBuddy',
       qoder: 'Qoder',
+      trae: 'Trae',
       composite: 'Composite',
     } as Record<string, string>
   )[value] || value

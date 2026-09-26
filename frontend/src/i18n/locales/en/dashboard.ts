@@ -516,7 +516,8 @@ export default {
       deepseek: 'DeepSeek',
       minimax: 'MiniMax',
       opencode_go: 'OpenCode',
-      workbuddy: 'WorkBuddy'
+      workbuddy: 'WorkBuddy',
+      trae: 'Trae'
     },
     // Check modes (how a monitor performs its checks)
     checkMode: {
@@ -675,8 +676,8 @@ export default {
       peakNote: 'Peak hours {window}: billing rate ×{multiplier}',
       longContextDisabledNote: 'Long-context tier pricing is disabled for this group: requests above the threshold are billed at the base tier; official tiers are for reference only'
     },
-    table: {
-      model: 'Model',
+    card: {
+      modelCount: '{count} models',
       input: 'Input',
       output: 'Output',
       cache: 'Cache',
@@ -689,17 +690,18 @@ export default {
       maxReasoningMultiplierBadge: 'Max ×{multiplier}',
       maxReasoningMultiplierHint: 'When the forwarded reasoning effort is max, billing and quota usage for the request are multiplied by {multiplier}',
       marginalBadge: 'excess-only tiers',
-      timePricingRowHint: 'Requests made within this period ({timezone} time) are billed at the prices in this row',
-      timePricingRowHintWeekdays:
-        'On weekdays (Mon–Fri) only, requests made within this period ({timezone} time) are billed at the prices in this row; weekends use the standard prices',
-      timePricingRowHintPeak:
-        '; prices in this row exclude the peak-hour rate — where this period overlaps the peak hours {window}, the overlapping portion is additionally multiplied by ×{multiplier}',
+      timePeriodHint: 'Requests made within this period ({timezone} time) are billed at the prices in this period',
+      timePeriodHintWeekdays:
+        'On weekdays (Mon–Fri) only, requests made within this period ({timezone} time) are billed at the prices in this period; weekends use the standard prices',
+      timePeriodHintPeak:
+        '; prices in this period exclude the peak-hour rate — where it overlaps the peak hours {window}, the overlapping portion is additionally multiplied by ×{multiplier}',
       timePricingWeekdays: 'Weekdays',
-      timePricingRateHint: 'Effective rate {rate} × period multiplier {multiplier}',
-      paidPrice: 'Your Price (Discounted)',
+      timeRateHint: 'Effective rate {rate} × period multiplier {multiplier}',
       officialPrice: 'Official Price',
       officialTag: 'Official',
-      rate: 'Rate',
+      rateTooltip: 'Billing rate for this group: ×{rate}',
+      customRateTooltip: 'Group default rate ×{groupRate}; your personal rate ×{rate}',
+      copyModelName: 'Copy model name',
       unitPerMillion: '$ / 1M tokens',
       perUnitRequest: '/ request',
       perUnitImage: '/ image',

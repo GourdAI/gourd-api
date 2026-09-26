@@ -20,6 +20,7 @@ import antigravityAPI from './antigravity'
 import grokAPI from './grok'
 import workbuddyAPI from './workbuddy'
 import qoderAPI from './qoder'
+import traeAPI from './trae'
 import cnProvidersAPI from './cnProviders'
 import userAttributesAPI from './userAttributes'
 import opsAPI from './ops'
@@ -60,6 +61,7 @@ export const adminAPI = {
   grok: grokAPI,
   workbuddy: workbuddyAPI,
   qoder: qoderAPI,
+  trae: traeAPI,
   cnProviders: cnProvidersAPI,
   userAttributes: userAttributesAPI,
   ops: opsAPI,
@@ -98,6 +100,7 @@ export {
   grokAPI,
   workbuddyAPI,
   qoderAPI,
+  traeAPI,
   cnProvidersAPI,
   userAttributesAPI,
   opsAPI,

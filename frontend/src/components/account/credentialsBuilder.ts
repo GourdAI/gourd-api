@@ -534,6 +534,100 @@ export function validateQoderCredentials(accessToken: string): boolean {
   return Boolean(accessToken.trim())
 }
 
+// ========== Trae（字节 Trae IDE 代理，双域固定协议平台） ==========
+// 上游为 OpenAI 兼容 Chat Completions 协议，双域（国内 trae.cn / 国际 trae.ai）。
+// 账号类型为 APIKey，凭据字段（snake_case，与后端 NormalizeTraeCredentials 约定）：
+// access_token / refresh_token / realm / uid / device_id / machine_id / base_url /
+// billing_base_url / ide_version_code。与 WorkBuddy / Qoder 同属固定协议平台：
+// 不写 account_mode / api_protocol（不走国产多协议供应商路径）。
+
+export type TraeRealm = 'cn' | 'global'
+
+// 这里预填的是**聊天域**端点（表单的 base_url 会写入 credentials.base_url，后端
+// GetTraeBaseURL 优先取用它转发对话），与后端 DefaultTraeBaseURL /
+// DefaultTraeGlobalBaseURL 逐字一致。积分/签到走 UG 域、换票走 OAuth 域，都是
+// 另外的主机，由后端按 realm 自己推导，不得拿本值去覆盖（见 billing_base_url）。
+export const TRAE_CN_BASE_URL = 'https://trae-api-cn.mchost.guru'
+export const TRAE_GLOBAL_BASE_URL = 'https://a0ai-api-sg.byteintlapi.com'
+
+/** realm 下拉选项（labelKey 对应 i18n admin.accounts.trae.realm.<key>）。 */
+export const TRAE_REALM_OPTIONS: ReadonlyArray<{ value: TraeRealm; labelKey: 'cn' | 'global' }> = [
+  { value: 'cn', labelKey: 'cn' },
+  { value: 'global', labelKey: 'global' }
+]
+
+export function isTraePlatform(platform: string): boolean {
+  return platform === 'trae'
+}
+
+/** realm → 默认 base url（高级覆盖项留空时使用）。 */
+export function defaultTraeBaseUrl(realm: TraeRealm = 'cn'): string {
+  return realm === 'global' ? TRAE_GLOBAL_BASE_URL : TRAE_CN_BASE_URL
+}
+
+export function resolveTraeRealm(value: unknown): TraeRealm {
+  return value === 'global' ? 'global' : 'cn'
+}
+
+export interface TraeCredentialFields {
+  accessToken: string
+  refreshToken: string
+  realm: TraeRealm
+  uid: string
+  deviceId: string
+  machineId: string
+  baseUrl: string
+  billingBaseUrl: string
+  ideVersionCode: string
+  /**
+   * 凭据到期时刻（epoch 秒）。Trae 的 refreshToken 过期后**无法自动续期**（必须
+   * 人工重登 Trae 客户端重取凭据），故换票响应里的 TokenExpireAt / RefreshExpireAt
+   * 必须随凭据入库，否则管理页永远看不到「还能用多久」，账号会静默变成不可用。
+   */
+  expiresAt?: number | null
+  refreshExpiresAt?: number | null
+}
+
+/**
+ * 组装 Trae 凭据（snake_case 键，与后端约定一致）。
+ * 空字段不写入：密钥类字段（access_token / refresh_token）留空表示沿用现有值；
+ * uid / device_id / machine_id 的清空删除由调用方处理（全量替换语义）。
+ */
+export function buildTraeCredentials(fields: TraeCredentialFields): Record<string, unknown> {
+  const credentials: Record<string, unknown> = {}
+  const accessToken = fields.accessToken.trim()
+  const refreshToken = fields.refreshToken.trim()
+  const uid = fields.uid.trim()
+  const deviceId = fields.deviceId.trim()
+  const machineId = fields.machineId.trim()
+  const baseUrl = fields.baseUrl.trim()
+  const billingBaseUrl = fields.billingBaseUrl.trim()
+  const ideVersionCode = fields.ideVersionCode.trim()
+
+  if (accessToken) credentials.access_token = accessToken
+  if (refreshToken) credentials.refresh_token = refreshToken
+  credentials.realm = fields.realm
+  if (uid) credentials.uid = uid
+  if (deviceId) credentials.device_id = deviceId
+  if (machineId) credentials.machine_id = machineId
+  if (baseUrl) credentials.base_url = baseUrl
+  if (billingBaseUrl) credentials.billing_base_url = billingBaseUrl
+  if (ideVersionCode) credentials.ide_version_code = ideVersionCode
+  // 到期时刻：仅正数写入（0/null/undefined 表示未知，不得写 0 冒充「已过期」）。
+  if (typeof fields.expiresAt === 'number' && fields.expiresAt > 0) {
+    credentials.expires_at = fields.expiresAt
+  }
+  if (typeof fields.refreshExpiresAt === 'number' && fields.refreshExpiresAt > 0) {
+    credentials.refresh_expires_at = fields.refreshExpiresAt
+  }
+  return credentials
+}
+
+/** Trae 凭据校验：access_token / refresh_token 至少填一个（与后端一致）。 */
+export function validateTraeCredentials(accessToken: string, refreshToken: string): boolean {
+  return Boolean(accessToken.trim() || refreshToken.trim())
+}
+
 export function isMultiProtocolApiKeyPlatform(platform: string): boolean {
   return platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek' || platform === 'minimax' || platform === 'opencode_go'
 }

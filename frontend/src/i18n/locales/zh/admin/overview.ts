@@ -919,6 +919,7 @@ export default {
         opencode_go: 'OpenCode',
         workbuddy: 'WorkBuddy',
         qoder: 'Qoder',
+        trae: 'Trae',
         composite: 'Composite',
       },
       saving: '保存中...',

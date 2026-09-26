@@ -1593,9 +1593,9 @@ const allOpenAIAPIKey = computed(() => {
 })
 
 // 上游倍率自动探测：只对具备探测资格的「平台 × 类型」组合展示。
-// 探测取数需 credentials.api_key（WorkBuddy / Qoder 均为 token，无此字段），资格判定与
+// 探测取数需 credentials.api_key（WorkBuddy / Qoder / Trae 均为 token，无此字段），资格判定与
 // 后端 IsUpstreamBillingProbeIdentity 共用 isUpstreamBillingProbeCapable，
-// 否则对 workbuddy / qoder 提交该字段会被后端整体 400，导致整批更新失败。
+// 否则对 workbuddy / qoder / trae 提交该字段会被后端整体 400，导致整批更新失败。
 const allBillingProbeCapable = computed(() => {
   return (
     targetSelectedPlatforms.value.length > 0 &&

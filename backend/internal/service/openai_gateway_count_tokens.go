@@ -150,7 +150,7 @@ func prepareNativeOpenAIInputTokensCountRequest(body []byte, account *Account) (
 }
 
 func shouldEstimateOpenAIInputTokensLocally(account *Account) bool {
-	if account == nil || account.IsGrok() || account.IsCNProvider() || account.IsWorkbuddy() || account.IsQoderPlatform() || account.Type == AccountTypeUpstream {
+	if account == nil || account.IsGrok() || account.IsCNProvider() || account.IsWorkbuddy() || account.IsQoderPlatform() || account.IsTrae() || account.Type == AccountTypeUpstream {
 		return true
 	}
 	if account.Type != AccountTypeAPIKey {
@@ -273,7 +273,8 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 	// 高频调用此端点，本地 tiktoken 估算是与 Grok 一致的既有方案。
 	// WorkBuddy 同语义：上游只有 /v2/chat/completions，无 count_tokens 端点。
 	// Qoder 同语义：上游只有 COSY chat SSE 端点，无 count_tokens 端点。
-	if account.IsCNProvider() || account.IsOpenCodeGo() || account.IsWorkbuddy() || account.IsQoderPlatform() {
+	// Trae 同语义：上游只有 Cloud-IDE-JWT 的 llm_utils_chat 端点，无 count_tokens 端点。
+	if account.IsCNProvider() || account.IsOpenCodeGo() || account.IsWorkbuddy() || account.IsQoderPlatform() || account.IsTrae() {
 		estimated, err := estimateAnthropicCountTokensLocally(body)
 		if err != nil {
 			writeAnthropicCountTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")

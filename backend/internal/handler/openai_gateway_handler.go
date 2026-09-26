@@ -306,14 +306,14 @@ func allowOpenAICompatibleMessagesDispatch(c *gin.Context, apiKey *service.APIKe
 	// 该开关对非 openai/composite 平台恒被 sanitizeGroupMessagesDispatchFields 置 false,
 	// 若不豁免,CN 分组将永远 403。WorkBuddy / Qoder 同语义:/v1/messages 是其
 	// Claude Code 客户端的主服务形态,上游固定 CC 协议由 OpenAI 网关的 CC 回退转换承接。
-	if service.IsMultiProtocolAPIKeyProvider(apiKey.Group.Platform) || apiKey.Group.Platform == service.PlatformWorkbuddy || apiKey.Group.Platform == service.PlatformQoder {
+	if service.IsMultiProtocolAPIKeyProvider(apiKey.Group.Platform) || apiKey.Group.Platform == service.PlatformWorkbuddy || apiKey.Group.Platform == service.PlatformQoder || apiKey.Group.Platform == service.PlatformTrae {
 		return true
 	}
 	// composite 分组解析到 grok/CN/OpenCode Go/WorkBuddy/Qoder 目标时与对应独立分组
 	// 同语义豁免；解析到 openai 目标则受 composite 分组自身的可配置开关控制。
 	if apiKey.Group.Platform == service.PlatformComposite && c != nil && c.Request != nil {
 		if platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok &&
-			(platform == service.PlatformGrok || service.IsMultiProtocolAPIKeyProvider(platform) || platform == service.PlatformWorkbuddy || platform == service.PlatformQoder) {
+			(platform == service.PlatformGrok || service.IsMultiProtocolAPIKeyProvider(platform) || platform == service.PlatformWorkbuddy || platform == service.PlatformQoder || platform == service.PlatformTrae) {
 			return true
 		}
 	}
@@ -325,7 +325,7 @@ func openAICompatibleTextTargetAllowed(c *gin.Context, apiKey *service.APIKey, m
 		service.PlatformOpenAI, service.PlatformGrok,
 		service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek,
 		service.PlatformMiniMax, service.PlatformOpenCodeGo, service.PlatformWorkbuddy,
-		service.PlatformQoder)
+		service.PlatformQoder, service.PlatformTrae)
 }
 
 // isResponsesWebSocketCompositePlatform 限定 composite 分组在 Responses WebSocket

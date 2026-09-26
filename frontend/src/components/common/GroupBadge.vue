@@ -191,6 +191,9 @@ const labelClass = computed(() => {
   if (props.platform === 'qoder') {
     return `${base} bg-purple-200/60 text-purple-800 dark:bg-purple-800/40 dark:text-purple-300`
   }
+  if (props.platform === 'trae') {
+    return `${base} bg-sky-200/60 text-sky-800 dark:bg-sky-800/40 dark:text-sky-300`
+  }
   if (props.platform === 'composite') {
     return `${base} bg-cyan-200/70 text-cyan-900 dark:bg-cyan-900/50 dark:text-cyan-300`
   }
@@ -262,6 +265,11 @@ const badgeClass = computed(() => {
     return isSubscription.value
       ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
       : 'bg-purple-50 text-purple-700 dark:bg-purple-900/20 dark:text-purple-400'
+  }
+  if (props.platform === 'trae') {
+    return isSubscription.value
+      ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400'
+      : 'bg-sky-50 text-sky-700 dark:bg-sky-900/20 dark:text-sky-400'
   }
   if (props.platform === 'composite') {
     return isSubscription.value

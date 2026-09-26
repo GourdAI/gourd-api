@@ -647,6 +647,7 @@ var platformToLiteLLMProvider = map[string]string{
 	service.PlatformOpenCodeGo:  "opencode-go",
 	service.PlatformWorkbuddy:   "workbuddy",
 	service.PlatformQoder:       "qoder",
+	service.PlatformTrae:        "trae",
 }
 
 // SyncPricingModels 返回 LiteLLM 定价目录中指定平台的最新模型列表

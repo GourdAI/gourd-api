@@ -13,7 +13,8 @@ const concretePlatforms = [
   'minimax',
   'opencode_go',
   'workbuddy',
-  'qoder'
+  'qoder',
+  'trae'
 ]
 
 describe('platform option catalogs', () => {

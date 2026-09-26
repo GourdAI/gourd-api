@@ -30,6 +30,9 @@
         >
           {{ t('modelPlaza.badges.subscription') }}
         </span>
+        <span class="ml-auto shrink-0 text-xs tabular-nums text-gray-400 dark:text-dark-500">
+          {{ t('modelPlaza.card.modelCount', { count: cards.length }) }}
+        </span>
       </div>
       <p v-if="group.description" class="mt-2 text-sm text-gray-500 dark:text-dark-400">
         {{ group.description }}
@@ -50,22 +53,13 @@
       </p>
     </header>
 
-    <!-- 模型价格表:整行(含 hover 底色/分区底色)顶到卡片边缘,左右留白由表格首列/末列的 padding 提供 -->
-    <div>
-      <PlazaModelPricingTable
-        v-if="group.models.length > 0"
-        :models="group.models"
-        :rate-multiplier="group.rate_multiplier"
-        :user-rate-multiplier="group.user_rate_multiplier ?? null"
-        :image-rate-independent="group.image_rate_independent"
-        :image-rate-multiplier="group.image_rate_multiplier"
-        :peak-window="peakWindow"
-        :peak-rate-multiplier="group.peak_rate_multiplier"
-      />
-      <p v-else class="px-5 py-4 text-center text-sm text-gray-400 dark:text-dark-500">
-        {{ t('modelPlaza.detail.noModels') }}
-      </p>
+    <!-- 模型卡片网格:一张卡片一个模型,信息自成一块,不必再沿表格横线追踪 -->
+    <div v-if="cards.length > 0" class="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+      <PlazaModelCard v-for="card in cards" :key="card.key" :model="card.model" :context="priceContext" />
     </div>
+    <p v-else class="px-5 py-4 text-center text-sm text-gray-400 dark:text-dark-500">
+      {{ t('modelPlaza.detail.noModels') }}
+    </p>
   </section>
 </template>
 
@@ -74,10 +68,11 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
-import PlazaModelPricingTable from './PlazaModelPricingTable.vue'
-import type { ModelPlazaGroup } from '@/api/modelPlaza'
+import PlazaModelCard from './PlazaModelCard.vue'
+import type { ModelPlazaGroup, PlazaModel } from '@/api/modelPlaza'
 import type { SubscriptionType } from '@/types'
 import { hasPeakRate, formatPeakRateWindow, serverTimezoneLabel } from '@/utils/peak-rate'
+import { sortModelsForDisplay, type PlazaPriceContext } from './plazaPricing'
 import { useAppStore } from '@/stores/app'
 
 const props = defineProps<{
@@ -86,6 +81,16 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const appStore = useAppStore()
+
+/** 分组派生的价格环境,组内所有卡片共用。 */
+const priceContext = computed<PlazaPriceContext>(() => ({
+  rateMultiplier: props.group.rate_multiplier,
+  userRateMultiplier: props.group.user_rate_multiplier ?? null,
+  imageRateIndependent: props.group.image_rate_independent,
+  imageRateMultiplier: props.group.image_rate_multiplier,
+  peakWindow: peakWindow.value,
+  peakRateMultiplier: props.group.peak_rate_multiplier
+}))
 
 /** 高峰窗口描述(含倍率与服务器时区标注);分组未启用高峰为空串。 */
 const peakWindow = computed(() => {
@@ -104,8 +109,16 @@ const peakNote = computed(() => {
   })
 })
 
+/** 卡片列表:token 计费在前并按官方输出价降序;同名模型(跨平台)用平台区分 key。 */
+const cards = computed<Array<{ key: string; model: PlazaModel }>>(() =>
+  sortModelsForDisplay(props.group.models).map((model) => ({
+    key: `${model.platform}:${model.name}`,
+    model
+  }))
+)
+
 /**
- * 分组关闭了长上下文阶梯、但组内有模型官方带阶梯时提示:实付列只展示基础档,
+ * 分组关闭了长上下文阶梯、但组内有模型官方带阶梯时提示:实付只展示基础档,
  * 官方阶梯仅供参考。字段缺失(旧后端)不提示。
  */
 const longContextNote = computed(() => {

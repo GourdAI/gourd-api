@@ -521,7 +521,8 @@ export default {
       deepseek: 'DeepSeek',
       minimax: 'MiniMax',
       opencode_go: 'OpenCode',
-      workbuddy: 'WorkBuddy'
+      workbuddy: 'WorkBuddy',
+      trae: 'Trae'
     },
     // 检查模式（监控条目的工作方式）
     checkMode: {
@@ -680,8 +681,8 @@ export default {
       peakNote: '高峰时段 {window} 计费倍率 ×{multiplier}',
       longContextDisabledNote: '该分组未启用长上下文阶梯计费，超阈值请求仍按基础档计费，官方阶梯仅供参考'
     },
-    table: {
-      model: '模型',
+    card: {
+      modelCount: '{count} 个模型',
       input: '输入',
       output: '输出',
       cache: '缓存',
@@ -694,16 +695,17 @@ export default {
       maxReasoningMultiplierBadge: 'Max ×{multiplier}',
       maxReasoningMultiplierHint: '最终转发的推理强度为 max 时，整次请求的计费与额度消耗乘以 {multiplier}',
       marginalBadge: '超出部分计价',
-      timePricingRowHint: '按 {timezone} 时间，在该时段内发起的请求按本行价格计费',
-      timePricingRowHintWeekdays:
-        '按 {timezone} 时间，仅工作日（周一至周五）在该时段内发起的请求按本行价格计费，周末全天按标准价',
-      timePricingRowHintPeak: '；本行价格未含高峰倍率，与高峰时段 {window} 重叠的部分实付再乘 ×{multiplier}',
+      timePeriodHint: '按 {timezone} 时间，在该时段内发起的请求按本时段价格计费',
+      timePeriodHintWeekdays:
+        '按 {timezone} 时间，仅工作日（周一至周五）在该时段内发起的请求按本时段价格计费，周末全天按标准价',
+      timePeriodHintPeak: '；本时段价格未含高峰倍率，与高峰时段 {window} 重叠的部分实付再乘 ×{multiplier}',
       timePricingWeekdays: '工作日',
-      timePricingRateHint: '生效倍率 {rate} × 时段倍率 {multiplier}',
-      paidPrice: '实付价格(折后)',
+      timeRateHint: '生效倍率 {rate} × 时段倍率 {multiplier}',
       officialPrice: '官方价格',
       officialTag: '官方',
-      rate: '折扣倍率',
+      rateTooltip: '本组计费倍率 ×{rate}',
+      customRateTooltip: '分组默认倍率 ×{groupRate}，你的专属倍率 ×{rate}',
+      copyModelName: '复制模型名称',
       unitPerMillion: '$ / 1M token',
       perUnitRequest: '/ 次',
       perUnitImage: '/ 张',

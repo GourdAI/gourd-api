@@ -42,6 +42,7 @@ export type SchedulingThresholdPlatformType =
   | "opencode_go"
   | "workbuddy"
   | "qoder"
+  | "trae"
 
 export type AccountSchedulingThresholdsMap = Record<SchedulingThresholdPlatformType, number>
 
@@ -57,6 +58,7 @@ export const SCHEDULING_THRESHOLD_PLATFORMS: SchedulingThresholdPlatformType[] =
   "opencode_go",
   "workbuddy",
   "qoder",
+  "trae",
 ]
 
 export function normalizeAccountSchedulingThresholdsMap(

@@ -19,7 +19,9 @@ func RedactCredentials(in map[string]any) (out map[string]any, status map[string
 				if status == nil {
 					status = make(map[string]bool, 4)
 				}
-				status["has_"+k] = true
+				// 状态位用规范名：别名（accessToken）建档时也能产出前端认得的
+				// has_access_token，不被误显示为未配置。
+				status["has_"+service.CanonicalCredentialKey(k)] = true
 			}
 			continue
 		}

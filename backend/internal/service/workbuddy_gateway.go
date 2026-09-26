@@ -126,8 +126,9 @@ func (s *OpenAIGatewayService) forwardWorkbuddyChatCompletions(
 }
 
 // sendCCUpstreamForAccount 分发两条 CC 回退路径（/v1/messages、/v1/responses）的上游
-// 发送：WorkBuddy 账号走专用协议管线（sendWorkbuddyUpstreamRequest），其余账号维持
-// 既有 CC 发送逻辑（resolveCCFallbackTarget + sendCCUpstreamRequest）。
+// 发送：WorkBuddy 账号走专用协议管线（sendWorkbuddyUpstreamRequest），Qoder/Trae
+// 同理各自走专用管线，其余账号维持既有 CC 发送逻辑
+// （resolveCCFallbackTarget + sendCCUpstreamRequest）。
 func (s *OpenAIGatewayService) sendCCUpstreamForAccount(
 	ctx context.Context,
 	c *gin.Context,
@@ -140,6 +141,9 @@ func (s *OpenAIGatewayService) sendCCUpstreamForAccount(
 	}
 	if account.IsQoderPlatform() {
 		return s.sendCCUpstreamForAccountQoder(ctx, c, account, ccBody, clientStream)
+	}
+	if account.IsTrae() {
+		return s.sendCCUpstreamForAccountTrae(ctx, c, account, ccBody, clientStream)
 	}
 	apiKey, targetURL, err := s.resolveCCFallbackTarget(account)
 	if err != nil {

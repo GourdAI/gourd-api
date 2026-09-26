@@ -212,7 +212,8 @@ const upstreamSyncPlatforms = new Set([
   'minimax',
   'opencode_go',
   'workbuddy',
-  'qoder'
+  'qoder',
+  'trae'
 ])
 const canSyncUpstream = computed(() => {
   if (props.accountId) {

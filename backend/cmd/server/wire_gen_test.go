@@ -69,6 +69,8 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // cnProviderBalanceCheck
 		nil, // workBuddyCheckin
 		nil, // workBuddyTasks
+		nil, // qoderCheckin
+		nil, // traeCheckin
 		codexVersionSyncSvc,
 		proxyExpirySvc,
 		subscriptionExpirySvc,

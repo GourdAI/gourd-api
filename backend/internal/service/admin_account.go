@@ -336,6 +336,11 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 			return nil, err
 		}
 	}
+	if input.Platform == PlatformTrae {
+		if err := NormalizeTraeCredentials(input.Credentials); err != nil {
+			return nil, err
+		}
+	}
 	duplicate, err := buildAccountForCreate(input, accountExtra)
 	if err != nil {
 		return nil, err
@@ -540,6 +545,11 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 			return nil, err
 		}
 	}
+	if input.Platform == PlatformTrae {
+		if err := NormalizeTraeCredentials(input.Credentials); err != nil {
+			return nil, err
+		}
+	}
 	// Never persist ephemeral SSO/password secrets after OAuth conversion.
 	input.Credentials = SanitizeStoredCredentials(input.Platform, input.Credentials)
 
@@ -676,6 +686,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 		if account.Platform == PlatformQoder {
 			if err := NormalizeQoderCredentials(account.Credentials); err != nil {
+				return nil, err
+			}
+		}
+		if account.Platform == PlatformTrae {
+			if err := NormalizeTraeCredentials(account.Credentials); err != nil {
 				return nil, err
 			}
 		}
@@ -1107,12 +1122,15 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	if err := NormalizeOpenCodeGoProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
-	// 批量路径平台混合：仅当凭据携带 workbuddy/qoder 专属键时归一化校验（函数自身对
+	// 批量路径平台混合：仅当凭据携带 workbuddy/qoder/trae 专属键时归一化校验（函数自身对
 	// 无对应平台键的凭据为 no-op）。
 	if err := NormalizeWorkbuddyCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
 	if err := NormalizeQoderCredentials(input.Credentials); err != nil {
+		return nil, err
+	}
+	if err := NormalizeTraeCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
 	// Bulk may mix platforms; always drop ephemeral SSO/password keys (cookie

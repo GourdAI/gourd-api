@@ -1253,6 +1253,7 @@ function generateRoutedCodexFiles(
     opencode_go: 'glm-5.3',
     workbuddy: 'glm-5.3',
     qoder: 'auto',
+    trae: 'auto',
     composite: 'gpt-5.5'
   }
   const preferredModel = preferredModels[platform] || ''
@@ -1270,6 +1271,7 @@ function generateRoutedCodexFiles(
     opencode_go: 'OpenCode',
     workbuddy: 'WorkBuddy',
     qoder: 'Qoder',
+    trae: 'Trae',
     composite: 'Composite'
   }
   const label = labels[platform]

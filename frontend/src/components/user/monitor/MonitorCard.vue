@@ -104,6 +104,7 @@ const PROVIDER_TINT: Record<string, string> = {
   opencode_go: 'text-amber-700 dark:text-amber-300',
   workbuddy: 'text-violet-600 dark:text-violet-300',
   qoder: 'text-purple-600 dark:text-purple-300',
+  trae: 'text-sky-600 dark:text-sky-300',
 }
 
 const props = defineProps<{

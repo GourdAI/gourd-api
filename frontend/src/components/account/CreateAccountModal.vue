@@ -254,6 +254,19 @@
             <PlatformIcon platform="qoder" size="sm" />
             Qoder
           </button>
+          <button
+            type="button"
+            @click="selectTraePlatform()"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'trae'
+                ? 'bg-white text-sky-600 shadow-sm dark:bg-dark-600 dark:text-sky-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="trae" size="sm" />
+            Trae
+          </button>
         </div>
       </div>
 
@@ -1777,6 +1790,255 @@
             </div>
           </div>
         </template>
+        <!-- Trae：双域固定协议凭据（access_token / refresh_token 至少填一个；留空的密钥字段沿用现有值） -->
+        <template v-else-if="form.platform === 'trae'">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.trae.realm.label') }}</label>
+            <select v-model="traeRealm" class="input" data-testid="trae-realm">
+              <option v-for="opt in TRAE_REALM_OPTIONS" :key="opt.value" :value="opt.value">
+                {{ t(`admin.accounts.trae.realm.${opt.labelKey}`) }}
+              </option>
+            </select>
+            <p class="input-hint">{{ t('admin.accounts.trae.realm.hint') }}</p>
+          </div>
+          <!-- Trae 浏览器登录：新标签授权 → 粘回地址栏整串 → 提交换票（回调只打本机，后端收不到，故无轮询） -->
+          <div
+            class="rounded-lg border border-cyan-200 bg-cyan-50 p-4 dark:border-cyan-700 dark:bg-cyan-900/20"
+          >
+            <div class="flex items-start gap-3">
+              <div
+                class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-cyan-500"
+              >
+                <Icon name="link" size="sm" class="text-white" />
+              </div>
+              <div class="flex-1">
+                <h4 class="font-medium text-cyan-900 dark:text-cyan-200">
+                  {{ t('admin.accounts.trae.oauth.title') }}
+                </h4>
+                <p class="mt-1 text-xs text-cyan-700 dark:text-cyan-300">
+                  {{ t('admin.accounts.trae.oauth.steps') }}
+                </p>
+
+                <button
+                  v-if="!traeOAuthUrl"
+                  type="button"
+                  class="btn btn-primary mt-3 text-sm"
+                  data-testid="trae-oauth-login"
+                  :disabled="traeOAuth.loading.value"
+                  @click="handleTraeOAuthLogin"
+                >
+                  <svg
+                    v-if="traeOAuth.loading.value"
+                    class="-ml-1 mr-2 h-4 w-4 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      stroke-width="4"
+                    ></circle>
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                  <Icon v-else name="link" size="sm" class="mr-2" />
+                  {{
+                    traeOAuth.loading.value
+                      ? t('admin.accounts.trae.oauth.generating')
+                      : t('admin.accounts.trae.oauth.login')
+                  }}
+                </button>
+
+                <div v-else class="mt-3 space-y-2">
+                  <div class="flex items-center gap-2">
+                    <input
+                      :value="traeOAuthUrl"
+                      readonly
+                      type="text"
+                      class="input min-w-0 flex-1 bg-white font-mono text-xs dark:bg-dark-700"
+                      data-testid="trae-oauth-url"
+                    />
+                    <a
+                      :href="traeOAuthUrl"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="btn btn-secondary text-sm"
+                      data-testid="trae-oauth-open"
+                    >
+                      {{ t('admin.accounts.trae.oauth.openLink') }}
+                    </a>
+                    <button
+                      type="button"
+                      class="btn btn-secondary text-sm"
+                      data-testid="trae-oauth-copy"
+                      @click="copyTraeAuthUrl"
+                    >
+                      {{ t('admin.accounts.trae.oauth.copy') }}
+                    </button>
+                  </div>
+                  <!-- 回调只打到用户本机端口（没人监听），页面报「无法访问此网站」属正常现象 -->
+                  <p class="text-xs text-cyan-700 dark:text-cyan-300">
+                    {{ t('admin.accounts.trae.oauth.unreachableNote') }}
+                  </p>
+                  <div class="flex items-center justify-between gap-2">
+                    <label class="input-label mb-0">
+                      {{ t('admin.accounts.trae.oauth.callbackLabel') }}
+                    </label>
+                    <span
+                      v-if="traeOAuth.sessionActive.value"
+                      class="font-mono text-xs text-cyan-700 dark:text-cyan-300"
+                      data-testid="trae-oauth-countdown"
+                    >
+                      {{ t('admin.accounts.trae.oauth.countdownLabel') }}
+                      {{ traeOAuth.countdownText.value }}
+                    </span>
+                  </div>
+                  <textarea
+                    v-model="traeCallbackUrl"
+                    rows="3"
+                    class="input font-mono text-xs"
+                    data-testid="trae-oauth-callback"
+                    :placeholder="traeCallbackPlaceholder"
+                  ></textarea>
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="btn btn-primary text-sm"
+                      data-testid="trae-oauth-submit"
+                      :disabled="!traeCallbackUrl.trim() || traeOAuth.submitting.value || traeOAuth.expired.value"
+                      @click="handleTraeOAuthSubmit"
+                    >
+                      {{
+                        traeOAuth.submitting.value
+                          ? t('admin.accounts.trae.oauth.submitting')
+                          : t('admin.accounts.trae.oauth.submit')
+                      }}
+                    </button>
+                    <button
+                      type="button"
+                      class="text-xs text-cyan-600 underline hover:text-cyan-700 dark:text-cyan-400"
+                      data-testid="trae-oauth-retry"
+                      @click="handleTraeOAuthLogin"
+                    >
+                      {{ t('admin.accounts.trae.oauth.restart') }}
+                    </button>
+                  </div>
+                  <p
+                    v-if="traeOAuthMessage"
+                    class="text-xs"
+                    :class="
+                      traeOAuthSucceeded
+                        ? 'text-green-600 dark:text-green-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    "
+                    data-testid="trae-oauth-status"
+                  >
+                    {{ traeOAuthMessage }}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.trae.accessToken') }}</label>
+            <textarea
+              v-model="traeAccessToken"
+              rows="3"
+              class="input font-mono"
+              data-testid="trae-access-token"
+              :placeholder="t('admin.accounts.trae.tokenPlaceholder')"
+            ></textarea>
+            <p class="input-hint">{{ t('admin.accounts.trae.accessTokenHint') }}</p>
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.trae.refreshToken') }}</label>
+            <div class="flex items-start gap-2">
+              <input
+                v-model="traeRefreshToken"
+                type="password"
+                class="input flex-1 font-mono min-w-0"
+                data-testid="trae-refresh-token"
+                :placeholder="t('admin.accounts.trae.tokenPlaceholder')"
+              />
+              <!-- 换票：用 refresh_token 换取新的 access_token（轮换后的 refresh_token 覆盖旧值） -->
+              <button
+                type="button"
+                class="btn btn-secondary whitespace-nowrap text-xs"
+                data-testid="trae-exchange-token"
+                :disabled="traeExchangeLoading"
+                :title="t('admin.accounts.trae.exchangeTokenTooltip')"
+                @click="handleTraeExchangeToken"
+              >
+                {{
+                  traeExchangeLoading
+                    ? t('admin.accounts.trae.exchangeTokenLoading')
+                    : t('admin.accounts.trae.exchangeToken')
+                }}
+              </button>
+            </div>
+            <p class="input-hint">{{ t('admin.accounts.trae.tokensHint') }}</p>
+          </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="input-label">{{ t('admin.accounts.trae.uid') }}</label>
+              <input
+                v-model="traeUid"
+                type="text"
+                class="input font-mono"
+                data-testid="trae-uid"
+                :placeholder="t('admin.accounts.trae.optionalPlaceholder')"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.trae.deviceId') }}</label>
+              <input
+                v-model="traeDeviceId"
+                type="text"
+                class="input font-mono"
+                data-testid="trae-device-id"
+                :placeholder="t('admin.accounts.trae.optionalPlaceholder')"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.trae.machineId') }}</label>
+              <input
+                v-model="traeMachineId"
+                type="text"
+                class="input font-mono"
+                data-testid="trae-machine-id"
+                :placeholder="t('admin.accounts.trae.optionalPlaceholder')"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.trae.ideVersionCode') }}</label>
+              <input
+                v-model="traeIdeVersionCode"
+                type="text"
+                class="input font-mono"
+                data-testid="trae-ide-version-code"
+                :placeholder="t('admin.accounts.trae.optionalPlaceholder')"
+              />
+              <p class="input-hint">{{ t('admin.accounts.trae.ideVersionCodeHint') }}</p>
+            </div>
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.trae.billingBaseUrlLabel') }}</label>
+            <input
+              v-model="traeBillingBaseUrl"
+              type="text"
+              class="input font-mono"
+              data-testid="trae-billing-base-url"
+              :placeholder="t('admin.accounts.trae.optionalPlaceholder')"
+            />
+            <p class="input-hint">{{ t('admin.accounts.trae.billingBaseUrlHint') }}</p>
+          </div>
+        </template>
         <div v-else-if="form.platform !== 'workbuddy'">
           <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
           <input
@@ -1790,9 +2052,9 @@
         </div>
 
         <!-- 上游倍率自动探测：全部 API-key 平台可用（所在区块已限定 apikey 类型）；
-             WorkBuddy 凭据为 token 无 api_key，后端不具备探测资格，隐藏开关 -->
+             WorkBuddy / Qoder / Trae 凭据为 token 无 api_key，后端不具备探测资格，隐藏开关 -->
         <div
-          v-if="form.platform !== 'workbuddy' && form.platform !== 'qoder'"
+          v-if="form.platform !== 'workbuddy' && form.platform !== 'qoder' && form.platform !== 'trae'"
           class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
         >
           <div>
@@ -4291,6 +4553,7 @@ import { useGrokOAuth } from '@/composables/useGrokOAuth'
 import { useWorkBuddyOAuth } from '@/composables/useWorkBuddyOAuth'
 import type { WorkBuddyTokenInfo } from '@/api/admin/workbuddy'
 import { useQoderOAuth } from '@/composables/useQoderOAuth'
+import { useTraeOAuth } from '@/composables/useTraeOAuth'
 import { useClipboard } from '@/composables/useClipboard'
 import type {
   Proxy,
@@ -4329,6 +4592,7 @@ import {
   applyOpenCodeGoProtocolRules,
   buildWorkbuddyCredentials,
   buildQoderCredentials,
+  buildTraeCredentials,
   cloneOpenCodeGoProtocolRules,
   cnSupportsNativeResponses,
   defaultCNAdaptiveBaseUrls,
@@ -4336,13 +4600,17 @@ import {
   defaultOpenCodeProtocolRules,
   defaultWorkBuddyBaseUrl,
   defaultQoderBaseUrl,
+  defaultTraeBaseUrl,
+  resolveTraeRealm,
   isCNProviderPlatform,
   isHeaderOverrideCapable,
   isUpstreamBillingProbeCapable,
   validateHeaderOverrideRows,
   validateQoderCredentials,
+  validateTraeCredentials,
   validateWorkbuddyCredentials,
   QODER_REALM_OPTIONS,
+  TRAE_REALM_OPTIONS,
   WORKBUDDY_REALM_OPTIONS,
   type CnAccountMode,
   type CnApiProtocol,
@@ -4352,6 +4620,7 @@ import {
   type OpenCodeAccountMode,
   type OpenCodeGoProtocolRule,
   type QoderRealm,
+  type TraeRealm,
   type WorkBuddyRealm
 } from '@/components/account/credentialsBuilder'
 import {
@@ -4431,6 +4700,7 @@ const baseUrlHint = computed(() => {
   if (form.platform === 'grok') return ''
   if (form.platform === 'workbuddy') return t('admin.accounts.workbuddy.baseUrlHint')
   if (form.platform === 'qoder') return t('admin.accounts.qoder.baseUrlHint')
+  if (form.platform === 'trae') return t('admin.accounts.trae.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -4458,6 +4728,8 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
       return 'https://copilot.tencent.com'
     case 'qoder':
       return 'https://gateway.qoder.com.cn'
+    case 'trae':
+      return 'https://api.trae.cn'
     default:
       return 'https://api.anthropic.com'
   }
@@ -4600,6 +4872,211 @@ const qoderNickname = ref('')
 const qoderOAuthUrl = computed(() => qoderOAuth.loginUrl.value)
 const qoderOAuthMessage = ref('')
 const qoderOAuthSucceeded = ref(false)
+// ── Trae（字节 Trae IDE 代理）凭据字段 ──
+const traeAccessToken = ref('')
+const traeRefreshToken = ref('')
+const traeRealm = ref<TraeRealm>('cn')
+const traeUid = ref('')
+const traeDeviceId = ref('')
+const traeMachineId = ref('')
+const traeBillingBaseUrl = ref('')
+const traeIdeVersionCode = ref('')
+// 凭据到期时刻（epoch 秒）：由换票响应回填，或用户手动粘贴 storage.json 的到期时间。
+const traeExpiresAt = ref<number | null>(null)
+const traeRefreshExpiresAt = ref<number | null>(null)
+// ── Trae 换票（refresh_token → 新 access_token / 轮换后的 refresh_token）──
+const traeExchangeLoading = ref(false)
+// 切换 Trae：强制 apikey 类型，区域回落 cn，base url 重置为对应域默认端点。
+function selectTraePlatform() {
+  form.platform = 'trae'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  traeRealm.value = 'cn'
+  apiKeyBaseUrl.value = defaultTraeBaseUrl('cn')
+}
+// Trae 换票：成功则回填 access_token / refresh_token（后者必须覆盖旧值）与 uid。
+const handleTraeExchangeToken = async () => {
+  if (traeExchangeLoading.value) return
+  const refreshToken = traeRefreshToken.value.trim()
+  if (!refreshToken) {
+    appStore.showError(t('admin.accounts.trae.exchangeTokenMissingRefresh'))
+    return
+  }
+  traeExchangeLoading.value = true
+  try {
+    const result = await adminAPI.trae.exchangeTraeToken({
+      realm: traeRealm.value,
+      refresh_token: refreshToken,
+      proxy_id: form.proxy_id || undefined
+    })
+    if (!result.success) {
+      appStore.showError(result.error || t('admin.accounts.trae.exchangeTokenFailed'))
+      return
+    }
+    if (result.access_token) traeAccessToken.value = String(result.access_token)
+    // 轮换后的 refresh_token 必须覆盖旧值（旧值已失效）。
+    if (result.refresh_token) traeRefreshToken.value = String(result.refresh_token)
+    if (result.uid) traeUid.value = String(result.uid)
+    if (result.realm) traeRealm.value = resolveTraeRealm(result.realm)
+    // 到期时刻同步回填：不回填则账号凭据里没有 expires_at，管理页的到期告警
+    // 与「提前换票」都会失效（refreshToken 过期 = 账号静默不可用）。
+    if (typeof result.expires_at === 'number' && result.expires_at > 0) {
+      traeExpiresAt.value = result.expires_at
+    }
+    if (typeof result.refresh_expires_at === 'number' && result.refresh_expires_at > 0) {
+      traeRefreshExpiresAt.value = result.refresh_expires_at
+    }
+    appStore.showSuccess(t('admin.accounts.trae.exchangeTokenSuccess'))
+  } catch (e) {
+    const err = e as {
+      message?: string
+      reason?: string
+      response?: { data?: { message?: string; error?: string } }
+    }
+    appStore.showError(
+      err?.message ||
+        err?.reason ||
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        t('admin.accounts.trae.exchangeTokenFailed')
+    )
+  } finally {
+    traeExchangeLoading.value = false
+  }
+}
+// ── Trae 浏览器登录（真 OAuth：新标签授权 + 粘回回调地址换票，无轮询）──
+const traeOAuth = useTraeOAuth()
+const traeOAuthUrl = computed(() => traeOAuth.loginUrl.value)
+const traeOAuthMessage = ref('')
+const traeOAuthSucceeded = ref(false)
+// 浏览器登录凭据里不属于独立输入框的键（nickname / device_public_key / login_host /
+// login_region / oauth_base_url / ide_version …）原样保留，提交时合并进 credentials。
+const traeOAuthExtraCredentials = ref<Record<string, string>>({})
+// 粘贴框双向绑定到 composable 的 pastedUrl（410 过期时由 composable 清空）。
+const traeCallbackUrl = computed({
+  get: () => traeOAuth.pastedUrl.value,
+  set: (value: string) => {
+    traeOAuth.pastedUrl.value = value
+  }
+})
+// placeholder：优先用后端回传的回调前缀（含真实端口），缺省回落 i18n 形式示例。
+const traeCallbackPlaceholder = computed(() =>
+  traeOAuth.callbackUrlPrefix.value
+    ? `${traeOAuth.callbackUrlPrefix.value}?...`
+    : t('admin.accounts.trae.oauth.callbackPlaceholder')
+)
+const resetTraeOAuthState = () => {
+  traeOAuth.resetState()
+  traeOAuthMessage.value = ''
+  traeOAuthSucceeded.value = false
+  traeOAuthExtraCredentials.value = {}
+}
+// 由独立输入框承载的凭据键（snake_case，与后端 NormalizeTraeCredentials 一致）；
+// 不在此列表里的键一律当 extras 透传入库，避免丢掉上游设备信息。
+const TRAE_OAUTH_MANAGED_KEYS: readonly string[] = [
+  'access_token',
+  'refresh_token',
+  'uid',
+  'device_id',
+  'machine_id',
+  'expires_at',
+  'refresh_expires_at',
+  'realm'
+]
+const applyTraeOAuthCredentials = (
+  credentials: Record<string, string>,
+  accountName: string
+) => {
+  const next: Record<string, unknown> = { ...credentials }
+  if (next.access_token) traeAccessToken.value = String(next.access_token)
+  // 浏览器登录会签发全新的令牌对，refresh_token 直接覆盖旧值（与换票入口同口径）。
+  if (next.refresh_token) traeRefreshToken.value = String(next.refresh_token)
+  if (next.uid) traeUid.value = String(next.uid)
+  if (next.device_id) traeDeviceId.value = String(next.device_id)
+  if (next.machine_id) traeMachineId.value = String(next.machine_id)
+  if (next.realm) traeRealm.value = resolveTraeRealm(next.realm)
+  const readEpoch = (value: unknown): number | null => {
+    const parsed = typeof value === 'number' ? value : Number(typeof value === 'string' ? value : '')
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+  }
+  // 到期时刻必须回填：否则凭据里没有 expires_at，列表页的到期告警与提前换票都会静默失效。
+  const expiresAt = readEpoch(next.expires_at)
+  if (expiresAt) traeExpiresAt.value = expiresAt
+  const refreshExpiresAt = readEpoch(next.refresh_expires_at)
+  if (refreshExpiresAt) traeRefreshExpiresAt.value = refreshExpiresAt
+  const extras: Record<string, string> = {}
+  for (const [key, value] of Object.entries(next)) {
+    if (TRAE_OAUTH_MANAGED_KEYS.includes(key)) continue
+    if (typeof value === 'string' && value.trim()) extras[key] = value
+  }
+  traeOAuthExtraCredentials.value = extras
+  // 账号名：仅在用户未填时自动回填（后端 account_name 优先，回落凭据里的 nickname）。
+  const resolvedName = accountName || String(next.nickname || '')
+  if (!form.name.trim() && resolvedName) {
+    form.name = resolvedName
+  }
+  traeOAuthSucceeded.value = true
+  traeOAuthMessage.value = t('admin.accounts.trae.oauth.success')
+  appStore.showSuccess(traeOAuthMessage.value)
+}
+// Trae 浏览器登录：申请授权链接 → 新标签打开（被拦截时降级展示可点链接 + 复制）。
+const handleTraeOAuthLogin = async () => {
+  // in-flight guard：并发两个会话会互相覆盖 login_id，后粘回者必报 TRACE_MISMATCH。
+  if (traeOAuth.loading.value) return
+  traeOAuth.resetState()
+  traeOAuthMessage.value = ''
+  traeOAuthSucceeded.value = false
+  traeOAuthExtraCredentials.value = {}
+  const ok = await traeOAuth.startLogin(traeRealm.value, form.proxy_id || undefined)
+  // 关闭弹窗后不得再弹新标签页（用户已经放弃了这次登录）。
+  if (!ok || !props.show) return
+  if (traeOAuthUrl.value) {
+    // 不能把 noopener 写进 feature 串：规范要求此时 window.open 恒返回 null，
+    // 「弹窗被拦截」会永远误报。改为打开后手动断开 opener，兼顾安全与检测。
+    const opened = window.open(traeOAuthUrl.value, '_blank')
+    if (opened) {
+      opened.opener = null
+    } else {
+      // 弹窗被浏览器拦截时保留可点击链接与复制按钮，用户仍可手动完成授权。
+      traeOAuthMessage.value = t('admin.accounts.trae.oauth.popupBlocked')
+    }
+  }
+}
+const copyTraeAuthUrl = () => {
+  if (traeOAuthUrl.value) {
+    copyToClipboard(traeOAuthUrl.value, t('admin.accounts.trae.oauth.copySuccess'))
+  }
+}
+// 提交粘回的回调地址：后端据此提取 code 换票（本机无监听、页面报错属正常，链接自身带完整 query）。
+const handleTraeOAuthSubmit = async () => {
+  traeOAuthMessage.value = ''
+  const result = await traeOAuth.submitCallback(traeCallbackUrl.value)
+  // 提交在途时用户关了弹窗：表单已被 resetForm 重置，结果不得再写回。
+  if (!props.show) return
+  if (!result) {
+    traeOAuthMessage.value =
+      traeOAuth.error.value || t('admin.accounts.trae.oauth.submitFailed')
+    appStore.showError(traeOAuthMessage.value)
+    return
+  }
+  applyTraeOAuthCredentials(result.credentials, result.accountName)
+}
+// realm 切换时放弃当前会话（login_id 与 realm 绑定，粘回旧域链接会换错凭据）。
+watch(traeRealm, () => {
+  if (form.platform !== 'trae') return
+  if (traeOAuth.loginId.value) {
+    // 会话已作废：同步通知后端释放（取消失败静默，会话 15 分钟后自然过期）。
+    void traeOAuth.cancelLogin()
+    resetTraeOAuthState()
+  }
+})
+// Trae realm 变更时同步默认 base url（用户自定义地址不覆盖）。
+watch(traeRealm, (realm, previousRealm) => {
+  if (form.platform !== 'trae') return
+  if (!apiKeyBaseUrl.value.trim() || apiKeyBaseUrl.value === defaultTraeBaseUrl(previousRealm)) {
+    apiKeyBaseUrl.value = defaultTraeBaseUrl(realm)
+  }
+})
 // 智谱团队版 Coding Plan：组织/项目 ID，写入 credentials 供额度探测切换团队端点
 const zhipuOrganization = ref('')
 const zhipuProject = ref('')
@@ -5394,6 +5871,8 @@ watch(
       apiKeyBaseUrl.value = defaultWorkBuddyBaseUrl(workbuddyRealm.value)
     } else if (newPlatform === 'qoder') {
       apiKeyBaseUrl.value = defaultQoderBaseUrl(qoderRealm.value)
+    } else if (newPlatform === 'trae') {
+      apiKeyBaseUrl.value = defaultTraeBaseUrl(traeRealm.value)
     } else if (isCNProviderPlatform(newPlatform) || newPlatform === 'opencode_go') {
       const mode = newPlatform === 'opencode_go' ? openCodeAccountMode.value : accountMode.value
       apiKeyBaseUrl.value = defaultCNBaseUrl(newPlatform, mode, apiProtocol.value)
@@ -5472,6 +5951,22 @@ watch(
       qoderNickname.value = ''
       // 切换离开 qoder 时停止 OAuth 轮询（login_id 已失效）。
       resetQoderOAuthState()
+    }
+    // 切换离开 trae 时放弃浏览器登录会话（login_id 已因平台切换而失效）。
+    if (newPlatform !== 'trae') {
+      void traeOAuth.cancelLogin()
+      resetTraeOAuthState()
+    }
+    // Reset Trae fields when switching away
+    if (newPlatform !== 'trae') {
+      traeAccessToken.value = ''
+      traeRefreshToken.value = ''
+      traeRealm.value = 'cn'
+      traeUid.value = ''
+      traeDeviceId.value = ''
+      traeMachineId.value = ''
+      traeBillingBaseUrl.value = ''
+      traeIdeVersionCode.value = ''
     }
     // Reset Anthropic/Antigravity-specific settings when switching to other platforms
     if (newPlatform !== 'anthropic' && newPlatform !== 'antigravity') {
@@ -5901,6 +6396,19 @@ const resetForm = () => {
   workbuddyEnterpriseId.value = ''
   workbuddyDeviceToken.value = ''
   resetWorkBuddyOAuthState()
+  traeAccessToken.value = ''
+  traeRefreshToken.value = ''
+  traeRealm.value = 'cn'
+  traeUid.value = ''
+  traeDeviceId.value = ''
+  traeMachineId.value = ''
+  traeBillingBaseUrl.value = ''
+  traeIdeVersionCode.value = ''
+  traeExpiresAt.value = null
+  traeRefreshExpiresAt.value = null
+  // 同时清掉浏览器登录态（loginUrl/粘贴框/extras）：残留会让下次打开显示旧授权
+  // 链接与「已成功」提示，且旧账号的 device 凭据会被合并进新建账号。
+  resetTraeOAuthState()
   adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
@@ -6005,6 +6513,8 @@ const handleClose = () => {
   workbuddyOAuth.stopPolling()
   // 关闭弹窗时停止 Qoder OAuth 轮询，避免遗留定时器。
   qoderOAuth.stopPolling()
+  // 关闭弹窗时放弃 Trae 浏览器登录会话（取消失败静默）。
+  void traeOAuth.cancelLogin()
   emit('close')
 }
 
@@ -6012,6 +6522,9 @@ const handleClose = () => {
 onBeforeUnmount(() => {
   workbuddyOAuth.stopPolling()
   qoderOAuth.stopPolling()
+  // Trae 浏览器登录：停倒计时定时器并放弃会话（失败静默）。
+  traeOAuth.stopCountdown()
+  void traeOAuth.cancelLogin()
 })
 
 const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
@@ -6370,6 +6883,12 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.qoder.credentialsRequired'))
       return
     }
+  } else if (form.platform === 'trae') {
+    // Trae：access_token / refresh_token 至少填一个（与后端 NormalizeTraeCredentials 一致）
+    if (!validateTraeCredentials(traeAccessToken.value, traeRefreshToken.value)) {
+      appStore.showError(t('admin.accounts.trae.credentialsRequired'))
+      return
+    }
   } else if (!apiKeyValue.value.trim()) {
     appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
     return
@@ -6387,7 +6906,9 @@ const handleSubmit = async () => {
             ? defaultWorkBuddyBaseUrl(workbuddyRealm.value)
             : form.platform === 'qoder'
               ? defaultQoderBaseUrl(qoderRealm.value)
-              : 'https://api.anthropic.com'
+              : form.platform === 'trae'
+                ? defaultTraeBaseUrl(traeRealm.value)
+                : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping
   const credentials: Record<string, unknown> = {
@@ -6420,6 +6941,26 @@ const handleSubmit = async () => {
         realm: qoderRealm.value,
         baseUrl: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
         nickname: qoderNickname.value
+      })
+    )
+  } else if (form.platform === 'trae') {
+    // Trae：双域固定协议凭据（snake_case，与后端约定一致）
+    Object.assign(
+      credentials,
+      // 先透传浏览器登录拿到的额外凭据键，再由表单字段覆盖同名值（合并不整体覆盖）。
+      traeOAuthExtraCredentials.value,
+      buildTraeCredentials({
+        accessToken: traeAccessToken.value,
+        refreshToken: traeRefreshToken.value,
+        realm: traeRealm.value,
+        uid: traeUid.value,
+        deviceId: traeDeviceId.value,
+        machineId: traeMachineId.value,
+        baseUrl: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
+        billingBaseUrl: traeBillingBaseUrl.value,
+        ideVersionCode: traeIdeVersionCode.value,
+        expiresAt: traeExpiresAt.value,
+        refreshExpiresAt: traeRefreshExpiresAt.value
       })
     )
   } else {

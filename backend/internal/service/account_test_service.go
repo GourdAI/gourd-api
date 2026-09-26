@@ -409,6 +409,10 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.testQoderAccountConnection(c, account, modelID, prompt)
 	}
 
+	if account.IsTrae() {
+		return s.testTraeAccountConnection(c, account, modelID, prompt)
+	}
+
 	return s.testClaudeAccountConnection(c, account, modelID)
 }
 

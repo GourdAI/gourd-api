@@ -1801,6 +1801,8 @@ const qualityTargetLabel = (target: string) => {
       return 'MiniMax'
     case 'workbuddy':
       return 'WorkBuddy'
+    case 'trae':
+      return 'Trae'
     default:
       return target
   }

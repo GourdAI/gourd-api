@@ -407,6 +407,30 @@ func ProvideQoderCheckinService(
 	return svc
 }
 
+// ProvideTraeCreditsService 构造 Trae 积分查询 / 每日签到服务。
+func ProvideTraeCreditsService(
+	accountRepo AccountRepository,
+	proxyRepo ProxyRepository,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+) *TraeCreditsService {
+	return NewTraeCreditsService(accountRepo, proxyRepo, httpUpstream, cfg)
+}
+
+// ProvideTraeCheckinService 构造并启动 Trae 每日签到任务。
+// 触发小时取自 gateway.trae.checkin_hours（默认 [9,21]：9 点首发、21 点兵底——
+// 上午因网络抖动/9074 失败的账号当晚还有机会，上游幂等保证不会重复领取）；
+// checkin_enabled=false 或小时列表全非法时不启动。
+func ProvideTraeCheckinService(
+	creditsService *TraeCreditsService,
+	accountRepo AccountRepository,
+	cfg *config.Config,
+) *TraeCheckinService {
+	svc := NewTraeCheckinService(creditsService, accountRepo, cfg)
+	svc.Start()
+	return svc
+}
+
 // ProvideWorkBuddyTasksService 构造并启动 WorkBuddy「任务三件套」周期任务
 // （对话活跃上报 + 连登奖励链、猫猫旅行）。
 // 触发小时取自 gateway.workbuddy.activity_hours / travel_hours（默认 [10] / [9,21]）；
@@ -955,6 +979,10 @@ var ProviderSet = wire.NewSet(
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewWorkBuddyOAuthService,
 	NewQoderOAuthService,
+	NewTraeOAuthService,
+	NewTraeLoginService,
+	ProvideTraeCreditsService,
+	ProvideTraeCheckinService,
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,
 	NewCompositeTokenCacheInvalidator,

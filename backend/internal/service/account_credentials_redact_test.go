@@ -88,3 +88,50 @@ func TestIsSensitiveCredentialKey(t *testing.T) {
 	require.False(t, IsSensitiveCredentialKey(""))
 	require.False(t, IsSensitiveCredentialKey("model_mapping"))
 }
+
+// Trae 建档兼容直接粘贴 traework2api 的 auth 文件（camelCase 字段），而敏感清单用
+// snake_case 书写：若判定做精确匹配，accessToken/refreshToken 会整体绕过响应脱敏、
+// 在管理端明文回显。归一后两种键形都必须命中。
+func TestIsSensitiveCredentialKeyMatchesCamelCaseAliases(t *testing.T) {
+	require.True(t, IsSensitiveCredentialKey("accessToken"))
+	require.True(t, IsSensitiveCredentialKey("refreshToken"))
+	require.True(t, IsSensitiveCredentialKey("idToken"))
+	require.True(t, IsSensitiveCredentialKey("ApiKey"))
+	require.True(t, IsSensitiveCredentialKey("ACCESS_TOKEN"))
+	require.True(t, IsSensitiveCredentialKey("access-token"))
+	require.True(t, IsSensitiveCredentialKey("clearTextPassword"))
+
+	// 非敏感键不得被误伤（否则前端编辑后会丢配置）。
+	require.False(t, IsSensitiveCredentialKey("billingBaseUrl"))
+	require.False(t, IsSensitiveCredentialKey("oauthBaseUrl"))
+	require.False(t, IsSensitiveCredentialKey("deviceId"))
+	require.False(t, IsSensitiveCredentialKey("machineId"))
+	require.False(t, IsSensitiveCredentialKey("ideVersionCode"))
+	require.False(t, IsSensitiveCredentialKey("uid"))
+	require.False(t, IsSensitiveCredentialKey("nickname"))
+	require.False(t, IsSensitiveCredentialKey("realm"))
+	require.False(t, IsSensitiveCredentialKey("reqSource"))
+}
+
+// has_<key> 状态位的规范名：别名建档也要得到前端认得的 has_access_token。
+func TestCanonicalCredentialKey(t *testing.T) {
+	require.Equal(t, "access_token", CanonicalCredentialKey("accessToken"))
+	require.Equal(t, "access_token", CanonicalCredentialKey("ACCESS_TOKEN"))
+	require.Equal(t, "refresh_token", CanonicalCredentialKey("refreshToken"))
+	require.Equal(t, "base_url", CanonicalCredentialKey("base_url"), "非敏感键原样返回")
+	require.Equal(t, "deviceId", CanonicalCredentialKey("deviceId"))
+}
+
+// 用户以别名提交新 token 时，不得再把 existing 的 snake 旧副本回填上去——
+// 否则一条凭据两份副本，且旧副本永不轮换（下次换票用失效的旧 refreshToken）。
+func TestMergePreservingSensitiveCredsAliasCountsAsProvided(t *testing.T) {
+	existing := map[string]any{"access_token": "at-old", "refresh_token": "rt-old"}
+	incoming := map[string]any{"accessToken": "at-new", "realm": "cn"}
+
+	out := MergePreservingSensitiveCreds(existing, incoming)
+
+	require.Equal(t, "at-new", out["accessToken"])
+	require.NotContains(t, out, "access_token", "别名已提供新值，不得回填旧的 snake 副本")
+	require.Equal(t, "rt-old", out["refresh_token"], "未提交的敏感键仍须保留")
+	require.Equal(t, "cn", out["realm"])
+}

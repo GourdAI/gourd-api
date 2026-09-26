@@ -585,6 +585,8 @@
       <WorkBuddyCreditsCell v-if="account.platform === 'workbuddy'" :account="account" />
       <!-- Qoder：剩余 Credits + 手动领取每日活动（后端每日常规任务自动领取）。 -->
       <QoderCreditsCell v-if="account.platform === 'qoder'" :account="account" />
+      <!-- Trae（apikey 账号）：剩余积分（浮点）+ 每日签到。 -->
+      <TraeCreditsCell v-if="account.platform === 'trae'" :account="account" />
       <!-- Today stats row (requests, tokens, cost, user_cost) -->
       <div
         v-if="todayStats"
@@ -643,7 +645,7 @@
 
       <!-- No data at all -->
       <div
-        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !account.ollama_cloud_usage?.eligible && account.platform !== 'workbuddy' && account.platform !== 'qoder'"
+        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !account.ollama_cloud_usage?.eligible && account.platform !== 'workbuddy' && account.platform !== 'qoder' && account.platform !== 'trae'"
         class="text-xs text-gray-400"
       >-</div>
     </div>
@@ -666,6 +668,7 @@ import CNProviderQuotaCell from './CNProviderQuotaCell.vue'
 import CNProviderBalanceCell from './CNProviderBalanceCell.vue'
 import WorkBuddyCreditsCell from './WorkBuddyCreditsCell.vue'
 import QoderCreditsCell from './QoderCreditsCell.vue'
+import TraeCreditsCell from './TraeCreditsCell.vue'
 import OllamaCloudUsageCell from './OllamaCloudUsageCell.vue'
 import { cnQuotaCellVisible as cnQuotaCellVisibleFn, cnBalanceCellVisible as cnBalanceCellVisibleFn } from './credentialsBuilder'
 

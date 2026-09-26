@@ -25,6 +25,7 @@ var monitorProviders = map[string]struct{}{
 	MonitorProviderMiniMax:     {},
 	MonitorProviderWorkbuddy:   {},
 	MonitorProviderQoder:       {},
+	MonitorProviderTrae:        {},
 }
 
 // probeCapableProviders 支持探活（probe / quota_probe）的 provider。

@@ -68,6 +68,10 @@
       d="M12 6.3a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zm0 2.5a3 3 0 1 1 0 6 3 3 0 0 1 0-6zm3.4 7.2 3.1 3.1a1.2 1.2 0 0 1-1.7 1.7l-3.1-3.1a1.2 1.2 0 0 1 1.7-1.7z"
     />
   </svg>
+  <!-- Trae mark (angular 「T」: cross-bar + stem formed by two slanted strokes) -->
+  <svg v-else-if="platform === 'trae'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd">
+    <path d="M3.2 3h17.6l-2.2 4.1H5.4L3.2 3zm8.15 5.6h1.3L16.2 21h-3.1l-1.75-9.3L9.6 21H6.5l4.85-12.4z" />
+  </svg>
   <!-- DeepSeek official logo mark (whale) -->
   <svg v-else-if="platform === 'deepseek'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path

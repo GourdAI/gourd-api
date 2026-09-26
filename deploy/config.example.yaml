@@ -485,6 +485,21 @@ gateway:
   qoder:
     checkin_enabled: true
     checkin_hours: [10, 21]
+
+  # Trae daily check-in credits (Trae CN / SOLO CN accounts).
+  # Trae（字节 Trae IDE / TRAE SOLO CN）每日签到积分。
+  # checkin_hours is evaluated in the server local timezone: 09:00 is the first attempt of the
+  # day, 21:00 is the fallback retry for accounts that failed on network/9074 in the morning.
+  # Repeated claims are idempotent upstream (code=0 grants nothing extra, code=9095 means
+  # "already checked in today"), so multi-instance deployments need no distributed lock.
+  # checkin_hours 按服务器本地时区整点触发：9 点首发，21 点为兜底重试（上午因网络抖动或
+  # 9074「当前参与用户太多」失败的账号当晚还有机会）。上游对重复签到幂等（code=0 不再
+  # 发放积分、code=9095 即「今日已签到」），多实例部署无需分布式锁。
+  # 注意：9074 是账号级稳定拒绝（换 deviceId/UA/region 均无效），因此只会补一次
+  # req_source=2 重试即判失败，不会狂重请求。
+  trae:
+    checkin_enabled: true
+    checkin_hours: [9, 21]
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts

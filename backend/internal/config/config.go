@@ -1118,6 +1118,9 @@ type GatewayConfig struct {
 
 	// Qoder: Qoder 平台的每日活动 Credits 领取与积分查询配置。
 	Qoder GatewayQoderConfig `mapstructure:"qoder"`
+
+	// Trae: Trae 平台的每日签到与积分查询配置。
+	Trae GatewayTraeConfig `mapstructure:"trae"`
 }
 
 // GatewayGrokConfig holds Grok-specific gateway scheduling knobs.
@@ -1200,6 +1203,12 @@ type GatewayWorkbuddyConfig struct {
 // 注意：部分账号因官方未写入文档的设备级规则（如同一设备仅一次试用）或企业/团队版
 // 不适用，服务端不会下发活动——这类账号会被记为 skipped（正常态，不重试）。
 type GatewayQoderConfig struct {
+	CheckinEnabled bool  `mapstructure:"checkin_enabled"`
+	CheckinHours   []int `mapstructure:"checkin_hours"`
+}
+
+// GatewayTraeConfig holds Trae-specific credits/checkin knobs.
+type GatewayTraeConfig struct {
 	CheckinEnabled bool  `mapstructure:"checkin_enabled"`
 	CheckinHours   []int `mapstructure:"checkin_hours"`
 }
@@ -2114,18 +2123,24 @@ func setDefaults() {
 		"api.minimaxi.com", // MiniMax CN quota + inference
 		"api.minimax.io",   // MiniMax intl; frozen allowlists must add this host to use the intl site
 		"opencode.ai",
-		"copilot.tencent.com",  // WorkBuddy CN
-		"www.workbuddy.ai",     // WorkBuddy intl
-		"workbuddy.ai",         // WorkBuddy intl（裸域）
-		"www.codebuddy.cn",     // WorkBuddy CN billing（积分/签到）
-		"codebuddy.cn",         // WorkBuddy CN billing（裸域）
-		"api1.qoder.sh",        // Qoder intl algo API
-		"gateway.qoder.com.cn", // Qoder CN algo API
-		"qoder.com",            // Qoder intl（裸域）
-		"qoder.com.cn",         // Qoder CN（裸域）
-		"center.qoder.sh",      // Qoder jobToken 交换域
-		"openapi.qoder.sh",     // Qoder openapi 域（quota/userinfo）
-		"openapi.qoder.com.cn", // Qoder CN openapi 域
+		"copilot.tencent.com",         // WorkBuddy CN
+		"www.workbuddy.ai",            // WorkBuddy intl
+		"workbuddy.ai",                // WorkBuddy intl（裸域）
+		"www.codebuddy.cn",            // WorkBuddy CN billing（积分/签到）
+		"codebuddy.cn",                // WorkBuddy CN billing（裸域）
+		"api1.qoder.sh",               // Qoder intl algo API
+		"gateway.qoder.com.cn",        // Qoder CN algo API
+		"qoder.com",                   // Qoder intl（裸域）
+		"qoder.com.cn",                // Qoder CN（裸域）
+		"center.qoder.sh",             // Qoder jobToken 交换域
+		"openapi.qoder.sh",            // Qoder openapi 域（quota/userinfo）
+		"openapi.qoder.com.cn",        // Qoder CN openapi 域
+		"trae-api-cn.mchost.guru",     // Trae CN algo API
+		"a0ai-api-sg.byteintlapi.com", // Trae intl algo API
+		"api.trae.cn",                 // Trae CN UG 域（积分/签到）
+		"api.trae.com.cn",             // Trae CN OAuth 换票域
+		"api.trae.ai",                 // Trae intl UG 域（积分/签到）
+		"api-sg-central.trae.ai",      // Trae intl OAuth 换票域
 		"generativelanguage.googleapis.com",
 		"cloudcode-pa.googleapis.com",
 		"*.openai.azure.com",
@@ -2549,6 +2564,8 @@ func setDefaults() {
 	// Qoder 每日活动 Credits 领取（活动每天 10:00 UTC+8 开放新一轮；默认 10 点首发 + 21 点兵底）。
 	viper.SetDefault("gateway.qoder.checkin_enabled", true)
 	viper.SetDefault("gateway.qoder.checkin_hours", []int{10, 21})
+	viper.SetDefault("gateway.trae.checkin_enabled", true)
+	viper.SetDefault("gateway.trae.checkin_hours", []int{9, 21})
 	viper.SetDefault("gateway.image_concurrency.enabled", false)
 	viper.SetDefault("gateway.image_concurrency.max_concurrent_requests", 0)
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)

@@ -70,6 +70,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if account.IsQoderPlatform() {
 		return s.forwardQoderChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
+	// Trae 同语义：Cloud-IDE-JWT 协议变换、三套指纹头与 SSE 归一均在
+	// sendTraeUpstreamRequest 内完成，不走通用 CC 管线。
+	if account.IsTrae() {
+		return s.forwardTraeChatCompletions(ctx, c, account, body, defaultMappedModel)
+	}
 	startTime := time.Now()
 
 	// 1. Parse minimal fields needed for routing/billing

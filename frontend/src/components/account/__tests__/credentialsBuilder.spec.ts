@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+﻿import { describe, it, expect } from 'vitest'
 import {
   ANTIGRAVITY_PROJECT_ID_CREDENTIAL_KEY,
   HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY,
@@ -30,7 +30,12 @@ import {
   serializeHeaderOverrideRows,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
-  validateWorkbuddyCredentials
+  validateWorkbuddyCredentials,
+  buildTraeCredentials,
+  defaultTraeBaseUrl,
+  resolveTraeRealm,
+  validateTraeCredentials,
+  TRAE_REALM_OPTIONS
 } from '../credentialsBuilder'
 
 describe('applyInterceptWarmup', () => {
@@ -642,5 +647,114 @@ describe('plan_type helpers', () => {
       expect(out).toEqual({ email: 'a@b.c' })
       expect('plan_type' in out).toBe(false)
     })
+  })
+})
+
+describe('trae credentials', () => {
+  it('builds snake_case credentials and trims / omits empty fields', () => {
+    const credentials = buildTraeCredentials({
+      accessToken: ' trae-access ',
+      refreshToken: '',
+      realm: 'global',
+      uid: ' u-1 ',
+      deviceId: '',
+      machineId: 'm-1',
+      baseUrl: ' https://trae-relay.example.com ',
+      billingBaseUrl: '',
+      ideVersionCode: '20261001'
+    })
+    expect(credentials).toEqual({
+      access_token: 'trae-access',
+      realm: 'global',
+      uid: 'u-1',
+      machine_id: 'm-1',
+      base_url: 'https://trae-relay.example.com',
+      ide_version_code: '20261001'
+    })
+    // 固定协议平台：不写 account_mode / api_protocol
+    expect(credentials.account_mode).toBeUndefined()
+    expect(credentials.api_protocol).toBeUndefined()
+  })
+
+  it('always carries the realm even when every other field is empty', () => {
+    expect(
+      buildTraeCredentials({
+        accessToken: '',
+        refreshToken: '',
+        realm: 'cn',
+        uid: '',
+        deviceId: '',
+        machineId: '',
+        baseUrl: '',
+        billingBaseUrl: '',
+        ideVersionCode: ''
+      })
+    ).toEqual({ realm: 'cn' })
+  })
+
+  // 到期时刻必须随凭据入库：Trae 的 refreshToken 过期后无法自动续期（必须人工重登
+  // Trae 客户端重取凭据），丢了 expires_at 就等于丢了唯一的过期告警数据源。
+  it('carries token expiry epochs when known', () => {
+    const credentials = buildTraeCredentials({
+      accessToken: 'a',
+      refreshToken: '',
+      realm: 'cn',
+      uid: '',
+      deviceId: '',
+      machineId: '',
+      baseUrl: '',
+      billingBaseUrl: '',
+      ideVersionCode: '',
+      expiresAt: 1767225600,
+      refreshExpiresAt: 1798848000
+    })
+    expect(credentials).toEqual({
+      access_token: 'a',
+      realm: 'cn',
+      expires_at: 1767225600,
+      refresh_expires_at: 1798848000
+    })
+  })
+
+  // 0 / null / undefined 一律不写：写 0 会让下游把「未知」读成「1970 年已过期」。
+  it('omits non-positive or unknown expiry instead of writing 0', () => {
+    const credentials = buildTraeCredentials({
+      accessToken: 'a',
+      refreshToken: '',
+      realm: 'cn',
+      uid: '',
+      deviceId: '',
+      machineId: '',
+      baseUrl: '',
+      billingBaseUrl: '',
+      ideVersionCode: '',
+      expiresAt: 0,
+      refreshExpiresAt: null
+    })
+    expect(credentials.expires_at).toBeUndefined()
+    expect(credentials.refresh_expires_at).toBeUndefined()
+  })
+
+  it('requires at least one of access_token / refresh_token', () => {
+    expect(validateTraeCredentials('', '')).toBe(false)
+    expect(validateTraeCredentials('   ', '')).toBe(false)
+    expect(validateTraeCredentials('trae-access', '')).toBe(true)
+    expect(validateTraeCredentials('', 'trae-refresh')).toBe(true)
+  })
+
+  it('resolves realm and default base url', () => {
+    expect(resolveTraeRealm(undefined)).toBe('cn')
+    expect(resolveTraeRealm('cn')).toBe('cn')
+    expect(resolveTraeRealm('global')).toBe('global')
+    expect(resolveTraeRealm('bogus')).toBe('cn')
+    expect(defaultTraeBaseUrl()).toBe('https://trae-api-cn.mchost.guru')
+    expect(defaultTraeBaseUrl('global')).toBe('https://a0ai-api-sg.byteintlapi.com')
+  })
+
+  it('exposes realm options mirroring the workbuddy shape', () => {
+    expect(TRAE_REALM_OPTIONS).toEqual([
+      { value: 'cn', labelKey: 'cn' },
+      { value: 'global', labelKey: 'global' }
+    ])
   })
 })

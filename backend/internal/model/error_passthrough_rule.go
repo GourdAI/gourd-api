@@ -48,6 +48,7 @@ const (
 	PlatformOpenCodeGo  = domain.PlatformOpenCodeGo
 	PlatformWorkbuddy   = domain.PlatformWorkbuddy
 	PlatformQoder       = domain.PlatformQoder
+	PlatformTrae        = domain.PlatformTrae
 )
 
 // AllPlatforms 返回所有支持的平台列表
@@ -65,6 +66,7 @@ func AllPlatforms() []string {
 		PlatformOpenCodeGo,
 		PlatformWorkbuddy,
 		PlatformQoder,
+		PlatformTrae,
 	}
 }
 

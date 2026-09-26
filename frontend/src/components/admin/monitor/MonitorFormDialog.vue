@@ -273,6 +273,7 @@ import {
   PROVIDER_OPENCODE_GO,
   PROVIDER_WORKBUDDY,
   PROVIDER_QODER,
+  PROVIDER_TRAE,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
   CHECK_MODE_PROBE,
@@ -287,6 +288,7 @@ import {
   DEFAULT_OPENCODE_GO_ENDPOINT,
   DEFAULT_WORKBUDDY_ENDPOINT,
   DEFAULT_QODER_ENDPOINT,
+  DEFAULT_TRAE_ENDPOINT,
   DEFAULT_INTERVAL_SECONDS,
 } from '@/constants/channelMonitor'
 
@@ -484,6 +486,8 @@ const providerOptions = computed<ProviderOption[]>(() => [
   { value: PROVIDER_MINIMAX, label: t('monitorCommon.providers.minimax') },
   { value: PROVIDER_OPENCODE_GO, label: t('monitorCommon.providers.opencode_go') },
   { value: PROVIDER_WORKBUDDY, label: t('monitorCommon.providers.workbuddy') },
+  // Trae 使用 monitorCommon.providers.trae 词条。
+  { value: PROVIDER_TRAE, label: t('monitorCommon.providers.trae') },
   // Qoder 为专有名词，暂无 monitorCommon.providers 词条，直接硬编码显示名。
   { value: PROVIDER_QODER, label: 'Qoder' },
 ])
@@ -497,6 +501,7 @@ const PROVIDER_DEFAULT_ENDPOINTS: Partial<Record<Provider, string>> = {
   [PROVIDER_OPENCODE_GO]: DEFAULT_OPENCODE_GO_ENDPOINT,
   [PROVIDER_WORKBUDDY]: DEFAULT_WORKBUDDY_ENDPOINT,
   [PROVIDER_QODER]: DEFAULT_QODER_ENDPOINT,
+  [PROVIDER_TRAE]: DEFAULT_TRAE_ENDPOINT,
 }
 
 interface CheckModeOption {

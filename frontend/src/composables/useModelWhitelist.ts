@@ -246,6 +246,19 @@ const qoderModels = [
   'mmodel'
 ]
 
+// Trae（字节 Trae IDE 代理，双域聚合网关；auto 为智能路由入口）
+// 与后端默认模型目录对齐（上游转发标识，大小写沿用上游原文）。
+const traeModels = [
+  'glm-5.3', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-5v-turbo',
+  'glm-4.7', 'glm-4.6',
+  'qwen-3.7-plus', 'qwen-3.6-plus', 'qwen-3.5', 'qwen3-coder',
+  'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2',
+  'DeepSeek-V4-Pro', 'DeepSeek-V4-Flash', 'deepseek-V3.1',
+  'minimax-m3', 'minimax-m2.7',
+  'Doubao-Seed-2.1-Pro', 'Doubao-Seed-2.0-Code', 'seed-code-pro-0430',
+  'auto'
+]
+
 // 百度 文心
 const baiduModels = [
   'ernie-4.0-8k-latest', 'ernie-4.0-8k', 'ernie-4.0-turbo-8k',
@@ -494,6 +507,7 @@ export function getModelsByPlatform(platform: string): string[] {
     ]
     case 'workbuddy': return workbuddyModels
     case 'qoder': return qoderModels
+    case 'trae': return traeModels
     case 'doubao': return doubaoModels
     case 'minimax': return minimaxModels
     case 'baidu': return baiduModels

@@ -18,6 +18,7 @@ export type Platform =
   | 'opencode_go'
   | 'workbuddy'
   | 'qoder'
+  | 'trae'
   | 'composite'
 
 // ── Badge (bg + text + border, for inline badges with border) ───────
@@ -34,6 +35,7 @@ const BADGE: Record<Platform, string> = {
   opencode_go: 'bg-amber-500/10 text-amber-700 border-amber-500/30 dark:text-amber-300',
   workbuddy: 'bg-violet-500/10 text-violet-600 border-violet-500/30 dark:text-violet-400',
   qoder: 'bg-purple-500/10 text-purple-600 border-purple-500/30 dark:text-purple-400',
+  trae: 'bg-sky-500/10 text-sky-600 border-sky-500/30 dark:text-sky-400',
   composite: 'bg-cyan-500/10 text-cyan-700 border-cyan-500/30 dark:text-cyan-300',
 }
 const BADGE_DEFAULT = 'bg-slate-500/10 text-slate-600 border-slate-500/30 dark:text-slate-400'
@@ -52,6 +54,7 @@ const BADGE_LIGHT: Record<Platform, string> = {
   opencode_go: 'bg-amber-500/10 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300',
   workbuddy: 'bg-violet-500/10 text-violet-600 dark:bg-violet-500/10 dark:text-violet-300',
   qoder: 'bg-purple-500/10 text-purple-600 dark:bg-purple-500/10 dark:text-purple-300',
+  trae: 'bg-sky-500/10 text-sky-600 dark:bg-sky-500/10 dark:text-sky-300',
   composite: 'bg-cyan-500/10 text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-300',
 }
 
@@ -69,6 +72,7 @@ const BORDER: Record<Platform, string> = {
   opencode_go: 'border-amber-500/20 dark:border-amber-500/20',
   workbuddy: 'border-violet-500/20 dark:border-violet-500/20',
   qoder: 'border-purple-500/20 dark:border-purple-500/20',
+  trae: 'border-sky-500/20 dark:border-sky-500/20',
   composite: 'border-cyan-500/20 dark:border-cyan-500/20',
 }
 const BORDER_DEFAULT = 'border-gray-200 dark:border-dark-700'
@@ -87,6 +91,7 @@ const BORDER_STRONG: Record<Platform, string> = {
   opencode_go: 'border-amber-500/35 dark:border-amber-500/30',
   workbuddy: 'border-violet-500/35 dark:border-violet-500/30',
   qoder: 'border-purple-500/35 dark:border-purple-500/30',
+  trae: 'border-sky-500/35 dark:border-sky-500/30',
   composite: 'border-cyan-500/35 dark:border-cyan-500/30',
 }
 const BORDER_STRONG_DEFAULT = 'border-gray-300 dark:border-dark-600'
@@ -106,6 +111,7 @@ const ACCENT: Record<Platform, string> = {
   opencode_go: '#f59e0b', // amber-500
   workbuddy: '#8b5cf6', // violet-500
   qoder: '#7c3aed', // Qoder brand purple (#7C3AED)
+  trae: '#0284c7', // Trae brand blue-cyan (sky-600; cyan/teal/blue are taken by composite/deepseek/gemini)
   composite: '#06b6d4', // cyan-500
 }
 const ACCENT_DEFAULT = '#14b8a6' // primary-500 (teal)
@@ -124,6 +130,7 @@ const ACCENT_BAR: Record<Platform, string> = {
   opencode_go: 'bg-gradient-to-r from-amber-400 to-amber-500',
   workbuddy: 'bg-gradient-to-r from-violet-400 to-violet-500',
   qoder: 'bg-gradient-to-r from-purple-400 to-purple-500',
+  trae: 'bg-gradient-to-r from-sky-400 to-sky-500',
   composite: 'bg-gradient-to-r from-slate-500 to-cyan-500',
 }
 const ACCENT_BAR_DEFAULT = 'bg-gradient-to-r from-primary-400 to-primary-500'
@@ -142,6 +149,7 @@ const TEXT: Record<Platform, string> = {
   opencode_go: 'text-amber-700 dark:text-amber-300',
   workbuddy: 'text-violet-600 dark:text-violet-400',
   qoder: 'text-purple-600 dark:text-purple-400',
+  trae: 'text-sky-600 dark:text-sky-400',
   composite: 'text-cyan-700 dark:text-cyan-300',
 }
 const TEXT_DEFAULT = 'text-primary-600 dark:text-primary-400'
@@ -160,6 +168,7 @@ const ICON: Record<Platform, string> = {
   opencode_go: 'text-amber-500 dark:text-amber-300',
   workbuddy: 'text-violet-500 dark:text-violet-400',
   qoder: 'text-purple-500 dark:text-purple-400',
+  trae: 'text-sky-500 dark:text-sky-400',
   composite: 'text-cyan-600 dark:text-cyan-300',
 }
 const ICON_DEFAULT = 'text-primary-500 dark:text-primary-400'
@@ -178,6 +187,7 @@ const BUTTON: Record<Platform, string> = {
   opencode_go: 'bg-amber-500 text-white hover:bg-amber-600 active:bg-amber-700 dark:bg-amber-500/80 dark:hover:bg-amber-500',
   workbuddy: 'bg-violet-500 text-white hover:bg-violet-600 active:bg-violet-700 dark:bg-violet-500/80 dark:hover:bg-violet-500',
   qoder: 'bg-purple-500 text-white hover:bg-purple-600 active:bg-purple-700 dark:bg-purple-500/80 dark:hover:bg-purple-500',
+  trae: 'bg-sky-600 text-white hover:bg-sky-700 active:bg-sky-800 dark:bg-sky-600/80 dark:hover:bg-sky-600',
   composite: 'bg-cyan-700 text-white hover:bg-cyan-800 active:bg-cyan-900 dark:bg-cyan-600 dark:hover:bg-cyan-500',
 }
 const BUTTON_DEFAULT = 'bg-primary-500 text-white hover:bg-primary-600 dark:bg-primary-600 dark:hover:bg-primary-500'
@@ -196,6 +206,7 @@ const DISCOUNT: Record<Platform, string> = {
   opencode_go: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
   workbuddy: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
   qoder: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+  trae: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
   composite: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300',
 }
 const DISCOUNT_DEFAULT = 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
@@ -214,6 +225,7 @@ const GRADIENT: Record<Platform, string> = {
   opencode_go: 'from-amber-500 to-amber-600',
   workbuddy: 'from-violet-500 to-violet-600',
   qoder: 'from-purple-500 to-purple-600',
+  trae: 'from-sky-500 to-sky-600',
   composite: 'from-slate-600 to-cyan-600',
 }
 const GRADIENT_DEFAULT = 'from-primary-500 to-primary-600'
@@ -232,6 +244,7 @@ const GRADIENT_TEXT: Record<Platform, string> = {
   opencode_go: 'text-amber-100',
   workbuddy: 'text-violet-100',
   qoder: 'text-purple-100',
+  trae: 'text-sky-100',
   composite: 'text-cyan-100',
 }
 const GRADIENT_TEXT_DEFAULT = 'text-primary-100'
@@ -249,6 +262,7 @@ const GRADIENT_SUBTEXT: Record<Platform, string> = {
   opencode_go: 'text-amber-200',
   workbuddy: 'text-violet-200',
   qoder: 'text-purple-200',
+  trae: 'text-sky-200',
   composite: 'text-cyan-200',
 }
 const GRADIENT_SUBTEXT_DEFAULT = 'text-primary-200'
@@ -269,6 +283,7 @@ function isPlatform(p: string): p is Platform {
     p === 'opencode_go' ||
     p === 'workbuddy' ||
     p === 'qoder' ||
+    p === 'trae' ||
     p === 'composite'
   )
 }
@@ -339,6 +354,7 @@ export function platformLabel(p: string): string {
     case 'opencode_go': return 'OpenCode'
     case 'workbuddy': return 'WorkBuddy'
     case 'qoder': return 'Qoder'
+    case 'trae': return 'Trae'
     case 'composite': return 'Composite'
     default: return p || 'API'
   }

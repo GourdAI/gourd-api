@@ -79,6 +79,7 @@ import {
   PROVIDER_OPENCODE_GO,
   PROVIDER_WORKBUDDY,
   PROVIDER_QODER,
+  PROVIDER_TRAE,
 } from '@/constants/channelMonitor'
 
 defineProps<{
@@ -111,6 +112,8 @@ const providerFilterOptions = computed(() => [
   { value: PROVIDER_MINIMAX, label: t('monitorCommon.providers.minimax') },
   { value: PROVIDER_OPENCODE_GO, label: t('monitorCommon.providers.opencode_go') },
   { value: PROVIDER_WORKBUDDY, label: t('monitorCommon.providers.workbuddy') },
+  // Trae 使用 monitorCommon.providers.trae 词条。
+  { value: PROVIDER_TRAE, label: t('monitorCommon.providers.trae') },
   // Qoder 为专有名词，暂无 monitorCommon.providers 词条，直接硬编码显示名。
   { value: PROVIDER_QODER, label: 'Qoder' },
 ])

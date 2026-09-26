@@ -208,6 +208,9 @@ const platformClass = computed(() => {
   if (props.platform === 'qoder') {
     return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
   }
+  if (props.platform === 'trae') {
+    return 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400'
+  }
   return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
 })
 
@@ -241,6 +244,9 @@ const typeClass = computed(() => {
   }
   if (props.platform === 'qoder') {
     return 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
+  }
+  if (props.platform === 'trae') {
+    return 'bg-sky-100 text-sky-600 dark:bg-sky-900/30 dark:text-sky-400'
   }
   return 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
 })

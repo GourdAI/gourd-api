@@ -25,6 +25,7 @@ import {
   PROVIDER_OPENCODE_GO,
   PROVIDER_WORKBUDDY,
   PROVIDER_QODER,
+  PROVIDER_TRAE,
   PROVIDERS,
   STATUS_OPERATIONAL,
   STATUS_DEGRADED,
@@ -136,6 +137,8 @@ export function useChannelMonitorFormat() {
         return 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300'
       case PROVIDER_QODER:
         return 'bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300'
+      case PROVIDER_TRAE:
+        return 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300'
       default:
         return NEUTRAL_BADGE
     }
@@ -212,6 +215,10 @@ export function useChannelMonitorFormat() {
         return active
           ? 'border-purple-500 bg-purple-50 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-400'
           : 'border-gray-200 bg-white text-gray-600 hover:border-purple-300 hover:text-purple-700 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400 dark:hover:border-purple-500/50'
+      case PROVIDER_TRAE:
+        return active
+          ? 'border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300 dark:border-sky-400'
+          : 'border-gray-200 bg-white text-gray-600 hover:border-sky-300 hover:text-sky-700 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400 dark:hover:border-sky-500/50'
       default:
         return active
           ? 'border-gray-400 bg-gray-50 text-gray-700 dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200'
@@ -304,6 +311,8 @@ export function providerGradient(provider: string): string {
       return 'bg-gradient-to-br from-violet-50 to-violet-100 dark:from-violet-500/10 dark:to-violet-500/20'
     case PROVIDER_QODER:
       return 'bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-500/10 dark:to-purple-500/20'
+    case PROVIDER_TRAE:
+      return 'bg-gradient-to-br from-sky-50 to-sky-100 dark:from-sky-500/10 dark:to-sky-500/20'
     default:
       return 'bg-gradient-to-br from-gray-100 to-gray-200 dark:from-dark-700 dark:to-dark-600'
   }

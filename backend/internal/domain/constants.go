@@ -37,7 +37,11 @@ const (
 	// PlatformQoder 是 Qoder 平台（国际 api1.qoder.sh / CN gateway.qoder.com.cn），
 	// 上游为自研 COSY 签名协议（聊天路径 /algo/api/v2/service/pro/sse/agent_chat_generation），
 	// 账号凭据为 OAuth 设备令牌 / PAT 交换出的会话令牌。
-	PlatformQoder     = "qoder"
+	PlatformQoder = "qoder"
+	// PlatformTrae 是 Trae 平台（CN trae-api-cn.mchost.guru / 国际 a0ai-api-sg.byteintlapi.com），
+	// 上游为自研 Cloud-IDE-JWT 协议（聊天路径 /api/agent/v3/llm_utils_chat），
+	// 账号凭据为 IDE 会话令牌 + OAuth refreshToken，积分与签到走 api.trae.cn UG 域。
+	PlatformTrae      = "trae"
 	PlatformComposite = "composite"
 )
 

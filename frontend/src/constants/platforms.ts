@@ -22,7 +22,8 @@ export const CONCRETE_PLATFORM_OPTIONS = [
   { value: 'minimax', label: 'MiniMax' },
   { value: 'opencode_go', label: 'OpenCode' },
   { value: 'workbuddy', label: 'WorkBuddy' },
-  { value: 'qoder', label: 'Qoder' }
+  { value: 'qoder', label: 'Qoder' },
+  { value: 'trae', label: 'Trae' }
 ] as const satisfies readonly PlatformOption<AccountPlatform>[]
 
 /** Platforms that can own a group. */

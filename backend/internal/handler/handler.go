@@ -23,6 +23,8 @@ type AdminHandlers struct {
 	WorkBuddyCredits       *admin.WorkBuddyCreditsHandler
 	QoderOAuth             *admin.QoderOAuthHandler
 	QoderCredits           *admin.QoderCreditsHandler
+	TraeCredits            *admin.TraeCreditsHandler
+	TraeOAuth              *admin.TraeLoginHandler
 	CNProvider             *admin.CNProviderHandler
 	Proxy                  *admin.ProxyHandler
 	Redeem                 *admin.RedeemHandler

@@ -18,6 +18,7 @@ export type Provider =
   | 'opencode_go'
   | 'workbuddy'
   | 'qoder'
+  | 'trae'
 export type MonitorStatus = 'operational' | 'degraded' | 'failed' | 'error'
 export type BodyOverrideMode = 'off' | 'merge' | 'replace'
 export type APIMode = 'chat_completions' | 'responses'

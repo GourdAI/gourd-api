@@ -93,6 +93,12 @@ const PROVIDER_ICONS: Record<Provider, IconData> = {
       'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4zM12.9 5.5L6.1 13.2h5.8l-1 5.3 6.8-7.7h-5.8l1-5.3z',
     ],
   },
+  // Trae mark：几何镜像 PlatformIcon.vue 的 trae 分支（上横杠 + 两条交叉斜线构成的 T）。
+  trae: {
+    paths: [
+      'M3.2 3h17.6l-2.2 4.1H5.4L3.2 3zm8.15 5.6h1.3L16.2 21h-3.1l-1.75-9.3L9.6 21H6.5l4.85-12.4z',
+    ],
+  },
   // Qoder mark：圆角方底 + Q 字形镂空。几何严格镜像 PlatformIcon.vue 的 qoder
   // 分支（外环 r5.5 / 内环 r3 / 右下尾巴）；该分支是“紫底 + 白 Q”，本组件
   // 为单色 currentColor 渲染，故将同一 Q 几何作为 evenodd 子路径挖空，颜色由

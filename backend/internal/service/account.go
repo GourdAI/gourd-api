@@ -297,9 +297,9 @@ func (a *Account) IsCNProvider() bool {
 // IsOpenAICompatible 报告账号是否走 OpenAI 网关（OpenAI 协议族）。
 // openai/grok 原生走 OpenAI 网关；国产供应商同为 OpenAI Chat Completions
 // 兼容上游，也经 OpenAI 网关转发。OpenCode 同样经 OpenAI 网关按模型分流。
-// WorkBuddy / Qoder 为固定 Chat Completions（或等价形态）协议平台，同样经 OpenAI 网关转发。
+// WorkBuddy / Qoder / Trae 为固定 Chat Completions（或等价形态）协议平台，同样经 OpenAI 网关转发。
 func (a *Account) IsOpenAICompatible() bool {
-	return a != nil && (a.Platform == PlatformOpenAI || a.Platform == PlatformGrok || a.IsCNProvider() || a.IsOpenCodeGo() || a.IsWorkbuddy() || a.IsQoderPlatform())
+	return a != nil && (a.Platform == PlatformOpenAI || a.Platform == PlatformGrok || a.IsCNProvider() || a.IsOpenCodeGo() || a.IsWorkbuddy() || a.IsQoderPlatform() || a.IsTrae())
 }
 
 func (a *Account) GeminiOAuthType() string {
@@ -1351,10 +1351,10 @@ func (a *Account) IsOpenAIApiKey() bool {
 }
 
 // GetOpenAIBaseURL 解析 OpenAI 协议族账号的上游 base_url。
-// 适用 openai、国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）与 OpenCode Go、WorkBuddy、Qoder；
+// 适用 openai、国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）与 OpenCode Go、WorkBuddy、Qoder、Trae；
 // grok 走 GetGrokBaseURL，此处对 grok 返回 "" 以保持原有行为。
 func (a *Account) GetOpenAIBaseURL() string {
-	if !a.IsOpenAI() && !a.IsCNProvider() && !a.IsOpenCodeGo() && !a.IsWorkbuddy() && !a.IsQoderPlatform() {
+	if !a.IsOpenAI() && !a.IsCNProvider() && !a.IsOpenCodeGo() && !a.IsWorkbuddy() && !a.IsQoderPlatform() && !a.IsTrae() {
 		return ""
 	}
 	if a.IsMultiProtocolAPIKey() && a.IsAdaptiveAPIProtocol() {
@@ -1391,6 +1391,8 @@ func (a *Account) GetOpenAIBaseURL() string {
 		return a.GetWorkbuddyBaseURL()
 	case PlatformQoder:
 		return a.GetQoderBaseURL()
+	case PlatformTrae:
+		return a.GetTraeBaseURL()
 	default:
 		return "https://api.openai.com"
 	}

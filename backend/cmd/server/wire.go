@@ -101,6 +101,7 @@ func provideCleanup(
 	workBuddyCheckin *service.WorkBuddyCheckinService,
 	workBuddyTasks *service.WorkBuddyTasksService,
 	qoderCheckin *service.QoderCheckinService,
+	traeCheckin *service.TraeCheckinService,
 	codexVersionSync *service.OpenAICodexVersionSyncService,
 	proxyExpiry *service.ProxyExpiryService,
 	subscriptionExpiry *service.SubscriptionExpiryService,
@@ -286,6 +287,12 @@ func provideCleanup(
 			{"QoderCheckinService", func() error {
 				if qoderCheckin != nil {
 					qoderCheckin.Stop()
+				}
+				return nil
+			}},
+			{"TraeCheckinService", func() error {
+				if traeCheckin != nil {
+					traeCheckin.Stop()
 				}
 				return nil
 			}},

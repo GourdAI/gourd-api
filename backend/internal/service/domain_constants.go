@@ -51,6 +51,7 @@ const (
 	PlatformOpenCodeGo = domain.PlatformOpenCodeGo
 	PlatformWorkbuddy  = domain.PlatformWorkbuddy
 	PlatformQoder      = domain.PlatformQoder
+	PlatformTrae       = domain.PlatformTrae
 	PlatformComposite  = domain.PlatformComposite
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
 	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.
@@ -98,6 +99,15 @@ const (
 	// 上游聊天路径为 {base}/algo/api/v2/service/pro/sse/agent_chat_generation（COSY 协议）。
 	DefaultQoderGlobalBaseURL = "https://api1.qoder.sh"
 	DefaultQoderCNBaseURL     = "https://gateway.qoder.com.cn"
+	// Trae 双域固定协议平台：CN 为 trae-api-cn.mchost.guru，国际为 a0ai-api-sg.byteintlapi.com；
+	// 上游聊天路径为 {base}/api/agent/v3/llm_utils_chat（Cloud-IDE-JWT 协议）。
+	DefaultTraeBaseURL       = "https://trae-api-cn.mchost.guru"
+	DefaultTraeGlobalBaseURL = "https://a0ai-api-sg.byteintlapi.com"
+	// Trae UG 域（积分查询 / 每日签到）与 OAuth 换票域：CN 为 api.trae.cn / api.trae.com.cn。
+	DefaultTraeBillingBaseURL       = "https://api.trae.cn"
+	DefaultTraeGlobalBillingBaseURL = "https://api.trae.ai"
+	DefaultTraeOAuthBaseURL         = "https://api.trae.com.cn"
+	DefaultTraeGlobalOAuthBaseURL   = "https://api-sg-central.trae.ai"
 )
 
 // 国产供应商 Anthropic 协议端点的默认 base_url（上游路径为 {base}/v1/messages）。
@@ -138,6 +148,11 @@ func IsQoder(platform string) bool {
 	return platform == PlatformQoder
 }
 
+// IsTrae 报告 platform 是否为 Trae 平台。
+func IsTrae(platform string) bool {
+	return platform == PlatformTrae
+}
+
 // IsQoderPlatform 报告账号是否为 Qoder 平台（receiver 形式，风格对齐 IsWorkbuddy）。
 func (a *Account) IsQoderPlatform() bool {
 	return a != nil && a.Platform == PlatformQoder
@@ -165,6 +180,7 @@ var AllowedQuotaPlatforms = []string{
 	PlatformOpenCodeGo,
 	PlatformWorkbuddy,
 	PlatformQoder,
+	PlatformTrae,
 }
 
 // AllowedSchedulingThresholdPlatforms 是允许设置账号自动停调阈值的平台列表。
@@ -180,6 +196,7 @@ var AllowedSchedulingThresholdPlatforms = []string{
 	PlatformOpenCodeGo,
 	PlatformWorkbuddy,
 	PlatformQoder,
+	PlatformTrae,
 }
 
 // IsAllowedQuotaPlatform 报告 s 是否为合法的 quota platform 标识。

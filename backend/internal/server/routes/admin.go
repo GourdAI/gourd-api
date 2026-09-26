@@ -67,6 +67,9 @@ func RegisterAdminRoutes(
 		// Qoder OAuth（PKCE 设备流）
 		registerQoderOAuthRoutes(admin, h)
 
+		// Trae 积分/签到与 refresh_token 换票探测
+		registerTraeRoutes(admin, h)
+
 		// 国产供应商（kimi/zhipu/deepseek）额度与余额
 		registerCNProviderRoutes(admin, h)
 
@@ -529,6 +532,24 @@ func registerQoderOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 积分余额与每日活动 Credits 领取（openapi 域，无 COSY 签名）。
 		qoder.GET("/accounts/:id/credits", h.Admin.QoderCredits.QueryCredits)
 		qoder.POST("/accounts/:id/checkin", h.Admin.QoderCredits.Checkin)
+	}
+}
+
+// registerTraeRoutes 注册 Trae 积分/签到与换票探测端点：
+// accounts/:id/credits 查询积分余额与今日签到状态（落 extra 快照），
+// accounts/:id/checkin 手动签到（幂等，已签到返回 already），
+// oauth/exchange-token 用 refresh_token 试换 access_token（建档前验证凭据可用性）。
+func registerTraeRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	trae := admin.Group("/trae")
+	{
+		trae.POST("/oauth/exchange-token", h.Admin.TraeCredits.ExchangeToken)
+		// 真 OAuth 登录（浏览器授权 + 回调链接粘贴完成；无服务端回调故没有轮询）。
+		trae.POST("/oauth/auth-url", h.Admin.TraeOAuth.GenerateAuthURL)
+		trae.POST("/oauth/submit", h.Admin.TraeOAuth.Submit)
+		trae.POST("/oauth/cancel", h.Admin.TraeOAuth.Cancel)
+		// 积分与每日签到（UG 域 api.trae.cn，与聊天域指纹不同）。
+		trae.GET("/accounts/:id/credits", h.Admin.TraeCredits.QueryCredits)
+		trae.POST("/accounts/:id/checkin", h.Admin.TraeCredits.Checkin)
 	}
 }
 

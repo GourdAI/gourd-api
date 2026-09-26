@@ -102,6 +102,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   minimax: 'MiniMax',
   workbuddy: 'WorkBuddy',
   qoder: 'Qoder',
+  trae: 'Trae',
 }
 
 function platformLabel(platform: string): string {

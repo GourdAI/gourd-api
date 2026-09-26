@@ -1364,6 +1364,11 @@ func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
 		// 由 qoder 专用发送管线出站。
 		return true
 	}
+	if account.IsTrae() {
+		// Trae 上游只有 Cloud-IDE-JWT 协议的 SSE 对话端点（llm_utils_chat，无
+		// /v1/responses）：同语义收敛到 raw-CC 回退，由 trae 专用发送管线出站。
+		return true
+	}
 	if account.IsCNProvider() {
 		// CN 的显式协议配置优先于异步探针 Extra；adaptive 仅 DeepSeek / Kimi
 		// 有原生 Responses，GLM 回退 Chat Completions。

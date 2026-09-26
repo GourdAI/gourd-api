@@ -406,7 +406,7 @@ func (s *GatewayService) compositePlazaAccountModels(ctx context.Context, groupI
 var plazaConcretePlatforms = []string{
 	PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok,
 	PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo,
-	PlatformWorkbuddy, PlatformQoder,
+	PlatformWorkbuddy, PlatformQoder, PlatformTrae,
 }
 
 // fallbackPlazaModelIDs 账号未配 model_mapping 时的平台静态目录（与网关 /v1/models
