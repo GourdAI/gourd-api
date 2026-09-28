@@ -269,12 +269,15 @@ func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error
 		})
 		g := groupEnt[gid]
 		for j := range pg.Models {
-			s.fillDisplayPricing(ctx, &pg.Models[j], g)
-			pg.Models[j].OfficialPricing = s.lookupOfficialPricing(ctx, pg.Models[j].Name, officialMemo)
 			pg.Models[j].Free = groupModelFreeDeclared(g, pg.Models[j].Name)
 			if pg.Models[j].Free {
+				// 免费模型的展示价必然是一张全 0 卡，计费探针的结论会被直接丢弃（探针
+				// 每模型多段×两次计费调用），跳过它；官方参考价仍照算，供「原价 vs 实付」对比。
 				forceFreeDisplayPricing(&pg.Models[j])
+			} else {
+				s.fillDisplayPricing(ctx, &pg.Models[j], g)
 			}
+			pg.Models[j].OfficialPricing = s.lookupOfficialPricing(ctx, pg.Models[j].Name, officialMemo)
 		}
 		out = append(out, *pg)
 	}
