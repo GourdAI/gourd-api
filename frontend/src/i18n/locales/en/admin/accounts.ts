@@ -339,7 +339,7 @@
           copy: 'Copy',
           copySuccess: 'Sign-in link copied to clipboard',
           popupBlocked: 'Your browser blocked the new tab. Click the link above to open the authorization page manually.',
-          unreachableNote: 'It is normal that the page at 127.0.0.1 shows "This site can\'t be reached" after you sign in — the callback only hits a port on your own machine and nothing is listening there. Just copy the full address bar URL and paste it back.',
+          unreachableNote: 'It is normal that the page at 127.0.0.1 shows "This site can\'t be reached" after you sign in — the callback only hits a port on your own machine and nothing is listening there. Just copy the full address bar URL and paste it back. This also works when the panel runs on a remote server: the redirect happens in **your** browser, so the server never needs to be reachable at that address; only the token exchange (performed by the server) needs outbound access to Trae.',
           callbackLabel: 'Callback URL (full address bar value)',
           callbackPlaceholder: 'http://127.0.0.1:xxxx/authorize?...',
           submit: 'Submit',
@@ -354,6 +354,7 @@
           success: 'Sign-in succeeded. Credentials have been filled in automatically.',
           errors: {
             TRAE_LOGIN_CALLBACK_INVALID: 'The pasted callback URL is incomplete or is not the authorization page URL — copy the entire address bar value (including ?code=...) and submit again.',
+            TRAE_LOGIN_CALLBACK_TRUNCATED: 'The pasted URL looks cut off (the authorization code is the longest parameter, so it is easy to miss part of it). Click into the browser address bar, press Ctrl+A to select everything, copy and submit again.',
             TRAE_LOGIN_TRACE_MISMATCH: 'The callback URL does not belong to this login session (you may have pasted a link from an older tab). Please start the login again.',
             TRAE_LOGIN_NO_CODE: 'The callback URL carries no authorization code. Make sure you copied the full URL from the address bar after signing in.',
             TRAE_LOGIN_NOT_FOUND: 'The login session no longer exists (the service may have restarted). Please start the login again.',
@@ -989,6 +990,12 @@
         'Model IDs were synced, but no capability metadata could be updated.',
       syncUpstreamModelsMetadataPartial:
         'Some model capabilities were updated; remaining models are still incomplete.',
+      upstreamCandidatesTitle: 'Upstream candidates ({count}) — not applied yet',
+      addAllUpstreamCandidates: 'Add all',
+      addCandidateToSelected: 'Add to selected',
+      dismissUpstreamCandidates: 'Dismiss candidates',
+      syncUpstreamModelsPending:
+        'Found {count} new upstream model(s) awaiting confirmation ({total} upstream total)',
       clearAllModels: 'Clear all models',
       customModelName: 'Custom model name',
       enterCustomModelName: 'Enter custom model name',

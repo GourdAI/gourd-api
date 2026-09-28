@@ -4540,6 +4540,7 @@ import {
   isValidWildcardPattern
 } from '@/composables/useModelWhitelist'
 import { adminAPI } from '@/api/admin'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
 import {
   useAccountOAuth,
@@ -5027,7 +5028,13 @@ const handleTraeOAuthLogin = async () => {
   traeOAuthMessage.value = ''
   traeOAuthSucceeded.value = false
   traeOAuthExtraCredentials.value = {}
-  const ok = await traeOAuth.startLogin(traeRealm.value, form.proxy_id || undefined)
+  // 把表单里的设备号传回去复用：同一弹窗内「重新发起」（换票失败后重试）若每次
+  // 都 mint 新设备号，会白白多占上游设备槽（每账号硬上限 3 台，错误码 20401）。
+  // 用户未填时传空串，后端会生成并在响应里回显，后续重试自动沿用。
+  const ok = await traeOAuth.startLogin(traeRealm.value, form.proxy_id || undefined, {
+    device_id: traeDeviceId.value.trim(),
+    machine_id: traeMachineId.value.trim()
+  })
   // 关闭弹窗后不得再弹新标签页（用户已经放弃了这次登录）。
   if (!ok || !props.show) return
   if (traeOAuthUrl.value) {
@@ -6334,8 +6341,10 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
         } else if (warnings.some(warning => warning.code === 'upstream_model_metadata_partial')) {
           appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataPartial'))
         }
-      } catch {
-        appStore.showWarning(t('admin.accounts.syncUpstreamModelsFailed'))
+      } catch (error) {
+        // apiClient 拦截器 reject 的是普通对象（非 Error 实例），不统一提取就看不到后端原因。
+        const message = extractApiErrorMessage(error, t('admin.accounts.syncUpstreamModelsFailed'))
+        appStore.showWarning(t('admin.accounts.syncUpstreamModelsError', { message }))
       }
     }
     if (

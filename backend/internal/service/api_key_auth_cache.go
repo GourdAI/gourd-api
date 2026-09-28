@@ -115,6 +115,10 @@ type APIKeyAuthGroupSnapshot struct {
 	DefaultMappedModel          string                            `json:"default_mapped_model,omitempty"`
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
 	ModelAllowlist              GroupModelAllowlist               `json:"model_allowlist,omitempty"`
+	// FreeModels 分组免费模型名单：与 ModelAllowlist 一样必须在认证快照里透传，
+	// 否则定价链（resolveGroupModelPricing）在快路径上拿不到名单，免费模型会被
+	// 「未定价即拒」闸门拦成 404。
+	FreeModels []string `json:"free_models,omitempty"`
 	// CodexModelsManifestConfig 与 ModelAllowlist 一样在认证快照分组里透传，
 	// Codex /models handler 直接读认证分组对象。
 	CodexModelsManifestConfig GroupCodexModelsManifestConfig `json:"codex_models_manifest_config,omitempty"`

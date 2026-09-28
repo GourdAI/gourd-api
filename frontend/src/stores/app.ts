@@ -13,6 +13,7 @@ import {
   type ReleaseInfo
 } from '@/api/admin/system'
 import { getPublicSettings as fetchPublicSettingsAPI } from '@/api/auth'
+import { describeUpstreamGuardrailNotice, hasUpstreamGuardrailNoticeHead } from '@/utils/upstreamNotice'
 
 export const useAppStore = defineStore('app', () => {
   // ==================== State ====================
@@ -108,10 +109,16 @@ export const useAppStore = defineStore('app', () => {
    */
   function showToast(type: ToastType, message: string, duration?: number): string {
     const id = `toast-${++toastIdCounter}`
+    // 上游响应体片段会被拼进多条管理端提示（同步模型失败、账号状态等），其中夹带的
+    // 「写给模型看」护栏文本对管理员既不可读也无从行动，统一替换为人话。
+    // 先用廉价的形态判定短路，避免给每条正常 toast 都多取一次 i18n 文案。
+    const toastMessage = hasUpstreamGuardrailNoticeHead(message)
+      ? describeUpstreamGuardrailNotice(message, i18n.global.t('common.upstreamGuardrailNotice'))
+      : message
     const toast: Toast = {
       id,
       type,
-      message,
+      message: toastMessage,
       duration,
       startTime: duration !== undefined ? Date.now() : undefined
     }

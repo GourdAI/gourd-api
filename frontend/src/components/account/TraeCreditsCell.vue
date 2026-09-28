@@ -414,9 +414,13 @@ const packKindLabel = (kind?: string): string => {
   }
 }
 
-const isoDateOnly = (timestamp: number): string => {
-  const d = new Date(timestamp)
-  if (Number.isNaN(d.getTime())) return String(timestamp)
+const isoDateOnly = (epochSeconds: number): string => {
+  // expire_at 是 epoch **秒**（后端 traeEntitlementUsage 经 traeNormalizeEpochSeconds 归一），
+  // 必须放大到毫秒再交给 Date：直接 new Date(秒) 会落在 1970-01-01 附近，
+  // 管理页把「2026 年底到期」显示成「1970-01-21」这种假到期日。
+  // 同文件的 formatEpoch 已经是 toEpochSeconds(v)*1000 口径，两处必须一致。
+  const d = new Date(toEpochSeconds(epochSeconds) * 1000)
+  if (Number.isNaN(d.getTime())) return String(epochSeconds)
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${d.getFullYear()}-${month}-${day}`

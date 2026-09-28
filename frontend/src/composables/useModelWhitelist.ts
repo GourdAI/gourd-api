@@ -259,6 +259,20 @@ const traeModels = [
   'auto'
 ]
 
+// OpenCode Go（聚合网关目录，模型为上游转发标识）
+const opencodeGoModels = [
+  'grok-4.6', 'gpt-5.6-luna',
+  'glm-5.3-flash', 'glm-5.3', 'glm-5.2', 'glm-5.1',
+  'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6',
+  'longcat-2.0',
+  'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp',
+  'mimo-v2.5', 'mimo-v2.5-pro',
+  'minimax-m3', 'minimax-m2.7', 'minimax-m2.5',
+  'muse-spark-1.3-contributor', 'muse-spark-1.2-contributor',
+  'qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.6-plus',
+  'hy4-preview', 'hy3', 'omen-alpha'
+]
+
 // 百度 文心
 const baiduModels = [
   'ernie-4.0-8k-latest', 'ernie-4.0-8k', 'ernie-4.0-turbo-8k',
@@ -290,10 +304,14 @@ const perplexityModels = [
 ]
 
 // 所有模型（去重）
+// 必须并集覆盖 getModelsByPlatform() 的**所有**平台分支：ModelWhitelistSelector 的候选下拉
+// 用 allModels 作为唯一数据源（availableOptions = allModels.filter(...)），任何一个平台分支
+// 漏并进来，都会让该平台账号的模型下拉恒显示「无匹配模型」。
 const allModelsList: string[] = [
   ...openaiModels,
   ...claudeModels,
   ...geminiModels,
+  ...antigravityModels,
   ...zhipuModels,
   ...qwenModels,
   ...deepseekModels,
@@ -305,14 +323,18 @@ const allModelsList: string[] = [
   ...moonshotModels,
   ...doubaoModels,
   ...minimaxModels,
+  ...opencodeGoModels,
+  ...workbuddyModels,
+  ...qoderModels,
+  ...traeModels,
   ...baiduModels,
   ...sparkModels,
   ...hunyuanModels,
   ...perplexityModels
 ]
 
-// 转换为下拉选项格式
-export const allModels = allModelsList.map(m => ({ value: m, label: m }))
+// 转换为下拉选项格式（跨平台重名模型只保留首个，避免 v-for :key 重复）
+export const allModels = Array.from(new Set(allModelsList)).map(m => ({ value: m, label: m }))
 
 // =====================
 // 预设映射
@@ -493,18 +515,7 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'yi': return yiModels
     case 'moonshot':
     case 'kimi': return moonshotModels
-    case 'opencode_go': return [
-      'grok-4.6', 'gpt-5.6-luna',
-      'glm-5.3-flash', 'glm-5.3', 'glm-5.2', 'glm-5.1',
-      'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6',
-      'longcat-2.0',
-      'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp',
-      'mimo-v2.5', 'mimo-v2.5-pro',
-      'minimax-m3', 'minimax-m2.7', 'minimax-m2.5',
-      'muse-spark-1.3-contributor', 'muse-spark-1.2-contributor',
-      'qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.6-plus',
-      'hy4-preview', 'hy3', 'omen-alpha'
-    ]
+    case 'opencode_go': return opencodeGoModels
     case 'workbuddy': return workbuddyModels
     case 'qoder': return qoderModels
     case 'trae': return traeModels

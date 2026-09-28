@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 26 // v26: candidate group objects materialized in auth snapshot (v25 snapshots carried empty Groups and silently degraded multi-group resolution)
+const apiKeyAuthSnapshotVersion = 27 // v27: group snapshot carries free_models (v26 snapshots left it nil, so group free models silently degraded to 404 on the cached auth path); v26: candidate group objects materialized in auth snapshot (v25 snapshots carried empty Groups and silently degraded multi-group resolution)
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -382,6 +382,7 @@ func apiKeyGroupSnapshotFromGroup(g *Group) *APIKeyAuthGroupSnapshot {
 		DefaultMappedModel:              g.DefaultMappedModel,
 		MessagesDispatchModelConfig:     g.MessagesDispatchModelConfig,
 		ModelAllowlist:                  g.ModelAllowlist,
+		FreeModels:                      g.FreeModels,
 		CodexModelsManifestConfig:       g.CodexModelsManifestConfig,
 		RPMLimit:                        g.RPMLimit,
 		MaxReasoningEffort:              g.MaxReasoningEffort,
@@ -448,6 +449,7 @@ func apiKeyGroupFromSnapshot(s *APIKeyAuthGroupSnapshot) *Group {
 		DefaultMappedModel:              s.DefaultMappedModel,
 		MessagesDispatchModelConfig:     s.MessagesDispatchModelConfig,
 		ModelAllowlist:                  s.ModelAllowlist,
+		FreeModels:                      s.FreeModels,
 		CodexModelsManifestConfig:       s.CodexModelsManifestConfig,
 		RPMLimit:                        s.RPMLimit,
 		MaxReasoningEffort:              s.MaxReasoningEffort,

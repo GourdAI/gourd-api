@@ -653,36 +653,43 @@ export default {
   // Model Plaza (public group/model pricing showcase)
   modelPlaza: {
     title: 'Model Plaza',
-    description: 'Browse available models and pricing by group',
+    description: 'Browse available models, groups and the price you actually pay',
     loading: 'Loading...',
-    empty: 'No groups to display',
+    empty: 'No models to display',
     loadFailed: 'Failed to load model plaza',
     noSearchResult: 'No matching models',
+    clearSearch: 'Clear search',
+    pricingNotes: 'Pricing notes',
     anonymousHint: 'Sign in to see your exclusive groups and personal rates',
     filters: {
       groupLabel: 'Group',
       rateLabel: 'Rate',
       modelLabel: 'Model',
-      searchPlaceholder: 'Search models',
-      all: 'All'
+      searchPlaceholder: 'Search models or vendors',
+      clearSearch: 'Clear search',
+      all: 'All',
+      sortLabel: 'Sort',
+      sortDefault: 'Default (priciest first)',
+      sortPriceAsc: 'Price: low to high',
+      sortPriceDesc: 'Price: high to low',
+      sortNameAsc: 'Name A→Z',
+      resultCount: '{count} models'
     },
     badges: {
       exclusive: 'Exclusive',
       subscription: 'Subscription'
     },
     detail: {
-      noModels: 'No models configured for this group',
       noPricing: 'Pricing not configured',
-      peakNote: 'Peak hours {window}: billing rate ×{multiplier}',
-      longContextDisabledNote: 'Long-context tier pricing is disabled for this group: requests above the threshold are billed at the base tier; official tiers are for reference only'
+      peakNote: '{group}: peak hours {window} billed at rate ×{multiplier}',
+      longContextDisabledNote: 'Long-context tier pricing is disabled for the current group: requests above the threshold are billed at the base tier',
+      longContextDisabledNoteGroup: '{group} has long-context tier pricing disabled: requests above the threshold are billed at the base tier',
+      moreNotes: '{count} more group notes — switch to that group to see them'
     },
     card: {
-      modelCount: '{count} models',
       input: 'Input',
       output: 'Output',
       cache: 'Cache',
-      cacheWrite: 'Write',
-      cacheRead: 'Read',
       cacheWriteShort: 'W',
       cacheReadShort: 'R',
       tierHint: 'The whole request is billed at the tier matching its total context (input + cache write + cache read)',
@@ -690,23 +697,29 @@ export default {
       maxReasoningMultiplierBadge: 'Max ×{multiplier}',
       maxReasoningMultiplierHint: 'When the forwarded reasoning effort is max, billing and quota usage for the request are multiplied by {multiplier}',
       marginalBadge: 'excess-only tiers',
+      freeBadge: 'Free',
+      freeBadgeHint: 'This group has marked the model as free: it is billed at $0 and can still be called through the API as usual',
       timePeriodHint: 'Requests made within this period ({timezone} time) are billed at the prices in this period',
       timePeriodHintWeekdays:
         'On weekdays (Mon–Fri) only, requests made within this period ({timezone} time) are billed at the prices in this period; weekends use the standard prices',
       timePeriodHintPeak:
         '; prices in this period exclude the peak-hour rate — where it overlaps the peak hours {window}, the overlapping portion is additionally multiplied by ×{multiplier}',
       timePricingWeekdays: 'Weekdays',
-      timeRateHint: 'Effective rate {rate} × period multiplier {multiplier}',
-      officialPrice: 'Official Price',
-      officialTag: 'Official',
-      rateTooltip: 'Billing rate for this group: ×{rate}',
-      customRateTooltip: 'Group default rate ×{groupRate}; your personal rate ×{rate}',
+      timePricingSummary: 'Time-based rates',
+      availableIn: 'Groups',
+      groupChipCurrent: 'Showing the {group} price — click again to go back to all groups',
+      groupChipSwitch: 'Switch to the {group} price',
+      groupChipHidden: 'Switch to the {group} price (this group is outside the current rate filter, so clicking also clears that filter)',
+      rateTooltip: '{group}: billing rate ×{rate}',
+      customRateTooltip: '{group}: group default rate ×{groupRate}; your personal rate ×{rate}',
       copyModelName: 'Copy model name',
       unitPerMillion: '$ / 1M tokens',
       perUnitRequest: '/ request',
       perUnitImage: '/ image',
+      perUnitVideo: '/ video',
       perRequest: 'Per request',
-      perImage: 'Per image'
+      perImage: 'Per image',
+      perVideo: 'Per video'
     },
     nav: {
       login: 'Sign In',

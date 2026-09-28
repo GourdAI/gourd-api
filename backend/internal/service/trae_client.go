@@ -246,7 +246,10 @@ func traeReadAndRewindBody(resp *http.Response) []byte {
 //     而上游异常形态的 body（如 token 出现在非预期字段）可能含凭证，过一遗 logredact。
 func traeTruncateForError(s string) string {
 	const maxRunes = 200
-	s = logredact.RedactText(strings.TrimSpace(s))
+	// 先压平换行（见 flattenUpstreamSnippet）：上游护栏提示类文本常是多行长句，
+	// 原样流入 toast / 账号 error_message 会把管理端单元格撑成一段英文文章。
+	// 内容不改写，保留真实失败原因供排障。
+	s = logredact.RedactText(flattenUpstreamSnippet(s))
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
 		return s

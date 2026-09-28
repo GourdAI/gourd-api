@@ -134,6 +134,37 @@ describe('TraeCreditsCell', () => {
     expect(tooltip).not.toContain('e-3')
   })
 
+  it('renders package expire_at (epoch seconds) as a real calendar date', async () => {
+    // 回归：expire_at 是 epoch **秒**（后端 traeEntitlementUsage 已归一），
+    // 早期 isoDateOnly 直接 new Date(秒) → 全部落在 1970-01-xx，管理页把
+    // 「2026 年底到期」显示成假到期日（用户报「积分到期时间也不对」）。
+    const account = makeAccount(9104, {
+      extra: {
+        trae_credits: {
+          credits: 10,
+          remain: 10,
+          used: 0,
+          size: 10,
+          packs: 1,
+          realm: 'cn',
+          fetched_at: nowSeconds(),
+          packages: [
+            { entitlement_id: 'plan-year', kind: 'plan', limit: 10, used: 0, remain: 10, expire_at: 1798761599 }
+          ]
+        }
+      }
+    } as Partial<Account>)
+    const wrapper = mount(TraeCreditsCell, { props: { account } })
+    await flushPromises()
+
+    const tooltip = wrapper.get('[data-test="trae-credits-remain"]').attributes('title') || ''
+    const expected = new Date(1798761599 * 1000).toLocaleDateString('en-CA')
+    expect(tooltip).toContain(expected)
+    expect(tooltip).not.toMatch(/1970-/)
+    // 秒级时间戳不应被当成毫秒再除一次（1798761599 < 1e12，toEpochSeconds 原样返回）。
+    expect(expected).not.toBe('1970-01-01')
+  })
+
   it('auto-probes once when the snapshot is stale', async () => {
     queryTraeCredits.mockResolvedValue({
       success: true,

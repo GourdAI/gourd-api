@@ -893,6 +893,120 @@
           </div>
         </div>
 
+        <!-- 免费模型名单：无数组即关闭，因此没有开关，容器常驻展开 -->
+        <div class="border-t pt-4">
+          <div class="mb-3">
+            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t("admin.groups.freeModels.title") }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t("admin.groups.freeModels.hint") }}
+            </p>
+          </div>
+          <div class="overflow-hidden rounded-lg border border-gray-200 bg-gray-50/50 dark:border-dark-600 dark:bg-dark-800/40">
+            <div
+              v-if="!createModelAllowlistLoading && createFreeModelState.items.length > 0"
+              class="flex items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-dark-600 dark:bg-dark-800"
+            >
+              <span class="text-gray-500 dark:text-gray-400">
+                {{
+                  t("admin.groups.freeModels.selectedSummary", {
+                    selected: createFreeModelSelectedCount,
+                    total: createFreeModelState.items.length,
+                  })
+                }}
+              </span>
+              <div class="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  class="rounded px-2 py-1 font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-900/20"
+                  @click="selectAllFreeModelItems(createFreeModelState)"
+                >
+                  {{ t("admin.groups.freeModels.selectAll") }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded px-2 py-1 font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+                  @click="invertFreeModelSelection(createFreeModelState)"
+                >
+                  {{ t("admin.groups.freeModels.invertSelection") }}
+                </button>
+              </div>
+            </div>
+            <div class="max-h-64 space-y-2 overflow-y-auto p-2">
+              <p v-if="createModelAllowlistLoading" class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.groups.freeModels.loading") }}
+              </p>
+              <p
+                v-else-if="createFreeModelState.items.length === 0"
+                class="text-xs text-gray-500 dark:text-gray-400"
+              >
+                {{ t("admin.groups.freeModels.empty") }}
+              </p>
+              <div
+                v-for="(item, index) in createFreeModelState.items"
+                :key="item.id"
+                class="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 dark:border-dark-600 dark:bg-dark-800"
+              >
+                <input
+                  v-model="item.selected"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                <span class="min-w-0 flex-1 break-all text-sm text-gray-700 dark:text-gray-300">
+                  {{ item.id }}
+                  <span
+                    v-if="item.id.endsWith('*')"
+                    class="ml-1 rounded bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium text-primary-600 dark:bg-primary-900/30 dark:text-primary-400"
+                  >
+                    {{ t("admin.groups.freeModels.wildcardTag") }}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  :disabled="index === 0"
+                  class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40 dark:hover:bg-dark-600 dark:hover:text-gray-200"
+                  @click="moveCreateFreeModelItem(index, index - 1)"
+                >
+                  <Icon name="arrowUp" size="sm" />
+                </button>
+                <button
+                  type="button"
+                  :disabled="index === createFreeModelState.items.length - 1"
+                  class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40 dark:hover:bg-dark-600 dark:hover:text-gray-200"
+                  @click="moveCreateFreeModelItem(index, index + 1)"
+                >
+                  <Icon name="arrowDown" size="sm" />
+                </button>
+              </div>
+            </div>
+            <div class="border-t border-gray-200 px-3 py-2 dark:border-dark-600">
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="createFreeModelsCustomEntry"
+                  type="text"
+                  :placeholder="t('admin.groups.freeModels.customPlaceholder')"
+                  class="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-primary-500 focus:outline-none dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200"
+                  @keydown.enter.prevent="submitCreateFreeModelsCustomEntry"
+                />
+                <button
+                  type="button"
+                  class="rounded bg-primary-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-700"
+                  @click="submitCreateFreeModelsCustomEntry"
+                >
+                  {{ t("admin.groups.freeModels.addCustom") }}
+                </button>
+              </div>
+              <p
+                v-if="createFreeModelsCustomErrorKey"
+                class="mt-1 text-xs text-red-500"
+              >
+                {{ t(createFreeModelsCustomErrorKey) }}
+              </p>
+            </div>
+          </div>
+        </div>
+
         <!-- 图片生成计费配置 -->
         <div
           v-if="supportsImagePricingPlatform(createForm.platform)"
@@ -2528,6 +2642,120 @@
                 class="mt-1 text-xs text-red-500"
               >
                 {{ t(editAllowlistCustomErrorKey) }}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 免费模型名单：无数组即关闭，因此没有开关，容器常驻展开 -->
+        <div class="border-t pt-4">
+          <div class="mb-3">
+            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t("admin.groups.freeModels.title") }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t("admin.groups.freeModels.hint") }}
+            </p>
+          </div>
+          <div class="overflow-hidden rounded-lg border border-gray-200 bg-gray-50/50 dark:border-dark-600 dark:bg-dark-800/40">
+            <div
+              v-if="!editModelAllowlistLoading && editFreeModelState.items.length > 0"
+              class="flex items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-dark-600 dark:bg-dark-800"
+            >
+              <span class="text-gray-500 dark:text-gray-400">
+                {{
+                  t("admin.groups.freeModels.selectedSummary", {
+                    selected: editFreeModelSelectedCount,
+                    total: editFreeModelState.items.length,
+                  })
+                }}
+              </span>
+              <div class="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  class="rounded px-2 py-1 font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-900/20"
+                  @click="selectAllFreeModelItems(editFreeModelState)"
+                >
+                  {{ t("admin.groups.freeModels.selectAll") }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded px-2 py-1 font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+                  @click="invertFreeModelSelection(editFreeModelState)"
+                >
+                  {{ t("admin.groups.freeModels.invertSelection") }}
+                </button>
+              </div>
+            </div>
+            <div class="max-h-64 space-y-2 overflow-y-auto p-2">
+              <p v-if="editModelAllowlistLoading" class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.groups.freeModels.loading") }}
+              </p>
+              <p
+                v-else-if="editFreeModelState.items.length === 0"
+                class="text-xs text-gray-500 dark:text-gray-400"
+              >
+                {{ t("admin.groups.freeModels.empty") }}
+              </p>
+              <div
+                v-for="(item, index) in editFreeModelState.items"
+                :key="item.id"
+                class="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 dark:border-dark-600 dark:bg-dark-800"
+              >
+                <input
+                  v-model="item.selected"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                <span class="min-w-0 flex-1 break-all text-sm text-gray-700 dark:text-gray-300">
+                  {{ item.id }}
+                  <span
+                    v-if="item.id.endsWith('*')"
+                    class="ml-1 rounded bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium text-primary-600 dark:bg-primary-900/30 dark:text-primary-400"
+                  >
+                    {{ t("admin.groups.freeModels.wildcardTag") }}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  :disabled="index === 0"
+                  class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40 dark:hover:bg-dark-600 dark:hover:text-gray-200"
+                  @click="moveEditFreeModelItem(index, index - 1)"
+                >
+                  <Icon name="arrowUp" size="sm" />
+                </button>
+                <button
+                  type="button"
+                  :disabled="index === editFreeModelState.items.length - 1"
+                  class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40 dark:hover:bg-dark-600 dark:hover:text-gray-200"
+                  @click="moveEditFreeModelItem(index, index + 1)"
+                >
+                  <Icon name="arrowDown" size="sm" />
+                </button>
+              </div>
+            </div>
+            <div class="border-t border-gray-200 px-3 py-2 dark:border-dark-600">
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="editFreeModelsCustomEntry"
+                  type="text"
+                  :placeholder="t('admin.groups.freeModels.customPlaceholder')"
+                  class="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-primary-500 focus:outline-none dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200"
+                  @keydown.enter.prevent="submitEditFreeModelsCustomEntry"
+                />
+                <button
+                  type="button"
+                  class="rounded bg-primary-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-700"
+                  @click="submitEditFreeModelsCustomEntry"
+                >
+                  {{ t("admin.groups.freeModels.addCustom") }}
+                </button>
+              </div>
+              <p
+                v-if="editFreeModelsCustomErrorKey"
+                class="mt-1 text-xs text-red-500"
+              >
+                {{ t(editFreeModelsCustomErrorKey) }}
               </p>
             </div>
           </div>
@@ -4349,6 +4577,15 @@ import {
   setModelAllowlistCandidates,
 } from "./groupModelAllowlist";
 import { createModelAllowlistCandidatesTracker } from "./modelAllowlistCandidates";
+import {
+  addCustomFreeModelItem,
+  buildFreeModelsPayload,
+  createFreeModelState as createInitialFreeModelState,
+  invertFreeModelSelection,
+  moveFreeModelItem,
+  selectAllFreeModelItems,
+  setFreeModelCandidates,
+} from "./groupFreeModels";
 import { normalizeSupportedModelScopesForPlatform } from "./groupsSupportedModelScopes";
 import {
   isProfitControlPlatform,
@@ -4880,6 +5117,9 @@ const createModelAllowlistState = reactive(createInitialModelAllowlistState());
 const editModelAllowlistState = reactive(createInitialModelAllowlistState());
 const createModelAllowlistLoading = ref(false);
 const editModelAllowlistLoading = ref(false);
+// 免费模型名单：无 enabled 开关，数组非空即生效（候选列表与白名单共用同一次拉取）。
+const createFreeModelState = reactive(createInitialFreeModelState());
+const editFreeModelState = reactive(createInitialFreeModelState());
 type ReasoningEffortPolicyFieldsExpose = {
   validate: () => boolean;
   resetValidation: () => void;
@@ -4934,6 +5174,59 @@ const submitEditAllowlistCustomEntry = () => {
   } else {
     editAllowlistCustomErrorKey.value = `admin.groups.modelAllowlist.errors.${error}`;
   }
+};
+
+// 免费模型名单：计数、手工条目与排序（无必填校验，空数组即关闭）。
+const createFreeModelSelectedCount = computed(
+  () => createFreeModelState.items.filter((item) => item.selected).length,
+);
+const editFreeModelSelectedCount = computed(
+  () => editFreeModelState.items.filter((item) => item.selected).length,
+);
+const createFreeModelsCustomEntry = ref("");
+const editFreeModelsCustomEntry = ref("");
+const createFreeModelsCustomErrorKey = ref<string | null>(null);
+const editFreeModelsCustomErrorKey = ref<string | null>(null);
+const submitCreateFreeModelsCustomEntry = () => {
+  const error = addCustomFreeModelItem(
+    createFreeModelState,
+    createFreeModelsCustomEntry.value,
+  );
+  if (error === null) {
+    createFreeModelsCustomEntry.value = "";
+    createFreeModelsCustomErrorKey.value = null;
+  } else {
+    createFreeModelsCustomErrorKey.value = `admin.groups.freeModels.errors.${error}`;
+  }
+};
+const submitEditFreeModelsCustomEntry = () => {
+  const error = addCustomFreeModelItem(
+    editFreeModelState,
+    editFreeModelsCustomEntry.value,
+  );
+  if (error === null) {
+    editFreeModelsCustomEntry.value = "";
+    editFreeModelsCustomErrorKey.value = null;
+  } else {
+    editFreeModelsCustomErrorKey.value = `admin.groups.freeModels.errors.${error}`;
+  }
+};
+
+const resetFreeModelState = (
+  state: typeof createFreeModelState,
+  config?: Parameters<typeof createInitialFreeModelState>[0],
+) => {
+  const fresh = createInitialFreeModelState(config);
+  state.savedModels = fresh.savedModels;
+  state.items = fresh.items;
+};
+
+const moveCreateFreeModelItem = (fromIndex: number, toIndex: number) => {
+  moveFreeModelItem(createFreeModelState, fromIndex, toIndex);
+};
+
+const moveEditFreeModelItem = (fromIndex: number, toIndex: number) => {
+  moveFreeModelItem(editFreeModelState, fromIndex, toIndex);
 };
 
 const createForm = reactive({
@@ -5226,6 +5519,7 @@ const loadModelAllowlistCandidates = async (
   const request = { mode, groupID, platform };
   const requestID = modelAllowlistCandidatesTracker.next(request);
   const state = mode === "create" ? createModelAllowlistState : editModelAllowlistState;
+  const freeState = mode === "create" ? createFreeModelState : editFreeModelState;
   const loadingRef = mode === "create" ? createModelAllowlistLoading : editModelAllowlistLoading;
   loadingRef.value = true;
   try {
@@ -5234,6 +5528,8 @@ const loadModelAllowlistCandidates = async (
       return;
     }
     setModelAllowlistCandidates(state, models);
+    // 免费模型名单复用同一份候选列表（不新建 API）。
+    setFreeModelCandidates(freeState, models);
   } catch (error) {
     if (!modelAllowlistCandidatesTracker.isCurrent(requestID, request)) {
       return;
@@ -5820,6 +6116,9 @@ const closeCreateModal = () => {
   createForm.reasoning_effort_mappings = [];
   createReasoningEffortPolicyRef.value?.resetValidation();
   resetModelAllowlistState(createModelAllowlistState);
+  resetFreeModelState(createFreeModelState);
+  createFreeModelsCustomEntry.value = "";
+  createFreeModelsCustomErrorKey.value = null;
   createModelRoutingRules.value = [];
 };
 
@@ -5928,6 +6227,7 @@ const handleCreateGroup = async () => {
         createModelRoutingRules.value,
       ),
       model_allowlist: buildModelAllowlistConfig(createModelAllowlistState),
+      free_models: buildFreeModelsPayload(createFreeModelState),
       // 创建时固定账号 manifest 固定发送关闭状态（后端创建路径禁止开启）
       codex_models_manifest_config: createCodexManifestDefaults(),
       supported_model_scopes: normalizeSupportedModelScopesForPlatform(
@@ -6122,6 +6422,7 @@ const handleEdit = async (group: AdminGroup) => {
     group.platform,
   );
   resetModelAllowlistState(editModelAllowlistState, group.model_allowlist);
+  resetFreeModelState(editFreeModelState, group.free_models);
   // 固定账号 manifest 配置：回显配置并异步解析已存账号名称（失败显示 #<id>）
   const savedCodexManifestConfig =
     group.codex_models_manifest_config ?? createCodexManifestDefaults();
@@ -6190,6 +6491,9 @@ const closeEditModal = () => {
   resetMessagesDispatchFormState(editForm);
   editForm.allow_live = false;
   resetModelAllowlistState(editModelAllowlistState);
+  resetFreeModelState(editFreeModelState);
+  editFreeModelsCustomEntry.value = "";
+  editFreeModelsCustomErrorKey.value = null;
   editCodexManifestConfig.value = createCodexManifestDefaults();
   editCodexManifestAccountNames.value = {};
   editCodexManifestRef.value?.resetValidation?.();
@@ -6269,6 +6573,7 @@ const handleUpdateGroup = async () => {
         editModelRoutingRules.value,
       ),
       model_allowlist: buildModelAllowlistConfig(editModelAllowlistState),
+      free_models: buildFreeModelsPayload(editFreeModelState),
       // 非 openai 平台提交关闭状态，与后端归一化一致
       codex_models_manifest_config:
         editForm.platform === "openai"
@@ -6700,6 +7005,7 @@ watch(
     }
     resetDisabledBatchImagePricing(createForm);
     resetModelAllowlistState(createModelAllowlistState);
+    resetFreeModelState(createFreeModelState);
     loadModelAllowlistCandidates("create", 0, newVal);
   },
 );
@@ -6758,6 +7064,10 @@ watch(
     resetDisabledBatchImagePricing(editForm);
     if (editingGroup.value) {
       resetModelAllowlistState(editModelAllowlistState, editForm.platform === editingGroup.value.platform ? editingGroup.value.model_allowlist : undefined);
+      resetFreeModelState(
+        editFreeModelState,
+        editForm.platform === editingGroup.value.platform ? editingGroup.value.free_models : undefined,
+      );
       loadModelAllowlistCandidates("edit", editingGroup.value.id, newVal);
     }
   },

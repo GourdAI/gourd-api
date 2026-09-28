@@ -194,6 +194,12 @@ func newUpstreamModelSyncInternalError(message string, err error) error {
 // FetchUpstreamSupportedModels fetches only live model IDs. The admin sync path
 // uses SyncUpstreamModelCatalog so capability metadata can also be persisted.
 func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, account *Account) ([]string, error) {
+	if models, _, handled, err := s.fetchNativeModelCatalog(ctx, account); handled {
+		if err != nil {
+			return nil, err
+		}
+		return dedupeAndSortModelIDs(models), nil
+	}
 	models, _, err := s.fetchUpstreamModelList(ctx, account)
 	return models, err
 }
@@ -208,6 +214,15 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 // snapshot. When no model is complete, the existing account snapshot is left
 // untouched.
 func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
+	// 固定协议平台（Trae / Qoder）的上游目录不是 OpenAI /v1/models 形态，端点、
+	// 鉴权头族与响应结构全部自成一派，走专属拉取路径（同时产出能力元数据）。
+	if models, nativeMetadata, handled, err := s.fetchNativeModelCatalog(ctx, account); handled {
+		if err != nil {
+			return nil, err
+		}
+		return s.buildCatalogFromNativeModels(ctx, account, models, nativeMetadata)
+	}
+
 	models, body, err := s.fetchUpstreamModelList(ctx, account)
 	liveListAvailable := err == nil
 	if err != nil {
@@ -800,6 +815,14 @@ func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, acc
 		return s.buildGeminiUpstreamModelsRequest(ctx, account)
 	case account.IsAnthropic():
 		return s.buildAnthropicUpstreamModelsRequest(ctx, account)
+	case account.IsWorkbuddy():
+		// 刻意不给通用探测路径：WorkBuddy 上游没有面向个人账号的模型列表接口
+		// （/v2/models 等变体均不存在；唯一动态端点是**企业版**的
+		// /console/enterprises/{id}/config/models，个人账号无 enterpriseId 拿不到）。
+		// 文案写明原因与正确做法，否则管理员只会看到一句没头没尾的 unsupported platform。
+		return nil, newUpstreamModelSyncUnsupportedError(
+			"WorkBuddy upstream exposes no model list API for personal accounts; maintain the static model catalog instead", nil,
+		)
 	default:
 		return nil, newUpstreamModelSyncUnsupportedError(
 			fmt.Sprintf("Unsupported platform for upstream model sync: %s", account.Platform), nil,

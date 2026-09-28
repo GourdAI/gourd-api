@@ -1098,6 +1098,23 @@ export default {
         emptySelectionError: 'The model allowlist is enabled; select or add at least one model entry',
         errors: {
           empty: 'Please enter a model entry',
+        invalidWildcard: 'Wildcard * is only allowed at the end of an entry',
+          duplicate: 'This entry already exists'
+        }
+      },
+      freeModels: {
+        title: 'Free Model List',
+        hint: 'Models matching an entry are billed at 0 in this group: they stay callable and still appear in the model plaza. A non-empty list enables the feature and an empty list disables it (there is no switch). Entries support exact model names and trailing * wildcards. Note: this list does not change whether a model can be served; the group still needs an account that can run it.',
+        loading: 'Loading candidate models...',
+        empty: 'No candidate models; add custom entries below',
+        selectedSummary: 'Selected {selected} / {total}',
+        selectAll: 'Select all',
+        invertSelection: 'Invert',
+        wildcardTag: 'wildcard',
+        customPlaceholder: 'Custom entry, e.g. claude-* or gpt-5.5-codex',
+        addCustom: 'Add',
+        errors: {
+          empty: 'Please enter a model entry',
           invalidWildcard: 'Wildcard * is only allowed at the end of an entry',
           duplicate: 'This entry already exists'
         }

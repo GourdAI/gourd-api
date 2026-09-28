@@ -70,7 +70,7 @@ type PricingInput struct {
 // 2. 如果指定了 GroupID，查找渠道定价并覆盖
 func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) *ResolvedPricing {
 	longContextPricingEnabled := input.Group == nil || input.Group.LongContextPricingEnabled
-	if groupPricing := matchGroupModelPricing(input.Group, input.Model); groupPricing != nil {
+	if groupPricing, fromFreeList := resolveGroupModelPricing(input.Group, input.Model); groupPricing != nil {
 		// Group token cards only override the first-tier / flat rates.
 		// Long-context ladders come from official presets, gated by the checkbox.
 		if groupPricing.BillingMode == "" || groupPricing.BillingMode == BillingModeToken {
@@ -79,6 +79,9 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 			groupPricing = &stripped
 		}
 		resolved := r.resolveConfiguredPricing(groupPricing, input.Model, PricingSourceGroup)
+		if fromFreeList {
+			zeroOutFreePricing(resolved)
+		}
 		resolved.longContextPricingEnabled = longContextPricingEnabled
 		return resolved
 	}
@@ -160,12 +163,113 @@ func (r *ModelPricingResolver) hasChannelPricingNormalized(ctx context.Context, 
 	return r.channelService.HasChannelModelPricing(ctx, groupID, normalized)
 }
 
-// hasGroupModelPricing 判定分组自定义价卡是否为该模型提供了实际价格（不 Clone）。
+// resolveGroupModelPricing 返回分组定价层为该模型给出的价卡，以及该卡是否由免费名单合成，
+// 优先级：
+//
+//	分组自定义价卡（带实际价格） > 免费名单合成的全 0 卡 > nil（交给渠道/目录/兜底）
+//
+// 已配过真实价格的模型不会被免费名单洗成 0 元（价卡是管理员更具体的声明）；反之，
+// 只绑了模型名、一个价格都没填的空价卡不足以定案，仍由免费名单兜底。
+//
+// 本函数是「计费按什么价」与「闸门认不认这个模型」的唯一口径源；hasGroupModelPricing
+// 必须与它给出相同结论，否则会出现「闸门放行但计费算不出价」或「计费算得出价却被
+// 闸门拦死」的口径倒挂。
+//
+// 第二个返回值决定 Resolve 是否要把基础价卡整张清零（见 zeroOutFreePricing）。
+func resolveGroupModelPricing(group *Group, model string) (*ChannelModelPricing, bool) {
+	if group == nil {
+		return nil, false
+	}
+	// 只匹配一次：matchGroupModelPricing 会 Clone，重复调用等于在热路径上白拷价卡。
+	if matched := matchGroupModelPricing(group, model); matched != nil && groupPriceCardHasValue(matched) {
+		return matched, false
+	}
+	if groupFreeModelMatches(group.FreeModels, model) {
+		return groupFreeModelPricing(model), true
+	}
+	return nil, false
+}
+
+// zeroOutFreePricing 把免费名单命中的解析结果整张清零。
+//
+// 为什么必须它：ChannelModelPricing 只能表达 9 个价项，而 ModelPricing 还带着
+// ImageCacheReadPricePerToken、LongContext*Multiplier 等它无法表达的字段；
+// applyChannelTokenPriceOverrides 只覆盖自己能表达的项，其余沿用 LiteLLM 目录价。
+// 于是一个「目录里恰好有同名条目」的免费模型，会带着 $0.00 的免费徽章按图片缓存价
+// 真实扣费。分组免费是管理员的显式声明，优先级高于目录价，因此把基础卡整张归零。
+func zeroOutFreePricing(resolved *ResolvedPricing) {
+	if resolved == nil {
+		return
+	}
+	resolved.BasePricing = &ModelPricing{}
+	resolved.RequestTiers = nil
+	resolved.DefaultPerRequestPrice = 0
+	resolved.SupportsCacheBreakdown = false
+}
+
+// groupPriceCardHasValue 判断分组自定义价卡是否填了任一价格要素。
+//
+// 为什么不复用 pricingNeedsFallback：后者同时决定「渠道展示价是否回落到全局配置」，
+// 字段集是历史形成的 7 项，不含 image_input_price，也不含区间倍率。分组价卡是管理员
+// 的显式声明，只要填了任何一项就不算「空卡」——否则只配了图片输入价、或只配了区间
+// 倍率打折的卡会被误判为空，进而被免费名单盖成全 0，静默丢失真实价格。
+// 本谓词只作用于分组层判定，不改动渠道语义。
+func groupPriceCardHasValue(p *ChannelModelPricing) bool {
+	if p == nil {
+		return false
+	}
+	for _, value := range []*float64{
+		p.InputPrice, p.OutputPrice,
+		p.CacheWritePrice, p.CacheWrite1hPrice, p.CacheReadPrice,
+		p.ImageInputPrice, p.ImageOutputPrice, p.PerRequestPrice,
+	} {
+		if value != nil {
+			return true
+		}
+	}
+	for _, iv := range p.Intervals {
+		if iv.InputPrice != nil || iv.OutputPrice != nil ||
+			iv.CacheWritePrice != nil || iv.CacheWrite1hPrice != nil || iv.CacheReadPrice != nil ||
+			iv.PerRequestPrice != nil ||
+			iv.InputMultiplier != nil || iv.OutputMultiplier != nil ||
+			iv.CacheWriteMultiplier != nil || iv.CacheReadMultiplier != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// groupModelFreeDeclared 报告该模型在本分组是否「按免费名单计 0 元」。
+//
+// 与 resolveGroupModelPricing 的优先级严格一致：分组已配了带实际价格的价卡时返回
+// false（价卡是更具体的声明，不能把已配的价格报成免费）；空价卡不足以推翻名单。
+// 模型广场的「免费」徽章必须走本函数，否则会出现徽章显示免费、卡片价格却是非 0 的矛盾。
+func groupModelFreeDeclared(group *Group, model string) bool {
+	if group == nil || !groupFreeModelMatches(group.FreeModels, model) {
+		return false
+	}
+	// 走不 Clone 的判定版：徽章会对数百个模型逐个计算。
+	return !hasGroupModelPriceCard(group, model)
+}
+
+// hasGroupModelPricing 判定分组定价层能否为该模型给出价格（不 Clone）。
+//
+// 与 resolveGroupModelPricing 同源同序，但避开 Clone 开销：模型列表过滤会对数百个
+// 模型逐个调用本函数，深拷贝价卡（含 intervals 切片）是纯浪费。
+func hasGroupModelPricing(group *Group, model string) bool {
+	if group == nil {
+		return false
+	}
+	if hasGroupModelPriceCard(group, model) {
+		return true
+	}
+	return groupFreeModelMatches(group.FreeModels, model)
+}
+
+// hasGroupModelPriceCard 只看分组自定义价卡（不含免费名单兜底）。
 //
 // 匹配优先级与 matchGroupModelPricing 严格一致：精确命中优先、否则取第一个通配命中。
-// 保持一致是有意的——闸门必须与计费链同源，否则会出现「闸门放行但计费算不出价」
-// 或「计费算得出价却被闸门拦死」的口径倒挂。
-func hasGroupModelPricing(group *Group, model string) bool {
+func hasGroupModelPriceCard(group *Group, model string) bool {
 	if group == nil {
 		return false
 	}
@@ -176,14 +280,14 @@ func hasGroupModelPricing(group *Group, model string) bool {
 		for _, pattern := range entry.Models {
 			normalized := normalizeChannelPricingModelName(pattern)
 			if normalized == model {
-				return !pricingNeedsFallback(entry)
+				return groupPriceCardHasValue(entry)
 			}
 			if strings.HasSuffix(normalized, "*") && strings.HasPrefix(model, strings.TrimSuffix(normalized, "*")) && wildcard == nil {
 				wildcard = entry
 			}
 		}
 	}
-	return !pricingNeedsFallback(wildcard)
+	return groupPriceCardHasValue(wildcard)
 }
 
 func matchGroupModelPricing(group *Group, model string) *ChannelModelPricing {

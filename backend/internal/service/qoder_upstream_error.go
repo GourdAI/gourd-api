@@ -138,9 +138,11 @@ func qoderBusinessErrorDetail(code, message string) string {
 	return qoderTruncateReason(msg, 200)
 }
 
-// qoderTruncateReason 按 rune 截断（避免中文多字节截半）。
+// qoderTruncateReason 按 rune 截断（避免中文多字节截半）。截断前先把片段压成单行
+// （见 flattenUpstreamSnippet）：Qoder 上游会把「写给模型看」的护栏提示当作正常
+// 内容回吐，原样拼进错误信息会让管理员看到与自己操作无关的多行英文长提示。
 func qoderTruncateReason(s string, max int) string {
-	s = strings.TrimSpace(s)
+	s = flattenUpstreamSnippet(s)
 	if max <= 0 {
 		return ""
 	}

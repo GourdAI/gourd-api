@@ -5,9 +5,10 @@ import {
   modelPrice,
   modelRateStruck,
   modelRateValue,
-  sortModelsForDisplay,
+  modelSortPrice,
   tierLabel,
   timePeriodHint,
+  timePeriodsSummary,
   type PlazaPriceContext,
   type PriceLabels
 } from '../plazaPricing'
@@ -63,7 +64,7 @@ describe('plazaPricing 生效倍率', () => {
     expect(effectiveGroupRate(ctx({ rateMultiplier: 1.2 }))).toBe(1.2)
   })
 
-  it('专属倍率场景划线展示原倍率;无专属或非 token 独立倍率时为 null', () => {
+  it('专属倍率场景划线展示原倍率;无专属时为 null', () => {
     const model = tokenModel()
     expect(modelRateStruck(model, ctx({ rateMultiplier: 1, userRateMultiplier: 0.8 }))).toBe(1)
     expect(modelRateStruck(model, ctx({ rateMultiplier: 1 }))).toBeNull()
@@ -93,7 +94,7 @@ describe('plazaPricing 生效倍率', () => {
   })
 })
 
-describe('plazaPricing token 价格', () => {
+describe('plazaPricing token 实付价', () => {
   it('倍率 1 时展示渠道单价原值($/1M),保底 2 位小数', () => {
     const display = modelPrice(tokenModel(), ctx(), labels)
     expect(paidText(display, 'input')).toEqual(['$3.00'])
@@ -102,26 +103,33 @@ describe('plazaPricing token 价格', () => {
     expect(paidText(display, 'cache')).toEqual(['W $3.75', 'R $0.30'])
   })
 
-  it('倍率 ≠ 1 时实付按折后价,官方参考价作为副行同时展示', () => {
+  it('倍率 ≠ 1 时按折后价展示,不再输出官方参考行', () => {
     const display = modelPrice(tokenModel(), ctx({ rateMultiplier: 0.5 }), labels)
     expect(paidText(display, 'input')).toEqual(['$1.50'])
     expect(paidText(display, 'output')).toEqual(['$7.50'])
-    const inputCell = display.cells.find((c) => c.key === 'input')!
-    expect(inputCell.official).not.toBeNull()
-    expect(inputCell.official!.map((l) => l.parts.map((p) => p.text).join(''))).toEqual(['$3.00'])
+    // 官方参考价已下线:价格列只有实付行,也没有 official 字段
+    expect(display.cells.every((c) => !('official' in c))).toBe(true)
+    expect(JSON.stringify(display)).not.toContain('$3.00')
   })
 
-  it('实付与官方逐字一致时不重复展示官方参考行', () => {
-    const display = modelPrice(tokenModel(), ctx(), labels)
-    expect(display.cells.find((c) => c.key === 'input')!.official).toBeNull()
-    expect(display.cells.find((c) => c.key === 'output')!.official).toBeNull()
-    // 缓存列官方含 1h 价,与实付不同 → 仍有副行
-    expect(display.cells.find((c) => c.key === 'cache')!.official).not.toBeNull()
+  it('官方价与渠道价不同也不影响实付列(实付只来自 pricing)', () => {
+    const model = tokenModel({
+      official_pricing: {
+        input_price: 9e-6,
+        output_price: 4.5e-5,
+        cache_write_price: null,
+        cache_read_price: null
+      }
+    })
+    const display = modelPrice(model, ctx({ rateMultiplier: 1 }), labels)
+    expect(paidText(display, 'input')).toEqual(['$3.00'])
+    expect(paidText(display, 'output')).toEqual(['$15.00'])
   })
 
-  it('official_pricing 缺失时不渲染官方参考行', () => {
-    const display = modelPrice(tokenModel({ official_pricing: null }), ctx({ rateMultiplier: 0.5 }), labels)
-    expect(display.cells.every((c) => c.official === null)).toBe(true)
+  it('pricing 缺失时以占位符呈现', () => {
+    const display = modelPrice(tokenModel({ pricing: null }), ctx(), labels)
+    expect(paidText(display, 'input')).toEqual(['-'])
+    expect(paidText(display, 'cache')).toEqual(['-'])
   })
 
   it('实付价支持自定义 1h 缓存写入价', () => {
@@ -211,7 +219,7 @@ describe('plazaPricing token 价格', () => {
     const display = modelPrice(model, ctx(), labels)
     expect(paidText(display, 'input')).toEqual(['$20.00'])
     expect(paidText(display, 'output')).toEqual(['$75.00'])
-    expect(paidText(display, 'cache')).toEqual(['W $25.00 (1h $25.00) R $4.00'])
+    expect(paidText(display, 'cache')).toEqual(['W $25.00 R $4.00'])
   })
 
   it('阶梯缓存价每档一行「写 x 读 z」,与输入/输出列行对齐', () => {
@@ -249,34 +257,54 @@ describe('plazaPricing token 价格', () => {
         per_request_price: null,
         intervals
       },
-      official_pricing: {
-        input_price: 5e-6,
-        output_price: 3e-5,
-        cache_write_price: 6.25e-6,
-        cache_read_price: 5e-7,
-        intervals
-      },
       long_context_basis: 'whole_request'
     })
     const display = modelPrice(model, ctx({ rateMultiplier: 0.5 }), labels)
     const cache = display.cells.find((c) => c.key === 'cache')!
-    // 阶梯行经 resolveIntervalPrices 后 1h 写入价回落为 5m 写入价
+    // 阶梯行未显式配 1h 写入价 → 不渲染「(1h ...)」(那是 resolveIntervalPrices 的回落值,会误导成 1h 与 5m 同价)
     expect(cache.paid.map((l) => l.parts.map((p) => p.text).join(''))).toEqual([
-      'W $3.125 (1h $3.125) R $0.25',
-      'W $6.25 (1h $6.25) R $0.50'
+      'W $3.125 R $0.25',
+      'W $6.25 R $0.50'
     ])
-    // 官方阶梯不走倍率折算,也不补 1h 价
-    expect(cache.official!.map((l) => l.parts.map((p) => p.text).join(''))).toEqual([
-      'W $6.25 R $0.50',
-      'W $12.50 R $1.00'
-    ])
-    // 官方阶梯不乘倍率,档数与实付一致
-    expect(display.cells.find((c) => c.key === 'input')!.official!.map((l) => l.tier)).toEqual(['≤272K', '>272K'])
+  })
+
+  it('阶梯行显式配了不同的 1h 写入价时才展示 (1h …)', () => {
+    const model = tokenModel({
+      pricing: {
+        billing_mode: BILLING_MODE_TOKEN,
+        input_price: 5e-6,
+        output_price: 3e-5,
+        cache_write_price: 6.25e-6,
+        cache_read_price: 5e-7,
+        image_input_price: null,
+        image_output_price: null,
+        per_request_price: null,
+        intervals: [
+          {
+            min_tokens: 0,
+            max_tokens: null,
+            tier_label: '',
+            input_price: 5e-6,
+            output_price: 3e-5,
+            cache_write_price: 6.25e-6,
+            cache_write_1h_price: 1e-5,
+            cache_read_price: 5e-7,
+            per_request_price: null
+          }
+        ]
+      }
+    })
+    const display = modelPrice(model, ctx(), labels)
+    expect(paidText(display, 'cache')).toEqual(['W $6.25 (1h $10.00) R $0.50'])
+  })
+
+  it('平价缓存未配 1h 时不出现 (1h …)', () => {
+    expect(paidText(modelPrice(tokenModel(), ctx(), labels), 'cache')).toEqual(['W $3.75', 'R $0.30'])
   })
 })
 
 describe('plazaPricing 按次 / 按图计费', () => {
-  function requestModel(price: number | null, intervals: PlazaModel['pricing'] extends null ? never : any[] = []) {
+  function requestModel(price: number | null, intervals: any[] = []) {
     return tokenModel({
       name: 'gpt-image-2',
       pricing: {
@@ -344,11 +372,7 @@ describe('plazaPricing 按次 / 按图计费', () => {
   })
 
   it('未配价格时返回空档位列表(渲染为占位)', () => {
-    const display = modelPrice(
-      requestModel(null),
-      ctx({ rateMultiplier: 0.1 }),
-      labels
-    )
+    const display = modelPrice(requestModel(null), ctx({ rateMultiplier: 0.1 }), labels)
     expect(display.requests).toEqual([])
   })
 
@@ -377,6 +401,111 @@ describe('plazaPricing 按次 / 按图计费', () => {
   })
 })
 
+describe('plazaPricing 排序用实付单价', () => {
+  it('token 模型取输入价 × 生效倍率($/1M 量纲)', () => {
+    // 默认样本:input 3e-6 / output 1.5e-5 → 比价取输入价 3,不是输出价 15
+    expect(modelSortPrice(tokenModel(), ctx())).toBeCloseTo(3, 10)
+    expect(modelSortPrice(tokenModel(), ctx({ rateMultiplier: 0.5 }))).toBeCloseTo(1.5, 10)
+    expect(modelSortPrice(tokenModel(), ctx({ rateMultiplier: 1, userRateMultiplier: 0.8 }))).toBeCloseTo(2.4, 10)
+  })
+
+  it('输入价为 0 时不当成未定价', () => {
+    expect(modelSortPrice(tokenModel({ pricing: { ...tokenModel().pricing!, input_price: 0 } }), ctx())).toBe(0)
+  })
+
+  it('脏数据(倍率 NaN)不会污染比价,回落 1x', () => {
+    expect(modelSortPrice(tokenModel(), ctx({ rateMultiplier: Number.NaN }))).toBeCloseTo(3, 10)
+  })
+
+  it('阶梯模型无平价输入价时取最低档', () => {
+    const model = tokenModel({
+      pricing: {
+        billing_mode: BILLING_MODE_TOKEN,
+        input_price: null,
+        output_price: null,
+        cache_write_price: null,
+        cache_read_price: null,
+        image_input_price: null,
+        image_output_price: null,
+        per_request_price: null,
+        intervals: [
+          {
+            min_tokens: 0,
+            max_tokens: 200000,
+            tier_label: '',
+            input_price: 3e-6,
+            output_price: 1.5e-5,
+            cache_write_price: null,
+            cache_read_price: null,
+            per_request_price: null
+          },
+          {
+            min_tokens: 200000,
+            max_tokens: null,
+            tier_label: '',
+            input_price: 6e-6,
+            output_price: 3e-5,
+            cache_write_price: null,
+            cache_read_price: null,
+            per_request_price: null
+          }
+        ]
+      }
+    })
+    expect(modelSortPrice(model, ctx())).toBeCloseTo(3, 10)
+  })
+
+  it('输入价缺失时回落输出价,不静默变成未定价', () => {
+    const model = tokenModel({
+      pricing: { ...tokenModel().pricing!, input_price: null, output_price: 1.5e-5 }
+    })
+    expect(modelSortPrice(model, ctx())).toBeCloseTo(15, 10)
+  })
+
+  it('按次/按图模型取按次单价 × 对应倍率;无价为 null', () => {
+    const image = tokenModel({
+      pricing: {
+        billing_mode: BILLING_MODE_IMAGE,
+        input_price: null,
+        output_price: null,
+        cache_write_price: null,
+        cache_read_price: null,
+        image_input_price: null,
+        image_output_price: null,
+        per_request_price: 0.2,
+        intervals: []
+      },
+      official_pricing: null
+    })
+    expect(modelSortPrice(image, ctx({ rateMultiplier: 0.1 }))).toBeCloseTo(0.02, 10)
+    expect(modelSortPrice(image, ctx({ rateMultiplier: 0.1, imageRateIndependent: true, imageRateMultiplier: 2 }))).toBeCloseTo(0.4, 10)
+    expect(modelSortPrice(tokenModel({ pricing: null }), ctx())).toBeNull()
+  })
+
+  it('官方价不参与排序(即使渠道未定价也不回落官方价)', () => {
+    const model = tokenModel({
+      pricing: {
+        billing_mode: BILLING_MODE_TOKEN,
+        input_price: null,
+        output_price: null,
+        cache_write_price: null,
+        cache_read_price: null,
+        image_input_price: null,
+        image_output_price: null,
+        per_request_price: null,
+        intervals: []
+      },
+      official_pricing: {
+        input_price: 5e-6,
+        output_price: 3e-5,
+        cache_write_price: null,
+        cache_read_price: null
+      }
+    })
+    expect(modelSortPrice(model, ctx())).toBeNull()
+  })
+})
+
 describe('plazaPricing 分时倍率', () => {
   function timePriced() {
     return tokenModel({
@@ -397,12 +526,9 @@ describe('plazaPricing 分时倍率', () => {
     expect(formatTimeWindow(model.time_pricing!.periods[0])).toBe('00:30–08:30')
     expect(formatTimeWindow(model.time_pricing!.periods[1])).toBe('18:00–22:00')
 
-    const ctxIn = ctx({ rateMultiplier: 0.8 })
-    const night = modelPrice(model, ctxIn, labels, model.time_pricing!.periods[0])
+    const night = modelPrice(model, ctx({ rateMultiplier: 0.8 }), labels, model.time_pricing!.periods[0])
     expect(paidText(night, 'input')).toEqual(['$1.20'])
     expect(paidText(night, 'output')).toEqual(['$6.00'])
-    // 官方参考价不受时段影响
-    expect(night.cells.find((c) => c.key === 'input')!.official).not.toBeNull()
   })
 
   it('时段生效倍率去掉浮点噪声', () => {
@@ -413,7 +539,12 @@ describe('plazaPricing 分时倍率', () => {
     expect(paidText(display, 'input')).toEqual(['$2.88'])
   })
 
-  it('时段 tooltip 按 weekdays_only 换文案,并追加分时披露', () => {
+  it('折叠摘要一行列出全部时段与倍率', () => {
+    expect(timePeriodsSummary(timePriced())).toBe('00:30–08:30 ×0.5、18:00–22:00 ×1.2')
+    expect(timePeriodsSummary(tokenModel())).toBe('')
+  })
+
+  it('时段 tooltip 按 weekdays_only 换文案,并追加高峰披露', () => {
     const translate = (key: string) => `[${key}]`
     const model = timePriced()
     expect(timePeriodHint(model, ctx(), translate)).toBe('[modelPlaza.card.timePeriodHint]')
@@ -425,62 +556,7 @@ describe('plazaPricing 分时倍率', () => {
   })
 })
 
-describe('plazaPricing 排序与档位标签', () => {
-  it('token 在前并按官方输出价降序,无官方价排最后,同价按名称降序', () => {
-    const expensive = tokenModel({
-      name: 'model-expensive',
-      official_pricing: {
-        input_price: 1e-5,
-        output_price: 7.5e-5,
-        cache_write_price: null,
-        cache_read_price: null
-      }
-    })
-    const cheap = tokenModel({
-      name: 'model-cheap',
-      official_pricing: {
-        input_price: 1e-6,
-        output_price: 5e-6,
-        cache_write_price: null,
-        cache_read_price: null
-      }
-    })
-    const noOfficial = tokenModel({ name: 'model-no-official', official_pricing: null })
-    const image = tokenModel({
-      name: 'gpt-image-2',
-      pricing: {
-        billing_mode: BILLING_MODE_IMAGE,
-        input_price: null,
-        output_price: null,
-        cache_write_price: null,
-        cache_read_price: null,
-        image_input_price: null,
-        image_output_price: null,
-        per_request_price: 0.04,
-        intervals: []
-      },
-      official_pricing: {
-        input_price: 5e-6,
-        output_price: 1e-4,
-        cache_write_price: null,
-        cache_read_price: null
-      }
-    })
-
-    expect(sortModelsForDisplay([cheap, image, noOfficial, expensive]).map((m) => m.name)).toEqual([
-      'model-expensive',
-      'model-cheap',
-      'model-no-official',
-      'gpt-image-2'
-    ])
-  })
-
-  it('同官方价按模型名降序(新版本号在前)', () => {
-    expect(
-      sortModelsForDisplay([tokenModel({ name: 'gpt-5.5' }), tokenModel({ name: 'gpt-5.6-sol' })]).map((m) => m.name)
-    ).toEqual(['gpt-5.6-sol', 'gpt-5.5'])
-  })
-
+describe('plazaPricing 档位标签', () => {
   it('无 tier_label 时按区间生成统一形态', () => {
     const base = {
       tier_label: '',

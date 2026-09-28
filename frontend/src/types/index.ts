@@ -651,6 +651,9 @@ export interface AdminGroup extends Group {
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
   model_allowlist?: ModelAllowlist
+  // 分组级免费模型名单（仅管理员可见）：命中的模型在该分组按 0 元计费，
+  // 非空即生效、空数组即关闭；用户端分组接口不返回该字段。
+  free_models?: string[]
   codex_models_manifest_config?: CodexModelsManifestConfig
 
   // 分组排序
@@ -840,6 +843,7 @@ export interface CreateGroupRequest {
   mcp_xml_inject?: boolean
   supported_model_scopes?: string[]
   model_allowlist?: ModelAllowlist
+  free_models?: string[]
   codex_models_manifest_config?: CodexModelsManifestConfig
   allow_messages_dispatch?: boolean
   allow_live?: boolean
@@ -906,6 +910,7 @@ export interface UpdateGroupRequest {
   mcp_xml_inject?: boolean
   supported_model_scopes?: string[]
   model_allowlist?: ModelAllowlist
+  free_models?: string[]
   codex_models_manifest_config?: CodexModelsManifestConfig
   allow_messages_dispatch?: boolean
   allow_live?: boolean

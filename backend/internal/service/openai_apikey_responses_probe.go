@@ -217,6 +217,27 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		return
 	}
 
+	// 上游把「写给模型看」的护栏提示当作正常回复（典型：聚合网关的非多模态模型收到
+	// 带图请求时回 [System reminder: ... please switch to a multimodal model ...]）。
+	// 这种 2xx 既没有 function_call 也不是工具能力缺失的证据，按现有口径会被判
+	// supported=false，从而把账号长期钉在 /v1/chat/completions 上（成本与缓存命中率
+	// 都变，且不会自动恢复）。护栏回复一律按不可下结论处理，保持 unknown。
+	// 仅 2xx 需要这一层：非 2xx 的结论只看状态码，不依赖响应体。
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices &&
+		responsesProbeBodyIsGuardrailNotice(bodyBytes) {
+		logger.LegacyPrintf("service.openai_probe",
+			"probe_guardrail_notice_keep_unknown: account_id=%d base_url=%s probe_model=%s status=%d",
+			accountID, normalizedBaseURL, probeModel, resp.StatusCode)
+		slog.Warn("openai_responses_probe_guardrail_notice",
+			"account_id", accountID,
+			"account_name", account.Name,
+			"base_url", normalizedBaseURL,
+			"probe_model", probeModel,
+			"upstream_status", resp.StatusCode,
+		)
+		return
+	}
+
 	supported := decideResponsesProbeSupport(resp.StatusCode, bodyBytes)
 
 	if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
@@ -310,6 +331,33 @@ func decideResponsesProbeSupport(status int, body []byte) bool {
 		return true
 	}
 	return responsesProbeBodyHasFunctionCall(body)
+}
+
+// responsesProbeBodyIsGuardrailNotice 报告探测响应是否只是上游护栏提示（无结构的
+// 「写给模型看」文本）。护栏文本可能出现在 output[].content[].text，也可能直接躺在
+// error.message（非 Responses 形态的兼容网关），两边都看一遍。
+func responsesProbeBodyIsGuardrailNotice(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	if isUpstreamGuardrailNotice(gjson.GetBytes(body, "error.message").String()) {
+		return true
+	}
+	found := false
+	gjson.GetBytes(body, "output").ForEach(func(_, item gjson.Result) bool {
+		if found {
+			return false
+		}
+		item.Get("content").ForEach(func(_, part gjson.Result) bool {
+			if isUpstreamGuardrailNotice(part.Get("text").String()) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return !found
+	})
+	return found
 }
 
 // responsesProbeBodyHasFunctionCall 判断非流式 Responses 响应体的 output 数组里

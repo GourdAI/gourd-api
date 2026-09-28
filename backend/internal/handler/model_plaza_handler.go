@@ -68,6 +68,9 @@ type modelPlazaModel struct {
 	Platform        string                     `json:"platform"`
 	Pricing         *userSupportedModelPricing `json:"pricing"`
 	OfficialPricing *modelPlazaOfficialPricing `json:"official_pricing"`
+	// Free 分组级免费模型名单命中：该模型在本分组按 0 元计费。前端据此渲染「免费」徽章。
+	// 定价链与它同源（见 service.groupModelFreeDeclared），所以不会出现徽章与价格矛盾。
+	Free bool `json:"free"`
 	// LongContextBasis 多档时的计价基准："whole_request"（整单按档）| "marginal"（仅超出部分）。
 	LongContextBasis string `json:"long_context_basis,omitempty"`
 	// TimePricing 分时倍率时段，落在时段内的请求整单乘倍率；无分时省略。
@@ -193,6 +196,7 @@ func toModelPlazaGroupDTO(g *service.PlazaGroup, userRates map[int64]float64) mo
 			Platform:         m.Platform,
 			Pricing:          toUserPricing(m.Pricing),
 			OfficialPricing:  toModelPlazaOfficialPricing(m.OfficialPricing),
+			Free:             m.Free,
 			LongContextBasis: string(m.LongContextBasis),
 			TimePricing:      toModelPlazaTimePricing(m.TimePricing),
 		})

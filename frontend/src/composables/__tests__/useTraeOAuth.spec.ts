@@ -124,6 +124,81 @@ describe('useTraeOAuth.startLogin', () => {
     expect(oauth.remainingMs.value).toBeGreaterThan(14 * 60 * 1000)
   })
 
+  it('reuses the device identity echoed by the backend on a retry', async () => {
+    // Trae 对每账号设备数有硬上限（官方文案 3 台，错误码 20401），而上游设备号只在
+    // 后端生成。因此「重新发起登录」必须拿上次回显的值去复用，不能每次换新。
+    startTraeOAuthLoginMock.mockResolvedValueOnce(
+      authUrlPayload({ device_id: '4175290190306059', machine_id: 'b5f0e0f2-9944-42ca-857e-608eeb98c8e8' })
+    )
+    const oauth = useTraeOAuth()
+    await oauth.startLogin('cn')
+    expect(oauth.deviceId.value).toBe('4175290190306059')
+
+    startTraeOAuthLoginMock.mockResolvedValueOnce(
+      authUrlPayload({ device_id: '4175290190306059', machine_id: 'b5f0e0f2-9944-42ca-857e-608eeb98c8e8' })
+    )
+    await oauth.startLogin('cn')
+    expect(startTraeOAuthLoginMock).toHaveBeenLastCalledWith({
+      realm: 'cn',
+      device_id: '4175290190306059',
+      machine_id: 'b5f0e0f2-9944-42ca-857e-608eeb98c8e8'
+    })
+  })
+
+  it('forwards an explicit device identity from the account form', async () => {
+    // 编辑已有账号时，表单里的 device_id/machine_id 必须传给后端复用。
+    startTraeOAuthLoginMock.mockResolvedValueOnce(authUrlPayload())
+    const oauth = useTraeOAuth()
+
+    await oauth.startLogin('cn', null, {
+      device_id: '1234567890123456',
+      machine_id: 'a'.repeat(32)
+    })
+
+    expect(startTraeOAuthLoginMock).toHaveBeenCalledWith({
+      realm: 'cn',
+      device_id: '1234567890123456',
+      machine_id: 'a'.repeat(32)
+    })
+  })
+
+  it('omits blank device fields instead of sending empty strings', async () => {
+    startTraeOAuthLoginMock.mockResolvedValueOnce(authUrlPayload())
+    const oauth = useTraeOAuth()
+
+    await oauth.startLogin('cn', null, { device_id: '', machine_id: '' })
+
+    // 空值不送：后端会把空串当「新生成」，而送一个空 device_id 字段容易被当成脏输入。
+    expect(startTraeOAuthLoginMock).toHaveBeenCalledWith({ realm: 'cn' })
+  })
+
+  it('adopts the device identity returned by a successful exchange', async () => {
+    // 上游可能回显 BoundDeviceID（改写我们提报的设备号）；换票后的值才是与 token
+    // 真正绑定的，必须同步下来，否则下次重登又拿旧值生成新设备号。
+    startTraeOAuthLoginMock.mockResolvedValueOnce(
+      authUrlPayload({ device_id: '1111222233334444', machine_id: 'b5f0e0f2-9944-42ca-857e-608eeb98c8e8' })
+    )
+    const oauth = useTraeOAuth()
+    await oauth.startLogin('cn')
+
+    submitTraeOAuthCallbackMock.mockResolvedValueOnce({
+      status: 'completed',
+      account_name: 'FrankZ',
+      credentials: {
+        access_token: 'at-1',
+        device_id: '9999888877776666',
+        machine_id: 'cccc0000-9944-42ca-857e-608eeb98c8e8'
+      }
+    })
+    const result = await oauth.submitCallback(
+      'http://127.0.0.1:53489/authorize?authCode=abc&loginTraceID=abc'
+    )
+
+    expect(result?.credentials.access_token).toBe('at-1')
+    expect(oauth.deviceId.value).toBe('9999888877776666')
+    expect(oauth.machineId.value).toBe('cccc0000-9944-42ca-857e-608eeb98c8e8')
+  })
+
   it('ignores a concurrent start while the first link is still being generated', async () => {
     let resolveLogin: (value: unknown) => void = () => {}
     startTraeOAuthLoginMock.mockReturnValueOnce(

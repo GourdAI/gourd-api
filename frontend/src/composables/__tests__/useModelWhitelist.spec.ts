@@ -4,7 +4,41 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import { allModels, buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+
+// 下拉候选的唯一数据源是 allModels（由 allModelsList 派生），而 ModelWhitelistSelector
+// 用 `allModels.filter(m => platformModels.has(m.value))` 做交集。任何一个
+// getModelsByPlatform 分支漏并进 allModelsList，该平台账号的模型下拉就会恒显示
+// 「无匹配模型」（trae / qoder / workbuddy / antigravity / opencode_go 均踩过这个坑）。
+const allModelValues = new Set(allModels.map(model => model.value))
+const CATALOG_PLATFORMS = [
+  'openai',
+  'anthropic',
+  'claude',
+  'gemini',
+  'antigravity',
+  'zhipu',
+  'qwen',
+  'deepseek',
+  'mistral',
+  'meta',
+  'xai',
+  'grok',
+  'cohere',
+  'yi',
+  'moonshot',
+  'kimi',
+  'opencode_go',
+  'workbuddy',
+  'qoder',
+  'trae',
+  'doubao',
+  'minimax',
+  'baidu',
+  'spark',
+  'hunyuan',
+  'perplexity'
+]
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -189,5 +223,31 @@ describe('useModelWhitelist', () => {
     const models = getModelsByPlatform('qoder')
 
     expect(models).not.toContain('q36fmodel')
+  })
+
+  it('every getModelsByPlatform platform branch is covered by allModels', () => {
+    for (const platform of CATALOG_PLATFORMS) {
+      const missing = getModelsByPlatform(platform).filter(model => !allModelValues.has(model))
+      expect(missing, `platform "${platform}" has models missing from allModels`).toEqual([])
+    }
+  })
+
+  it('allModels exposes no duplicate option values', () => {
+    const duplicates = allModels
+      .map(model => model.value)
+      .filter((value, index, values) => values.indexOf(value) !== index)
+
+    expect(duplicates).toEqual([])
+  })
+
+  it('网关平台独有模型可从 allModels 里选到', () => {
+    for (const model of ['Doubao-Seed-2.1-Pro', 'seed-code-pro-0430']) {
+      expect(allModelValues.has(model), `expected allModels to contain ${model}`).toBe(true)
+    }
+    expect(allModelValues.has('qmodel_38max')).toBe(true)
+    expect(allModelValues.has('hy3-preview')).toBe(true)
+    expect(allModelValues.has('longcat-2.0')).toBe(true)
+    expect(allModelValues.has('gemini-3-pro-high')).toBe(true)
+    expect(allModelValues.has('tab_flash_lite_preview')).toBe(true)
   })
 })

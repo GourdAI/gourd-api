@@ -658,36 +658,43 @@ export default {
   // Model Plaza (public group/model pricing showcase)
   modelPlaza: {
     title: '模型广场',
-    description: '按分组浏览可用模型与价格',
+    description: '按模型浏览可用分组与实付价格',
     loading: '加载中...',
-    empty: '暂无可展示的分组',
+    empty: '暂无可展示的模型',
     loadFailed: '加载模型广场失败',
     noSearchResult: '没有匹配的模型',
+    clearSearch: '清除搜索条件',
+    pricingNotes: '价格说明',
     anonymousHint: '登录后可查看你的专属分组与专属倍率',
     filters: {
       groupLabel: '分组',
       rateLabel: '倍率',
       modelLabel: '模型',
-      searchPlaceholder: '搜索模型名称',
-      all: '全部'
+      searchPlaceholder: '搜索模型或厂商',
+      clearSearch: '清空搜索',
+      all: '全部',
+      sortLabel: '排序',
+      sortDefault: '默认（价高在前）',
+      sortPriceAsc: '价格从低到高',
+      sortPriceDesc: '价格从高到低',
+      sortNameAsc: '名称 A→Z',
+      resultCount: '{count} 个模型'
     },
     badges: {
       exclusive: '专属分组',
       subscription: '订阅'
     },
     detail: {
-      noModels: '该分组暂未配置模型',
       noPricing: '未配置定价',
-      peakNote: '高峰时段 {window} 计费倍率 ×{multiplier}',
-      longContextDisabledNote: '该分组未启用长上下文阶梯计费，超阈值请求仍按基础档计费，官方阶梯仅供参考'
+      peakNote: '{group}：高峰时段 {window} 计费倍率 ×{multiplier}',
+      longContextDisabledNote: '当前分组未启用长上下文阶梯计费，超阈值请求仍按基础档计费',
+      longContextDisabledNoteGroup: '{group} 未启用长上下文阶梯计费，超阈值请求仍按基础档计费',
+      moreNotes: '另有 {count} 条分组说明，可通过切换到对应分组查看'
     },
     card: {
-      modelCount: '{count} 个模型',
       input: '输入',
       output: '输出',
       cache: '缓存',
-      cacheWrite: '写入',
-      cacheRead: '读取',
       cacheWriteShort: '写',
       cacheReadShort: '读',
       tierHint: '按单次请求的总上下文（输入 + 缓存写入 + 缓存读取）所在档位对整单计价',
@@ -695,22 +702,28 @@ export default {
       maxReasoningMultiplierBadge: 'Max ×{multiplier}',
       maxReasoningMultiplierHint: '最终转发的推理强度为 max 时，整次请求的计费与额度消耗乘以 {multiplier}',
       marginalBadge: '超出部分计价',
+      freeBadge: '免费',
+      freeBadgeHint: '该模型已被分组设为免费模型，按 0 元计费，仍可正常通过 API 调用',
       timePeriodHint: '按 {timezone} 时间，在该时段内发起的请求按本时段价格计费',
       timePeriodHintWeekdays:
         '按 {timezone} 时间，仅工作日（周一至周五）在该时段内发起的请求按本时段价格计费，周末全天按标准价',
       timePeriodHintPeak: '；本时段价格未含高峰倍率，与高峰时段 {window} 重叠的部分实付再乘 ×{multiplier}',
       timePricingWeekdays: '工作日',
-      timeRateHint: '生效倍率 {rate} × 时段倍率 {multiplier}',
-      officialPrice: '官方价格',
-      officialTag: '官方',
-      rateTooltip: '本组计费倍率 ×{rate}',
-      customRateTooltip: '分组默认倍率 ×{groupRate}，你的专属倍率 ×{rate}',
+      timePricingSummary: '分时倍率',
+      availableIn: '可用分组',
+      groupChipCurrent: '当前展示 {group} 的价格，再点一次回到「全部」',
+      groupChipSwitch: '切换到 {group} 的价格',
+      groupChipHidden: '切换到 {group} 的价格（该分组不在当前倍率筛选内，点击会同时取消倍率筛选）',
+      rateTooltip: '{group}：计费倍率 ×{rate}',
+      customRateTooltip: '{group}：分组默认倍率 ×{groupRate}，你的专属倍率 ×{rate}',
       copyModelName: '复制模型名称',
       unitPerMillion: '$ / 1M token',
       perUnitRequest: '/ 次',
       perUnitImage: '/ 张',
+      perUnitVideo: '/ 条',
       perRequest: '按次计费',
-      perImage: '按图片计费'
+      perImage: '按图片计费',
+      perVideo: '按视频计费'
     },
     nav: {
       login: '登录',

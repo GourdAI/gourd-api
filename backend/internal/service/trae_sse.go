@@ -391,6 +391,33 @@ func traeJSONInt(v any) int64 {
 	return 0
 }
 
+// traeModelUnavailableCode 上游「模型不在当前 IDE 版本表内」的业务码。
+//
+// 为什么单独识别：该码不落账号状态（trae_upstream_error.go 归 unknown，避免把
+// 请求级问题误标成账号坏了），但管理员在面板上只看到一句上游原文的
+// "model not available"，完全看不出真实原因其实是「本服务发的 config_name 不在
+// x-ide-version-code 对应的模型表里」——要么该模型本就不可调，要么需要先在管理页
+// 同步上游模型 / 提升凭据 ide_version_code。提示只能追加到**管理端可见的 Ops
+// Detail**（见 traeBusinessErrorDetail），绝不能进 traeStreamError.Error()：那条
+// 文本会被 traeCCErrorFrame 原样写进下发给调用方的 SSE error 帧。
+const traeModelUnavailableCode = "4001"
+
+// traeModelUnavailableHint 4001 的管理端处置提示（含内部字段名，禁止外发）。
+const traeModelUnavailableHint = " | hint: model id is not in the upstream catalog for the current x-ide-version-code; sync upstream models on the account, or set credentials.ide_version_code to a newer Trae IDE build"
+
+// traeUpstreamHint 按业务码给出可执行的处置提示（无提示返回空串）。
+//
+// 【作用域纪律】本提示提到 credentials.ide_version_code、config_name 等本仓内部
+// 实现，sub2api 的下游是外部调用方，他们既无管理页也无凭据概念：给出不可执行的
+// 文案只会制造工单，还会泄露网关内部机制。因此它**只**注入 Ops 错误详情（管理端
+// 排障可见），不参与 traeStreamError.Error()（那条链路直达客户）。
+func traeUpstreamHint(code string) string {
+	if strings.TrimSpace(code) == traeModelUnavailableCode {
+		return traeModelUnavailableHint
+	}
+	return ""
+}
+
 // traeUpstreamErrorFromObject event:error 帧 → 带业务码的错误对象。
 func traeUpstreamErrorFromObject(obj map[string]any) error {
 	message := traeFirstStringOrEmpty(obj, "message", "msg", "error_message")
@@ -413,6 +440,8 @@ type traeStreamError struct {
 	Message string
 }
 
+// Error 只拼接上游原文与业务码，刻意不含本仓的处置提示（见 traeUpstreamHint 作用域
+// 纪律）：本方法的结果会经 traeCCErrorFrame 直达调用方。
 func (e *traeStreamError) Error() string {
 	if e == nil {
 		return "trae stream error"

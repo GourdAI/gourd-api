@@ -3746,6 +3746,7 @@ import {
   parseDateTimeLocalInput
 } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
@@ -4041,7 +4042,14 @@ const handleTraeOAuthLogin = async () => {
   traeOAuthMessage.value = ''
   traeOAuthSucceeded.value = false
   traeOAuthExtraCredentials.value = {}
-  const ok = await traeOAuth.startLogin(editTraeRealm.value, form.proxy_id)
+  // 必须把表单里已有的设备号传回去复用：Trae 对每账号设备数有硬上限（官方文案
+  // 「每个账号最多可在 3 台设备上保持登录状态」，错误码 20401），而本弹窗是给
+  // **已有账号**重新登录——若不传，resetState 后会话内无设备号，后端会每次 mint
+  // 新的，重登几次就把 3 个槽占完、账号从此登录不进来。
+  const ok = await traeOAuth.startLogin(editTraeRealm.value, form.proxy_id, {
+    device_id: editTraeDeviceId.value.trim(),
+    machine_id: editTraeMachineId.value.trim()
+  })
   // 关闭弹窗后不得再弹新标签页（用户已经放弃了这次登录）。
   if (!ok || !props.show) return
   if (traeOAuthUrl.value) {
@@ -5551,7 +5559,9 @@ const syncAntigravityUpstreamModels = async () => {
       appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataPartial'))
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : t('admin.accounts.syncUpstreamModelsFailed')
+    // apiClient 拦截器 reject 的是普通对象（非 Error 实例），这里必须统一提取，
+    // 否则后端真实原因会被默认文案掩盖。
+    const message = extractApiErrorMessage(error, t('admin.accounts.syncUpstreamModelsFailed'))
     appStore.showError(t('admin.accounts.syncUpstreamModelsError', { message }))
   } finally {
     isSyncingAntigravityUpstream.value = false

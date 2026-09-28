@@ -120,6 +120,18 @@ describe('useAppStore', () => {
       expect(store.toasts[0].type).toBe('warning')
     })
 
+    it('上游护栏提示被替换为人话，普通文案不受影响', () => {
+      const store = useAppStore()
+      store.showError(
+        'Trae model list returned HTTP 400: [System reminder: the current model does not support images. Content filtered. Please inform user to switch to a multimodal model or try alternative approach.]'
+      )
+      store.showError('同步上游模型失败：连接超时')
+
+      expect(store.toasts[0].message).toContain('Trae model list returned HTTP 400:')
+      expect(store.toasts[0].message).not.toContain('Content filtered')
+      expect(store.toasts[1].message).toBe('同步上游模型失败：连接超时')
+    })
+
     it('showInfo 创建 info 类型 toast', () => {
       const store = useAppStore()
       store.showInfo('提示信息')

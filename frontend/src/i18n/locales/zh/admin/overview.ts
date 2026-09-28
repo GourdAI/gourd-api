@@ -1095,6 +1095,23 @@ export default {
         emptySelectionError: '模型白名单已开启，请至少选择或添加一个模型条目',
         errors: {
           empty: '请输入模型条目',
+        invalidWildcard: '通配符 * 只能出现在条目末尾',
+          duplicate: '该条目已存在'
+        }
+      },
+      freeModels: {
+        title: '免费模型名单',
+        hint: '命中名单条目的模型在本分组按 0 元计费，仍可正常调用并出现在模型广场。只要名单非空即生效、空数组即关闭（没有开关）。条目支持精确模型名与末尾 * 通配。注意：本名单不影响模型能否被服务，仍需分组内有能跑该模型的账号。',
+        loading: '正在加载候选模型...',
+        empty: '暂无候选模型，可在下方手工添加条目',
+        selectedSummary: '已选 {selected} / {total}',
+        selectAll: '全选',
+        invertSelection: '反选',
+        wildcardTag: '通配',
+        customPlaceholder: '自定义条目，如 claude-* 或 gpt-5.5-codex',
+        addCustom: '添加',
+        errors: {
+          empty: '请输入模型条目',
           invalidWildcard: '通配符 * 只能出现在条目末尾',
           duplicate: '该条目已存在'
         }

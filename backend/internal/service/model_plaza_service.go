@@ -26,6 +26,10 @@ type PlazaModel struct {
 	Platform        string
 	Pricing         *ChannelModelPricing
 	OfficialPricing *PlazaOfficialPricing
+	// Free 该模型在本分组被分组级免费名单声明为 0 元计费（见 group_free_models.go）。
+	// 判定与定价解析同源：分组已为该模型配了带实际价格的价卡时为 false，避免
+	// 「徽章显示免费、卡片价格却是非 0」的自相矛盾。
+	Free bool
 	// LongContextBasis 多档时的计价基准（整单 / 仅超出部分），单档为空。
 	LongContextBasis ContextPricingBasis
 	// TimePricing 计费会生效的分时倍率时段；无分时为 nil。
@@ -118,8 +122,10 @@ func NewModelPlazaService(
 //   - token 模型的单价与阶梯按实收口径合成（见 ResolveContextPricingSchedule），
 //     图片计费模型的档位价按实收口径合成（见 plazaImageDisplayPricing）；
 //   - 未定价模型仍然不上架（定价闸门保留）：与网关入口拒绝对齐，避免展示
-//     「点了必 404」的模型；算得出价的来源（分组卡 → 渠道卡 → 目录 → 兜底卡）
-//     与计费同源，因此「能调」的模型几乎总能过闸；
+//     「点了必 404」的模型；算得出价的来源（分组卡 → 分组免费名单 → 渠道卡 →
+//     目录 → 兜底卡）与计费同源，因此「能调」的模型几乎总能过闸。分组免费名单
+//     只解决「定价」这一环，不贡献模型枚举：名单里填一个分组内根本没账号服务
+//     的模型，依然不会出现在广场（不展示空头承诺）。
 //   - 分组启用模型白名单（ModelAllowlist）时同步过滤：白名单外的模型客户端请求
 //     会 404，展示它们同样违背「展示的即可调用」，过滤复用 FilterForListing
 //     （与 /v1/models 同一函数，口径不漂移）；
@@ -265,6 +271,10 @@ func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error
 		for j := range pg.Models {
 			s.fillDisplayPricing(ctx, &pg.Models[j], g)
 			pg.Models[j].OfficialPricing = s.lookupOfficialPricing(ctx, pg.Models[j].Name, officialMemo)
+			pg.Models[j].Free = groupModelFreeDeclared(g, pg.Models[j].Name)
+			if pg.Models[j].Free {
+				forceFreeDisplayPricing(&pg.Models[j])
+			}
 		}
 		out = append(out, *pg)
 	}
@@ -276,6 +286,26 @@ func (s *ModelPlazaService) ListGroups(ctx context.Context) ([]PlazaGroup, error
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// forceFreeDisplayPricing 把免费模型的展示价换为**与计费完全同源**的全 0 价卡。
+//
+// 为什么不能「只补 nil 价项」：Free 判定只看分组价卡，而展示价来自渠道价卡。
+// 渠道给某模型配了按次 $0.04，分组没配价卡且名单命中时，计费走分组的全 0 卡
+// （分组层优先于渠道层），实收就是 0——此时保留渠道真实价会得到「免费徽章 + $0.04」
+// 这种自相矛盾的卡片。因此直接丢弃来路价卡，重建与 resolveGroupModelPricing 同一张卡。
+//
+// 副带好处：不再就地修改渠道缓存里的共享对象（fillDisplayPricing 在「阶梯表不可用」
+// 分支会把渠道价卡原指针直接带下来），从根上消除跳请求污染，不依赖 Clone 的深浅语义。
+func forceFreeDisplayPricing(m *PlazaModel) {
+	pricing := groupFreeModelPricing(m.Name)
+	pricing.BillingMode = BillingModeToken
+	pricing.Platform = m.Platform
+	m.Pricing = pricing
+	// 分时倍率与长上下文阶梯对全 0 卡没有意义（0 × 任何倍率仍是 0），留着会与
+	// 「免费」相抵，计费侧 zeroOutFreePricing 也已把它们清零。
+	m.TimePricing = nil
+	m.LongContextBasis = ""
 }
 
 // plazaModelKey 分组内模型去重键：平台隔离渠道条目，同时保证 composite 分组
@@ -453,6 +483,12 @@ func (s *ModelPlazaService) fillDisplayPricing(ctx context.Context, m *PlazaMode
 			m.TimePricing = sched.TimePricing
 			return
 		}
+		if err != nil {
+			// 探针真错了才降级到渠道价卡。sched == nil && err == nil 是图片/按次模型的
+			// 正常分支，不打日志以免刷屏。
+			slog.Warn("plaza_display_pricing_fallback",
+				"model", m.Name, "group_id", g.ID, "platform", m.Platform, "error", err)
+		}
 	}
 	m.Pricing = withDefaultMaxReasoningEffortMultiplier(plazaImageDisplayPricing(m.Pricing, g), m.Name)
 }
@@ -474,6 +510,9 @@ func withDefaultMaxReasoningEffortMultiplier(pricing *ChannelModelPricing, model
 // 平价取首档单价，多档时 Intervals 逐档给出绝对单价；图片/按次字段沿用原始定价。
 func plazaPricingFromSchedule(raw *ChannelModelPricing, sched *ContextPricingSchedule) *ChannelModelPricing {
 	out := &ChannelModelPricing{BillingMode: BillingModeToken}
+	if sched == nil || len(sched.Tiers) == 0 {
+		return raw
+	}
 	if raw != nil {
 		out.ImageInputPrice = raw.ImageInputPrice
 		out.ImageOutputPrice = raw.ImageOutputPrice

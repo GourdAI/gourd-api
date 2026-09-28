@@ -1218,6 +1218,18 @@ func (_u *GroupUpdate) AddProfitSafetyBuffer(v float64) *GroupUpdate {
 	return _u
 }
 
+// SetFreeModels sets the "free_models" field.
+func (_u *GroupUpdate) SetFreeModels(v []string) *GroupUpdate {
+	_u.mutation.SetFreeModels(v)
+	return _u
+}
+
+// AppendFreeModels appends value to the "free_models" field.
+func (_u *GroupUpdate) AppendFreeModels(v []string) *GroupUpdate {
+	_u.mutation.AppendFreeModels(v)
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdate) AddAPIKeyIDs(ids ...int64) *GroupUpdate {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -1916,6 +1928,14 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AddedProfitSafetyBuffer(); ok {
 		_spec.AddField(group.FieldProfitSafetyBuffer, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.FreeModels(); ok {
+		_spec.SetField(group.FieldFreeModels, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedFreeModels(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, group.FieldFreeModels, value)
+		})
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -3412,6 +3432,18 @@ func (_u *GroupUpdateOne) AddProfitSafetyBuffer(v float64) *GroupUpdateOne {
 	return _u
 }
 
+// SetFreeModels sets the "free_models" field.
+func (_u *GroupUpdateOne) SetFreeModels(v []string) *GroupUpdateOne {
+	_u.mutation.SetFreeModels(v)
+	return _u
+}
+
+// AppendFreeModels appends value to the "free_models" field.
+func (_u *GroupUpdateOne) AppendFreeModels(v []string) *GroupUpdateOne {
+	_u.mutation.AppendFreeModels(v)
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdateOne) AddAPIKeyIDs(ids ...int64) *GroupUpdateOne {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -4140,6 +4172,14 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.AddedProfitSafetyBuffer(); ok {
 		_spec.AddField(group.FieldProfitSafetyBuffer, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.FreeModels(); ok {
+		_spec.SetField(group.FieldFreeModels, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedFreeModels(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, group.FieldFreeModels, value)
+		})
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{

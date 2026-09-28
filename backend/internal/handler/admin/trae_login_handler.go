@@ -5,9 +5,11 @@ package admin
 //   - POST /api/v1/admin/trae/oauth/submit   → 提交粘贴回来的回调 URL，换票并回传凭据
 //   - POST /api/v1/admin/trae/oauth/cancel   → 放弃一次登录会话
 //
-// 为什么没有轮询端点（与 qoder/workbuddy 的关键差异）：Trae 授权页强制校验回调
-// 地址必须是 http://127.0.0.1:<port>/authorize，回调只会打到**用户本机**端口，
-// 服务端永远收不到，因此登录结果只能由用户把地址栏整串复制回来（submit）。
+// 为什么没有轮询端点（与 qoder/workbuddy 的关键差异）：Trae 授权页把回调地址限定为
+// http://127.0.0.1:<port>/authorize（上游前端正则硬校验），而浏览器里的 127.0.0.1
+// 指向的是**管理员自己的机器**，与后端部署在哪无关——服务端永远收不到这个回调。
+// 因此登录结果只能由用户把地址栏整串复制回来（submit）；这也意味着**远程/容器
+// 部署下粘贴路径照样可用**，不需要服务器可达的回调地址。
 //
 // 契约对齐 qoder_oauth_handler：成功 response.Success 包装，service 的 infraerrors
 // HTTP 码原样透传（会话不存在 404 / 已过期 410 / 上游故障 502）。
@@ -33,10 +35,14 @@ func NewTraeLoginHandler(loginService *service.TraeLoginService) *TraeLoginHandl
 }
 
 // TraeAuthURLRequest 生成授权 URL 的请求体。
+// DeviceID / MachineID：给「已有账号重新登录」用——前端应把当前 credentials 里的
+// 设备号传回来，以避免每次重登多占一个上游设备槽（硬上限 3 台，越界后账号不可用）。
 type TraeAuthURLRequest struct {
-	Realm    string `json:"realm"`
-	ClientID string `json:"client_id"`
-	ProxyID  *int64 `json:"proxy_id"`
+	Realm     string `json:"realm"`
+	ClientID  string `json:"client_id"`
+	ProxyID   *int64 `json:"proxy_id"`
+	DeviceID  string `json:"device_id"`
+	MachineID string `json:"machine_id"`
 }
 
 // TraeLoginSubmitRequest 提交回调 URL 的请求体。
@@ -50,6 +56,10 @@ type traeAuthURLResponse struct {
 	LoginURL     string `json:"login_url"`
 	CallbackPref string `json:"callback_url_prefix"`
 	ExpiresAt    int64  `json:"expires_at"`
+	// DeviceID / MachineID 回显本次登录使用的设备标识，供前端在同一登录流程重试时
+	// 传回复用（避免撞上游设备数上限 20401）。
+	DeviceID  string `json:"device_id"`
+	MachineID string `json:"machine_id"`
 	// NeedsPaste 恒为 true，显式告知前端「本平台无轮询，必须粘贴回调链接」，
 	// 避免前端照 qoder 范式挂一个永远 pending 的轮询器。
 	NeedsPaste bool `json:"needs_paste"`
@@ -75,7 +85,13 @@ func (h *TraeLoginHandler) GenerateAuthURL(c *gin.Context) {
 		response.BadRequest(c, "invalid realm: must be 'cn' or 'global'")
 		return
 	}
-	result, err := h.loginService.StartLogin(c.Request.Context(), req.Realm, req.ClientID, req.ProxyID)
+	result, err := h.loginService.StartLoginWithOptions(c.Request.Context(), service.TraeLoginStartOptions{
+		Realm:     req.Realm,
+		ClientID:  req.ClientID,
+		ProxyID:   req.ProxyID,
+		DeviceID:  req.DeviceID,
+		MachineID: req.MachineID,
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -85,6 +101,8 @@ func (h *TraeLoginHandler) GenerateAuthURL(c *gin.Context) {
 		LoginURL:     result.LoginURL,
 		CallbackPref: result.Callback,
 		ExpiresAt:    result.ExpiresAt,
+		DeviceID:     result.DeviceID,
+		MachineID:    result.MachineID,
 		NeedsPaste:   true,
 	})
 }

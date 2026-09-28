@@ -231,3 +231,25 @@ func TestTraeBusinessErrorDetailShape(t *testing.T) {
 	require.True(t, strings.HasSuffix(got, "..."))
 	require.Equal(t, "额额额", string([]rune(got)[:3]))
 }
+
+// 4001 的处置提示只进管理端（Ops Detail / 账号状态 reason），不进外发错误帧。
+// 它是 trae_upstream_error.go 与 trae_sse.go 之间的作界契约：hint 只能在 200 rune
+// 截断**之后**追加，否则提示尾部（「该怎么做」那半句）会被削成省略号。
+func TestTraeBusinessErrorDetailAppendsHintAfterTruncation(t *testing.T) {
+	t.Parallel()
+
+	withHint := traeBusinessErrorDetail(traeModelUnavailableCode, "model not available")
+	require.Contains(t, withHint, "model not available")
+	require.True(t, strings.HasSuffix(withHint, traeModelUnavailableHint),
+		"4001 详情必须以处置提示结尾，否则管理员无法定位到同步模型/提升版本码")
+
+	// 上游原文超长时，截断仅作用于原文，hint 必须完整保留。
+	long := strings.Repeat("模", 300)
+	got := traeBusinessErrorDetail(traeModelUnavailableCode, long)
+	require.True(t, strings.HasSuffix(got, traeModelUnavailableHint), "hint 不得被 200 rune 截断吃掉")
+	require.Len(t, []rune(strings.TrimSuffix(got, traeModelUnavailableHint)), 203, "原文仍限 200 rune + 省略号")
+
+	// 其他码不受影响（1005 一类额度码已有自己的分类文案）。
+	require.Equal(t, "quota exhausted", traeBusinessErrorDetail("1005", " quota exhausted "))
+	require.NotContains(t, traeBusinessErrorDetail("1005", "boom"), traeModelUnavailableHint)
+}

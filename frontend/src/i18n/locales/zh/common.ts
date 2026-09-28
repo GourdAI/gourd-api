@@ -75,6 +75,7 @@ export default {
     noOptionsFound: '无匹配选项',
     noGroupsAvailable: '无可用分组',
     unknownError: '发生未知错误',
+    upstreamGuardrailNotice: '上游返回了一段写给模型看的护栏提示（例如不支持图片输入），本身不含可用信息',
     saving: '保存中...',
     selectedCount: '（已选 {count} 个）',
     refresh: '刷新',

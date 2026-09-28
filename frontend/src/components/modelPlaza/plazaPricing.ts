@@ -1,9 +1,9 @@
 /**
  * 模型广场卡片的价格展示逻辑（纯函数，无组件依赖，便于单测覆盖）。
  *
- * 口径与旧版价格表完全一致：
- * - 实付价 = 渠道单价 × 生效倍率（用户专属倍率优先，时段行再乘时段倍率）；
- * - 官方参考价不乘倍率，与实付逐字一致时不重复展示；
+ * 口径：
+ * - 只展示「实付价」= 渠道单价 × 生效倍率（用户专属倍率优先，时段行再乘时段倍率）；
+ *   官方参考价不再出现在卡片上（模型广场是给用户看「在我这儿花多少钱」的地方）；
  * - token 计费按 $/1M token 展示，按次/按图按单价 × 倍率展示。
  */
 import { formatScaled, resolveIntervalPrices } from '@/utils/pricing'
@@ -31,12 +31,10 @@ export interface PriceLine {
   parts: PricePart[]
 }
 
-/** 一个价格列的实付行与官方参考行。 */
+/** 一个价格列的实付行。 */
 export interface PriceCell {
   key: PriceCellKey
   paid: PriceLine[]
-  /** 官方参考行;与实付一致或缺失时为 null(不渲染)。 */
-  official: PriceLine[] | null
 }
 
 /** 按次 / 按图片计费的单档价格（生图分辨率阶梯、搜索按次等）。 */
@@ -78,9 +76,14 @@ export function isTokenModel(model: PlazaModel): boolean {
   return billingModeOf(model) === BILLING_MODE_TOKEN
 }
 
+/** 后端零值/脏数据不能把整页价格算成 NaN,非有限值一律回落 1x。 */
+function safeRate(value: number | null | undefined): number {
+  return Number.isFinite(value) ? (value as number) : 1
+}
+
 /** 分组生效倍率 = 用户专属倍率 ?? 分组默认倍率。 */
 export function effectiveGroupRate(ctx: PlazaPriceContext): number {
-  return ctx.userRateMultiplier ?? ctx.rateMultiplier
+  return safeRate(ctx.userRateMultiplier ?? ctx.rateMultiplier)
 }
 
 /** 分时倍率时段（后端只给出倍率 ≠ 1 的时段,已升序）。 */
@@ -101,11 +104,11 @@ export function formatTimeWindow(period: PlazaTimePricingPeriod): string {
 function tokenIntervals(model: PlazaModel): UserPricingInterval[] {
   return [...(model.pricing?.intervals ?? [])]
     .sort((a, b) => a.min_tokens - b.min_tokens)
-    .map((iv) => resolveIntervalPrices(iv, model.pricing!))
-}
-
-function officialIntervals(model: PlazaModel): UserPricingInterval[] {
-  return [...(model.official_pricing?.intervals ?? [])].sort((a, b) => a.min_tokens - b.min_tokens)
+    .map((iv) =>
+      Object.assign(resolveIntervalPrices(iv, model.pricing!), {
+        hasExplicitCache1h: iv.cache_write_1h_price != null
+      })
+    )
 }
 
 /**
@@ -121,7 +124,11 @@ export function tierLabel(iv: UserPricingInterval): string {
 
 function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${trimZero(n / 1_000_000)}M`
-  if (n >= 1_000) return `${trimZero(n / 1_000)}K`
+  if (n >= 1_000) {
+    const k = trimZero(n / 1_000)
+    // 999999 这类四舍五入到 1000K 的档位升级成 M,避免出现「≤1000K」。
+    return Number(k) >= 1_000 ? `${trimZero(Number(k) / 1_000)}M` : `${k}K`
+  }
   return String(n)
 }
 
@@ -135,15 +142,15 @@ export function usesIndependentImageRate(model: PlazaModel, ctx: PlazaPriceConte
 }
 
 /** 按次/按图片行的生效倍率。 */
-function requestRate(model: PlazaModel, ctx: PlazaPriceContext): number {
+export function requestRate(model: PlazaModel, ctx: PlazaPriceContext): number {
   return usesIndependentImageRate(model, ctx)
-    ? (ctx.imageRateMultiplier ?? 1)
+    ? safeRate(ctx.imageRateMultiplier)
     : effectiveGroupRate(ctx)
 }
 
 /** 时段行的生效倍率 = 生效倍率 × 时段倍率(去掉浮点噪声)。 */
 function periodRate(period: PlazaTimePricingPeriod, ctx: PlazaPriceContext): number {
-  return Math.round(effectiveGroupRate(ctx) * period.multiplier * 1000) / 1000
+  return Math.round(effectiveGroupRate(ctx) * safeRate(period.multiplier) * 1000) / 1000
 }
 
 /** 卡片倍率标签（已格式化为 `0.8x` 形态,含时段倍率叠加后的生效值）。 */
@@ -177,17 +184,22 @@ function paidRequestPrice(
   return formatScaled(value * requestRate(model, ctx), 1, MIN_DECIMALS)
 }
 
-/** 官方参考价不乘倍率。 */
-function officialPrice(value: number | null | undefined): string {
-  if (value == null) return '-'
-  return formatScaled(value, PER_MILLION, MIN_DECIMALS)
-}
-
-/** 缓存价格来源（渠道定价与官方定价的公共字段）。 */
+/** 缓存价格来源（渠道定价字段）。 */
 type CachePrices = {
   cache_write_price: number | null
   cache_write_1h_price?: number | null
   cache_read_price: number | null
+  /** 该档是否真的配了 1h 写入价(resolveIntervalPrices 会把 5m 价回落到 1h 字段上)。 */
+  hasExplicitCache1h?: boolean
+}
+
+/**
+ * 是否值得单独列出 1h 写入价:仅当管理员确实配了 1h 价、且与 5m 价不同。
+ * 回落到 5m 的 1h 字段不是「1h 与 5m 同价」的事实,展示出来会误导计费预期。
+ */
+function showsCache1h(src: CachePrices | null | undefined): boolean {
+  if (!src || src.hasExplicitCache1h !== true) return false
+  return src.cache_write_1h_price != null && src.cache_write_1h_price !== src.cache_write_price
 }
 
 type PriceFormatter = (value: number | null | undefined) => string
@@ -217,7 +229,7 @@ function cacheLabels(labels: PriceLabels): CacheLabels {
   return { write: labels.cacheWrite, read: labels.cacheRead }
 }
 
-/** 单行内联「写 x (1h y) 读 z」（阶梯缓存价与官方阶梯缓存共用）。 */
+/** 单行内联「写 x (1h y) 读 z」（阶梯缓存价）。 */
 function cacheInlineParts(
   src: CachePrices,
   fmt: PriceFormatter,
@@ -225,7 +237,7 @@ function cacheInlineParts(
 ): PricePart[] {
   if (!hasCachePricing(src)) return [{ text: '-' }]
   const parts: PricePart[] = [label(labels.write), { text: ' ' + fmt(src.cache_write_price) }]
-  if (src.cache_write_1h_price != null) {
+  if (showsCache1h(src)) {
     parts.push(label(' (1h'), { text: ' ' + fmt(src.cache_write_1h_price) }, label(')'))
   }
   parts.push(label(' ' + labels.read), { text: ' ' + fmt(src.cache_read_price) })
@@ -239,27 +251,13 @@ function cacheSplitLines(
   labels: CacheLabels
 ): PriceLine[] {
   const writeParts: PricePart[] = [label(labels.write), { text: ' ' + fmt(src.cache_write_price) }]
-  if (src.cache_write_1h_price != null) {
+  if (showsCache1h(src)) {
     writeParts.push(label(' (1h'), { text: ' ' + fmt(src.cache_write_1h_price) }, label(')'))
   }
   return [
     { parts: writeParts },
     { parts: [label(labels.read), { text: ' ' + fmt(src.cache_read_price) }] }
   ]
-}
-
-/** 行内文本签名,用于判断官方参考行是否与实付重复。 */
-function lineSignature(lines: PriceLine[]): string {
-  return lines.map((line) => line.parts.map((p) => p.text).join('')).join('|')
-}
-
-/**
- * 官方参考与实付完全一致时（倍率 1、无折扣）不展示参考行,避免同一数字重复两遍;
- * 有折扣/分时/阶梯差异时照常展示。
- */
-function distinctOfficial(paid: PriceLine[], official: PriceLine[] | null): PriceLine[] | null {
-  if (!official) return null
-  return lineSignature(official) === lineSignature(paid) ? null : official
 }
 
 export interface PriceLabels {
@@ -270,7 +268,7 @@ export interface PriceLabels {
   perImage: string
 }
 
-/** token 模式:输入 / 输出 / 缓存三列的实付行与官方参考行。 */
+/** token 模式:输入 / 输出 / 缓存三列的实付行。 */
 function tokenCells(
   model: PlazaModel,
   ctx: PlazaPriceContext,
@@ -287,18 +285,6 @@ function tokenCells(
       ? intervals.map((iv) => ({ tier: tierLabel(iv), parts: [{ text: fmtPaid(iv[field]) }] }))
       : [{ parts: [{ text: fmtPaid(model.pricing?.[field]) }] }]
 
-  const officialField = (field: 'input_price' | 'output_price'): PriceLine[] | null => {
-    if (officialIntervals(model).length) {
-      return officialIntervals(model).map((iv) => ({
-        tier: tierLabel(iv),
-        parts: [{ text: officialPrice(iv[field]) }]
-      }))
-    }
-    const value = model.official_pricing?.[field]
-    if (value == null) return null
-    return [{ parts: [{ text: officialPrice(value) }] }]
-  }
-
   const paidCache = (): PriceLine[] => {
     if (hasTierCachePricing(intervals)) {
       return intervals.map((iv) => ({
@@ -307,38 +293,18 @@ function tokenCells(
       }))
     }
     if (!hasCachePricing(model.pricing)) return [{ parts: [{ text: '-' }] }]
-    return cacheSplitLines(model.pricing!, fmtPaid, cache)
+    return cacheSplitLines(
+      { ...model.pricing!, hasExplicitCache1h: model.pricing!.cache_write_1h_price != null },
+      fmtPaid,
+      cache
+    )
   }
 
-  const officialCache = (): PriceLine[] | null => {
-    if (hasTierCachePricing(officialIntervals(model))) {
-      return officialIntervals(model).map((iv) => ({
-        tier: tierLabel(iv),
-        parts: cacheInlineParts(iv, officialPrice, cache)
-      }))
-    }
-    if (!hasCachePricing(model.official_pricing)) return null
-    return cacheSplitLines(model.official_pricing!, officialPrice, cache)
-  }
-
-  const cells: PriceCell[] = [
-    {
-      key: 'input',
-      paid: paidToken('input_price'),
-      official: officialField('input_price')
-    },
-    {
-      key: 'output',
-      paid: paidToken('output_price'),
-      official: officialField('output_price')
-    },
-    {
-      key: 'cache',
-      paid: paidCache(),
-      official: officialCache()
-    }
+  return [
+    { key: 'input', paid: paidToken('input_price') },
+    { key: 'output', paid: paidToken('output_price') },
+    { key: 'cache', paid: paidCache() }
   ]
-  return cells.map((cell) => ({ ...cell, official: distinctOfficial(cell.paid, cell.official) }))
 }
 
 /** 按次 / 按图片:阶梯（多档单价）优先,否则用平铺的按次单价。 */
@@ -357,7 +323,7 @@ function requestPrices(model: PlazaModel, ctx: PlazaPriceContext): RequestPriceI
 
 /**
  * 单个模型的卡片价格数据。
- * `period` 传入时按时段倍率折算（分时计费的独立时段块）。
+ * `period` 传入时按时段倍率折算（分时计费的独立时段价）。
  */
 export function modelPrice(
   model: PlazaModel,
@@ -387,23 +353,36 @@ export function modelPrice(
 }
 
 /**
- * 展示顺序（分组内）:
- * 1. token 计费在前,按图/按次沉底——它们的官方 token 价与实付按次价不同量纲,混排无意义;
- * 2. 组内按官方输出价从高到低,无官方价排最后;
- * 3. 同价按名称降序（新版本号在前,如 gpt-5.6 先于 gpt-5.5）。
+ * 排序/跨组比价用的实付单价:token 模型统一折到 $/1M token,按次/按图为 $/次;无价为 null。
+ * token 取「输入价」——卡片首行就是输入价,比价口径必须与用户看到的第一个数字一致,
+ * 否则「全场最低」与排序结果会互相矛盾。平价缺失时回落最低档,再回落输出价。
+ * 两种量纲不可直接互比,调用方先按计费模式分组。
  */
-export function sortModelsForDisplay(models: PlazaModel[]): PlazaModel[] {
-  return [...models].sort((a, b) => {
-    const ta = isTokenModel(a)
-    const tb = isTokenModel(b)
-    if (ta !== tb) return ta ? -1 : 1
-    const pa = a.official_pricing?.output_price ?? null
-    const pb = b.official_pricing?.output_price ?? null
-    if (pa != null && pb != null && pa !== pb) return pb - pa
-    if (pa != null && pb == null) return -1
-    if (pa == null && pb != null) return 1
-    return b.name.localeCompare(a.name)
-  })
+export function modelSortPrice(model: PlazaModel, ctx: PlazaPriceContext): number | null {
+  if (!isTokenModel(model)) {
+    const flat = model.pricing?.per_request_price
+    const perRequest =
+      flat ??
+      [...(model.pricing?.intervals ?? [])]
+        .filter((iv) => iv.per_request_price != null)
+        .sort((a, b) => a.min_tokens - b.min_tokens)[0]?.per_request_price ??
+      null
+    if (perRequest == null) return null
+    const perRequestPaid = perRequest * requestRate(model, ctx)
+    return Number.isFinite(perRequestPaid) ? perRequestPaid : null
+  }
+  const lowest = [...(model.pricing?.intervals ?? [])]
+    .sort((a, b) => a.min_tokens - b.min_tokens)
+    .map((iv) => resolveIntervalPrices(iv, model.pricing!))[0]
+  const base =
+    model.pricing?.input_price ??
+    lowest?.input_price ??
+    model.pricing?.output_price ??
+    lowest?.output_price ??
+    null
+  if (base == null) return null
+  const paid = base * effectiveGroupRate(ctx) * PER_MILLION
+  return Number.isFinite(paid) ? paid : null
 }
 
 /**
@@ -426,4 +405,14 @@ export function timePeriodHint(
     })
   }
   return hint
+}
+
+/**
+ * 分时时段的一行摘要:「00:30–08:30 ×0.5、18:00–22:00 ×1.2」。
+ * 分隔符由调用方按语种传入（英文界面不该用中文顿号）;缺倍率的老数据不渲染 ×undefined。
+ */
+export function timePeriodsSummary(model: PlazaModel, separator = '、'): string {
+  return timePeriodsOf(model)
+    .map((p) => (Number.isFinite(p.multiplier) ? `${formatTimeWindow(p)} ×${p.multiplier}` : formatTimeWindow(p)))
+    .join(separator || '、')
 }

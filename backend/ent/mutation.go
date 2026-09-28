@@ -22177,6 +22177,8 @@ type GroupMutation struct {
 	addprofit_min_margin                    *float64
 	profit_safety_buffer                    *float64
 	addprofit_safety_buffer                 *float64
+	free_models                             *[]string
+	appendfree_models                       []string
 	clearedFields                           map[string]struct{}
 	api_keys                                map[int64]struct{}
 	removedapi_keys                         map[int64]struct{}
@@ -25563,6 +25565,57 @@ func (m *GroupMutation) ResetProfitSafetyBuffer() {
 	m.addprofit_safety_buffer = nil
 }
 
+// SetFreeModels sets the "free_models" field.
+func (m *GroupMutation) SetFreeModels(s []string) {
+	m.free_models = &s
+	m.appendfree_models = nil
+}
+
+// FreeModels returns the value of the "free_models" field in the mutation.
+func (m *GroupMutation) FreeModels() (r []string, exists bool) {
+	v := m.free_models
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFreeModels returns the old "free_models" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldFreeModels(ctx context.Context) (v []string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFreeModels is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFreeModels requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFreeModels: %w", err)
+	}
+	return oldValue.FreeModels, nil
+}
+
+// AppendFreeModels adds s to the "free_models" field.
+func (m *GroupMutation) AppendFreeModels(s []string) {
+	m.appendfree_models = append(m.appendfree_models, s...)
+}
+
+// AppendedFreeModels returns the list of values that were appended to the "free_models" field in this mutation.
+func (m *GroupMutation) AppendedFreeModels() ([]string, bool) {
+	if len(m.appendfree_models) == 0 {
+		return nil, false
+	}
+	return m.appendfree_models, true
+}
+
+// ResetFreeModels resets all changes to the "free_models" field.
+func (m *GroupMutation) ResetFreeModels() {
+	m.free_models = nil
+	m.appendfree_models = nil
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by ids.
 func (m *GroupMutation) AddAPIKeyIDs(ids ...int64) {
 	if m.api_keys == nil {
@@ -25921,7 +25974,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 66)
+	fields := make([]string, 0, 67)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -26120,6 +26173,9 @@ func (m *GroupMutation) Fields() []string {
 	if m.profit_safety_buffer != nil {
 		fields = append(fields, group.FieldProfitSafetyBuffer)
 	}
+	if m.free_models != nil {
+		fields = append(fields, group.FieldFreeModels)
+	}
 	return fields
 }
 
@@ -26260,6 +26316,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.ProfitMinMargin()
 	case group.FieldProfitSafetyBuffer:
 		return m.ProfitSafetyBuffer()
+	case group.FieldFreeModels:
+		return m.FreeModels()
 	}
 	return nil, false
 }
@@ -26401,6 +26459,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldProfitMinMargin(ctx)
 	case group.FieldProfitSafetyBuffer:
 		return m.OldProfitSafetyBuffer(ctx)
+	case group.FieldFreeModels:
+		return m.OldFreeModels(ctx)
 	}
 	return nil, fmt.Errorf("unknown Group field %s", name)
 }
@@ -26871,6 +26931,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetProfitSafetyBuffer(v)
+		return nil
+	case group.FieldFreeModels:
+		v, ok := value.([]string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFreeModels(v)
 		return nil
 	}
 	return fmt.Errorf("unknown Group field %s", name)
@@ -27580,6 +27647,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldProfitSafetyBuffer:
 		m.ResetProfitSafetyBuffer()
+		return nil
+	case group.FieldFreeModels:
+		m.ResetFreeModels()
 		return nil
 	}
 	return fmt.Errorf("unknown Group field %s", name)

@@ -303,6 +303,14 @@ func (Group) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
 			Default(0).
 			Comment("安全缓冲，小数；与 margin 相加后从下游倍率中扣除，默认 0"),
+
+		// 分组级免费模型名单（migration 243）。声明式定价豁免：命中条目即在本分组按 0 元
+		// 计费，从而通过「未定价即拒绝」准入闸门并出现在模型广场。追加在 Fields() 末尾，
+		// 避免中间插入平移 ent/runtime/runtime.go 的 groupFields[N] 下标。
+		field.JSON("free_models", []string{}).
+			Default([]string{}).
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("分组免费模型名单：命中的模型在本分组按 0 元计费并可正常调用；支持末尾 * 通配"),
 	}
 }
 

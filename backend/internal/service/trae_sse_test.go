@@ -161,7 +161,13 @@ func TestTraeSSEReaderEmitsErrorChunkOnEventError(t *testing.T) {
 		}
 	}
 	require.NotNil(t, errObj, "event:error 必须产出 CC error 帧: %s", out)
+	// 对外纪律（review 修正）：本方法的结果直达**调用方**，必须严格等于上游原文 +
+	// 业务码。本仓的 4001 处置提示提到 credentials.ide_version_code / config_name 等
+	// 内部机制，下发给外部客户既不可执行又泄露实现（提示应该去的地方是 Ops Detail，
+	// 见 TestTraeBusinessErrorDetailShape）。
 	require.Equal(t, "model not available (code=4001)", errObj["message"])
+	require.NotContains(t, errObj["message"], traeModelUnavailableHint,
+		"内部处置提示不得泄露给调用方")
 	require.Equal(t, "upstream_error", errObj["type"])
 	require.Equal(t, "4001", errObj["code"], "业务码必须透传供上层判定 failover")
 

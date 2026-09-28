@@ -53,6 +53,8 @@ export interface PlazaModel {
   long_context_basis?: PlazaLongContextBasis
   /** 仅配置了分时倍率的模型返回。 */
   time_pricing?: PlazaTimePricing
+  /** 分组级免费模型名单命中：该模型在此分组按 0 元计费。 */
+  free?: boolean
 }
 
 export interface ModelPlazaGroup {

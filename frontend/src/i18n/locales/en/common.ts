@@ -75,6 +75,7 @@ export default {
     noOptionsFound: 'No options found',
     noGroupsAvailable: 'No groups available',
     unknownError: 'Unknown error occurred',
+    upstreamGuardrailNotice: 'the upstream returned a model-facing guardrail notice (e.g. unsupported image input); it carries no actionable detail',
     saving: 'Saving...',
     selectedCount: '({count} selected)',
     refresh: 'Refresh',

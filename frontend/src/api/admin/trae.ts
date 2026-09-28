@@ -85,9 +85,11 @@ export interface TraeExchangeResult {
 }
 
 /**
- * 浏览器登录会话（auth-url 响应）。与 Qoder 的关键差异：Trae 授权页强制回调到
- * `http://127.0.0.1:<port>/authorize`，回调只会打到**用户本机**、后端永远收不到，
- * 因此没有轮询——必须由用户把浏览器地址栏整串粘回，再调 submitTraeOAuthCallback 换票。
+ * 浏览器登录会话（auth-url 响应）。与 Qoder 的关键差异：Trae 授权页把回调限定为
+ * `http://127.0.0.1:<port>/authorize`（上游正则硬校验），而回跳是**浏览器**执行的，
+ * 127.0.0.1 指向用户自己的机器、与后端部署在哪无关，故后端永远收不到回调、也没有
+ * 任何服务端轮询接口——必须由用户把浏览器地址栏整串粘回再换票。
+ * 推论：远程/容器部署下粘贴路径照常可用（不需要服务器可达的回调地址）。
  */
 export interface TraeAuthUrlResult {
   login_id: string
@@ -96,6 +98,13 @@ export interface TraeAuthUrlResult {
   callback_url_prefix: string
   /** 会话到期时刻（epoch 秒），驱动前端倒计时。 */
   expires_at: number
+  /**
+   * 本次登录使用的设备标识。上游对每账号的设备数有硬上限（官方文案：每个账号最多
+   * 可在 3 台设备上保持登录状态，错误码 20401），所以「同一流程内重试」必须把它
+   * 传回去复用，不能每重试一次就换一个新设备号。
+   */
+  device_id?: string
+  machine_id?: string
   needs_paste: boolean
 }
 
@@ -111,6 +120,10 @@ export async function startTraeOAuthLogin(payload: {
   realm: TraeRealm
   client_id?: string
   proxy_id?: number
+  /** 复用的设备号（8~24 位纯数字）；缺省时后端新生成。见 TraeAuthUrlResult.device_id。 */
+  device_id?: string
+  /** 复用的机器码（UUID 或 32hex 形态均可）。 */
+  machine_id?: string
 }): Promise<TraeAuthUrlResult> {
   const { data } = await apiClient.post<TraeAuthUrlResult>('/admin/trae/oauth/auth-url', payload)
   return data

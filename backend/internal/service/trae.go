@@ -25,6 +25,7 @@ const (
 	// 聊天域路径
 	traeChatPath      = "/api/agent/v3/llm_utils_chat"
 	traeChatFallback  = "/api/ide/v1/chat"
+	traeModelListPath = "/api/ide/v1/get_detail_param"
 	traeGetUserInfo   = "/cloudide/api/v3/trae/GetUserInfo"
 	traeExchangeToken = "/cloudide/api/v3/trae/oauth/ExchangeToken"
 

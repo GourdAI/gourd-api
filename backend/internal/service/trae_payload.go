@@ -18,6 +18,7 @@ package service
 // 可用而模型永远不会调用，表现为「回答正常但从不出工具」，比直接报错难查得多。
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -68,7 +69,12 @@ func traeChatAttempts(ccBody []byte, creds TraeCredentials, accountID int64) ([]
 		return nil, err
 	}
 	attempts := []traeAttempt{{path: traeChatPath, body: primary}}
-	if traeRequestDeclaresTools(ccBody) {
+	// 闸门看**归一后的出站报文**而不是入站原文：本层会把 `tool_choice:"none"` 连同
+	// tools 一起摘掉（上游不允许「工具在手却禁用」），此时主通道请求已不再依赖工具，
+	// ide/v1/chat 回退是安全的；若仍按入站原文判定，这类请求会在主通道 404 时白白
+	// 失去回退机会（显式禁用工具 ≠ 依赖工具）。以 primary 为准能同时覆盖其它「归一
+	// 后不再声明工具」的形态，且对真正带工具的请求结论不变。
+	if traeRequestDeclaresTools(primary) {
 		return attempts, nil
 	}
 	if fallback, ferr := buildTraeIDEPayload(&parsed, creds, model, accountID); ferr == nil {
@@ -77,8 +83,11 @@ func traeChatAttempts(ccBody []byte, creds TraeCredentials, accountID int64) ([]
 	return attempts, nil
 }
 
-// traeRequestDeclaresTools 报告入站 CC 请求是否依赖 function calling：tools 数组非空，
-// 或 tool_choice 显式指定（"required"/具名工具即使无 tools 也是工具语义）。
+// traeRequestDeclaresTools 报告一份 CC 形态请求体是否依赖 function calling：tools 数组
+// 非空，或 tool_choice 显式指定（"required"/具名工具即使无 tools 也是工具语义）。
+//
+// 调用方传的是归一后的 primary（见 traeChatAttempts），不是入站原文：归一层会取消
+// 某些工具声明（none 连 tools 一起删），只有看输出才能判断回退报文会不会丢工具。
 func traeRequestDeclaresTools(ccBody []byte) bool {
 	if tools := gjson.GetBytes(ccBody, "tools"); tools.IsArray() && tools.Get("#").Int() > 0 {
 		return true
@@ -97,11 +106,28 @@ func traeRequestDeclaresTools(ccBody []byte) bool {
 // OpenAI 字段（messages/tools/tool_choice/temperature/top_p/max_tokens/stop/seed/n），
 // 把模型同时写入 model 与 config_name（上游按 config_name 选模型表），并强制
 // stream=true（该端点只出 SSE，非流式由本服务读全流聚合）。
+//
+// 【为什么必须重写 messages，不能像早期版本那样原样透传】上游把消息体声明成
+// `content []*idecopilot.LLMRawMessageContent`（切片），而 OpenAI Chat Completions 的
+// `content` 允许是**裸字符串**。直接转发会被上游在 JSON 反序列化阶段拒掉，返回
+// HTTP 400：cannot unmarshal string into Go struct field LLMRawMessage.messages.content
+// of type []*idecopilot.LLMRawMessageContent —— 即「凡是发纯字符串 content 的客户端
+// 全部不可用」，而这正是绝大多数客户端的默认形态。
+//
+// 同批归一的还有工具链路（见 normalizeTraeChatRequest 各助手函数）：上游的
+// tool_calls 函数载荷键名是 function_call（不是 OpenAI 的 function）、tools[].function
+// .parameters 是字符串（不是对象）、tool_choice 要字符串。三处不改的表现不是报错而是
+// **静默不出工具**（工具名解析为空 → 模型收到一堆无名定义），比 400 更难定位。
 func buildTraeLLMUtilsChatBody(ccBody []byte, creds TraeCredentials, model string) ([]byte, error) {
+	// UseNumber：不带它时所有数字经 float64 往返，大整数（如 1e21 的 seed、token 上限）
+	// 会被重写成科学计数法字面量，parameters 字符串化后上游按整数解析就会失败。
+	decoder := json.NewDecoder(bytes.NewReader(ccBody))
+	decoder.UseNumber()
 	var payload map[string]any
-	if err := json.Unmarshal(ccBody, &payload); err != nil {
+	if err := decoder.Decode(&payload); err != nil {
 		return nil, err
 	}
+	normalizeTraeChatRequest(payload)
 	payload["function"] = traeChatFunction
 	if model != "" {
 		payload["model"] = model
@@ -116,6 +142,271 @@ func buildTraeLLMUtilsChatBody(ccBody []byte, creds TraeCredentials, model strin
 	delete(payload, "reasoning_effort")
 	delete(payload, "service_tier")
 	return json.Marshal(payload)
+}
+
+// normalizeTraeChatRequest 就地改写 payload 里的 messages / tools / tool_choice，
+// 使其满足上游 llm_utils_chat 的报文契约。缺失字段一律不新建（上游对缺键的处理与
+// 空值不同），无法识别的形态保守原样透传。
+func normalizeTraeChatRequest(payload map[string]any) {
+	if messages, ok := payload["messages"].([]any); ok {
+		payload["messages"] = normalizeTraeChatMessages(messages)
+	}
+	if tools, ok := payload["tools"]; ok && tools != nil {
+		payload["tools"] = normalizeTraeToolDefinitions(tools)
+	}
+	if choice, ok := payload["tool_choice"]; ok && choice != nil {
+		switch normalized := normalizeTraeToolChoice(choice); normalized {
+		case "":
+			// 认不出来的形态（对象里没 function.name 等）：删掉比猜一个值安全，
+			// 上游对无效 tool_choice 的处理是整请求拒绝。
+			delete(payload, "tool_choice")
+		case "none":
+			// "none" 且仍带 tools 会被上游判参数冲突（工具在手却禁用），两者一起摘掉。
+			delete(payload, "tool_choice")
+			delete(payload, "tools")
+		default:
+			payload["tool_choice"] = normalized
+		}
+	}
+}
+
+// normalizeTraeChatMessages 把 messages 归一为上游可反序列化的形态，并清掉
+// 无法配对的悬空条目。返回新切片（不改调用方入参的顶层结构，元素原地改）。
+func normalizeTraeChatMessages(messages []any) []any {
+	normalized := make([]any, 0, len(messages))
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			continue // 非对象条目上游必然反序列化失败，丢弃优于整请求 400
+		}
+		role := strings.ToLower(strings.TrimSpace(traeMessageStringField(msg, "role")))
+		if role == "" {
+			continue
+		}
+		// 部分推理客户端（Codex 系）把系统提示发成 developer 角色，上游不认，实测
+		// 表现为静默空流（比 400 更难查）→ 归一为 system。
+		if role == "developer" {
+			role = "system"
+		}
+		msg["role"] = role
+		// 消息级 name 无任何一手证据表明上游接受（多模态规范里它属于工具名冗余字段），
+		// 而多余键在上游严格解码下会变成整请求拒绝，直接摘掉。
+		delete(msg, "name")
+
+		content, hasContent := msg["content"]
+		if hasContent && content != nil {
+			msg["content"] = normalizeTraeMessageContent(content)
+		}
+		// 否则保持缺失/null：纯 tool_calls 的 assistant 轮次本就无 content，
+		// 上游 []*T 对 null 反序列化为 nil 切片是合法形态；补一个空文本块反而会出错。
+
+		if calls, ok := msg["tool_calls"]; ok && calls != nil {
+			if kept := normalizeTraeToolCalls(calls); len(kept) > 0 {
+				msg["tool_calls"] = kept
+			} else {
+				delete(msg, "tool_calls")
+				if !hasContent || content == nil {
+					// 全被剔且无正文 → 空占位消息，留着会让上游空流；整条丢掉。
+					continue
+				}
+			}
+		}
+		normalized = append(normalized, msg)
+	}
+	return dropOrphanTraeToolResults(normalized)
+}
+
+// dropOrphanTraeToolResults 剔除 tool_call_id 无法配对到前序 assistant tool_calls 的
+// role=tool 消息。上游按 id 关联工具结果，悬空引用会让流**静默返回空**（HTTP 200、
+// 零 token、无任何错误帧），客户端只看到「模型没回答」；本仓入站裁剪历史时极易产生
+// 这种悬空（assistant 轮被裁掉、tool 结果还在）。
+func dropOrphanTraeToolResults(messages []any) []any {
+	known := make(map[string]struct{}, len(messages))
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		calls, ok := msg["tool_calls"].([]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range calls {
+			if call, ok := raw.(map[string]any); ok {
+				if id := strings.TrimSpace(traeMessageStringField(call, "id")); id != "" {
+					known[id] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(known) == 0 && !hasTraeToolMessage(messages) {
+		// 快路：既无工具调用也无工具结果（绝大多数普通对话）时不重建切片。
+		return messages
+	}
+	out := make([]any, 0, len(messages))
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if strings.EqualFold(traeMessageStringField(msg, "role"), "tool") {
+			id := strings.TrimSpace(traeMessageStringField(msg, "tool_call_id"))
+			if _, matched := known[id]; id == "" || !matched {
+				continue
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func hasTraeToolMessage(messages []any) bool {
+	for _, item := range messages {
+		if msg, ok := item.(map[string]any); ok && strings.EqualFold(traeMessageStringField(msg, "role"), "tool") {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeTraeMessageContent 把 content 归一为内容数组：
+//   - 裸字符串 → [{"type":"text","text":s}]（上游只接受切片形态）；
+//   - 已是数组 → 保留结构（多模态 image_url 等 part 原样透传），仅把数组内的
+//     裸字符串元素补成文本块；
+//   - 其它类型（数字/对象）→ 原样返回，交给上游按自己的契约拒绝，本层不臆造。
+func normalizeTraeMessageContent(value any) any {
+	switch content := value.(type) {
+	case string:
+		return []any{map[string]any{"type": "text", "text": content}}
+	case []any:
+		parts := make([]any, 0, len(content))
+		for _, part := range content {
+			if text, ok := part.(string); ok {
+				parts = append(parts, map[string]any{"type": "text", "text": text})
+				continue
+			}
+			parts = append(parts, part)
+		}
+		return parts
+	default:
+		return value
+	}
+}
+
+// normalizeTraeToolCalls 把 OpenAI 的 tool_calls 改写为上游形态：函数载荷键名
+// function → function_call，并剔除无函数名的条目（上游 FunctionCall.Name 必填，
+// 留空会让整请求被判参数错误）。
+func normalizeTraeToolCalls(raw any) []any {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	kept := make([]any, 0, len(list))
+	for _, item := range list {
+		call, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if fn, ok := call["function"].(map[string]any); ok {
+			if _, exists := call["function_call"]; !exists {
+				call["function_call"] = fn
+			}
+			delete(call, "function")
+		}
+		fn, ok := call["function_call"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if name := strings.TrimSpace(traeMessageStringField(fn, "name")); name == "" {
+			continue
+		}
+		kept = append(kept, call)
+	}
+	return kept
+}
+
+// normalizeTraeToolDefinitions 把 tools[].function.parameters 从 JSON 对象序列化成
+// 字符串（上游该字段是 string 类型，OpenAI 标准是 object）；已是字符串的条目不动。
+func normalizeTraeToolDefinitions(raw any) any {
+	list, ok := raw.([]any)
+	if !ok {
+		return raw
+	}
+	for _, item := range list {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := tool["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		params, exists := fn["parameters"]
+		if !exists || params == nil {
+			continue
+		}
+		if _, isString := params.(string); isString {
+			continue
+		}
+		if encoded, err := json.Marshal(params); err == nil {
+			fn["parameters"] = string(encoded)
+		}
+	}
+	return list
+}
+
+// normalizeTraeToolChoice 把 tool_choice 归一为上游接受的字符串：
+// auto / required / none / 具体工具名。认不出返回空串（调用方删键）。
+func normalizeTraeToolChoice(raw any) string {
+	switch choice := raw.(type) {
+	case string:
+		switch trimmed := strings.TrimSpace(choice); trimmed {
+		case "auto", "required", "none":
+			return trimmed
+		case "":
+			return ""
+		default:
+			// OpenAI 允许直接给工具名；上游同样按字符串名匹配，保留。
+			return trimmed
+		}
+	case map[string]any:
+		if fn, ok := choice["function"].(map[string]any); ok {
+			if name := strings.TrimSpace(traeMessageStringField(fn, "name")); name != "" {
+				return name
+			}
+		}
+		switch strings.TrimSpace(traeMessageStringField(choice, "type")) {
+		case "required":
+			return "required"
+		case "none":
+			return "none"
+		case "auto", "":
+			return "auto"
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+// traeMessageStringField 取对象里的字符串字段（非字符串/缺失返回空串）。
+func traeMessageStringField(obj map[string]any, key string) string {
+	if obj == nil {
+		return ""
+	}
+	value, ok := obj[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case json.Number:
+		return typed.String()
+	default:
+		return ""
+	}
 }
 
 // traeIDEMessages ide/v1/chat 的 chat_history 条目（对齐官方客户端字段集）。

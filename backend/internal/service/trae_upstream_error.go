@@ -80,7 +80,12 @@ func traeQuotaRecoveryUntil(now time.Time) time.Time {
 	return timezone.StartOfDay(now).AddDate(0, 0, 1)
 }
 
-// traeBusinessErrorDetail 拼装错误详情（空消息回落 code 文本，按 rune 限长 200）。
+// traeBusinessErrorDetail 拼装管理端可见的错误详情（空消息回落 code 文本，上游原文
+// 按 rune 限长 200，再追加本仓处置提示）。
+//
+// 截断与追加的顺序不能倒：hint 自身就有 183 字符，先拼后截会把提示的尾部（恰好是
+// 「该怎么做」那半句）削成 `...`；先截上游原文再追加，才能保证提示完整送达。
+// 本函数结果是 Ops 事件 Detail / 账号状态 reason 的唯一加工作台，不外发。
 func traeBusinessErrorDetail(code, message string) string {
 	msg := strings.TrimSpace(message)
 	if msg == "" {
@@ -88,9 +93,9 @@ func traeBusinessErrorDetail(code, message string) string {
 	}
 	runes := []rune(msg)
 	if len(runes) > 200 {
-		return string(runes[:200]) + "..."
+		msg = string(runes[:200]) + "..."
 	}
-	return msg
+	return msg + traeUpstreamHint(code)
 }
 
 // traeOpsBizErrorSeenKey 标记本请求已处置过某 (账号, 业务码)。

@@ -51,4 +51,35 @@ describe('SupportedModelChip', () => {
     expect(document.body.textContent).toContain('$20 / $75')
     wrapper.unmount()
   })
+
+  it('图片价为 0（分组级免费）时仍如实渲染图片价格行', async () => {
+    const wrapper = mount(SupportedModelChip, {
+      attachTo: document.body,
+      props: {
+        model: {
+          name: 'gpt-test-free',
+          platform: '',
+          pricing: {
+            billing_mode: 'token',
+            input_price: 0,
+            output_price: 0,
+            cache_write_price: null,
+            cache_read_price: null,
+            image_input_price: 0,
+            image_output_price: 0,
+            per_request_price: null,
+            intervals: []
+          }
+        },
+        showPlatform: false
+      }
+    })
+
+    await wrapper.find('[tabindex="0"]').trigger('mouseenter')
+    await nextTick()
+
+    expect(document.body.textContent).toContain('availableChannels.pricing.imageInputPrice')
+    expect(document.body.textContent).toContain('availableChannels.pricing.imageOutputPrice')
+    wrapper.unmount()
+  })
 })

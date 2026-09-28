@@ -20,13 +20,23 @@ export type TraeOAuthSubmitResult = {
 }
 
 /**
+ * 可复用的登录设备标识（均为上游设备画像的一部分）。
+ * 字段存在但值为空串 = 明确不沿用（后端会新生成）；缺字段 = 沿用当前会话回显值。
+ */
+export type TraeOAuthDeviceIdentity = {
+  device_id?: string
+  machine_id?: string
+}
+
+/**
  * Trae 真 OAuth 浏览器登录 composable（镜像 useQoderOAuth 的结构与错误处理）。
  *
- * 与 Qoder / WorkBuddy 的关键差异：**没有轮询**。Trae 授权页强制要求回调地址是
- * `http://127.0.0.1:<port>/authorize`，回调只会打到用户本机端口，后端永远收不到，
- * 所以流程是「点登录 → 新标签完成登录 → 浏览器停在 127.0.0.1（显示无法访问属正常）
- * → 用户把地址栏整串粘回 → 点提交 → 后端拿 code 换票」。
- * 会话 15 分钟过期，用 expires_at 驱动一个倒计时；超时后提示重新发起并禁用提交。
+ * 与 Qoder / WorkBuddy 的关键差异：**没有轮询**。Trae 授权页把回调地址限定为
+ * `http://127.0.0.1:<port>/authorize`（上游前端正则硬校验，https/公网域名/localhost
+ * 均被判 invalidUrl），而回跳是**浏览器**执行的——127.0.0.1 解析到的是管理员自己的
+ * 机器，与面板部署在哪无关，所以服务端永远收不到回调。流程是「点登录 → 新标签完成
+ * 登录 → 浏览器停在 127.0.0.1（显示无法访问属正常）→ 把地址栏整串粘回 → 提交」。
+ * 会话 15 分钟过期，用 expires_at 驱动倒计时；超时后提示重新发起并禁用提交。
  */
 export function useTraeOAuth() {
   const appStore = useAppStore()
@@ -36,6 +46,14 @@ export function useTraeOAuth() {
   const loginId = ref('')
   // 回调地址前缀（形如 http://127.0.0.1:xxxx/authorize）：粘贴框 placeholder 提示用。
   const callbackUrlPrefix = ref('')
+  /**
+   * 本次登录使用的设备标识（后端回显）。「重新发起」时把它传回去复用：
+   * Trae 对每账号设备数有硬上限（官方文案「每个账号最多可在 3 台设备上保持登录
+   * 状态」，错误码 20401），而每次 startLogin 默认会 mint 全新 device_id + 新密钥对
+   * ——重试几次就把 3 个槽占完，之后该账号再也登不上（且无可用的服务端解绑端点）。
+   */
+  const deviceId = ref('')
+  const machineId = ref('')
   // 用户粘回的浏览器地址栏整串（组件侧 v-model，410 时由本 composable 清空）。
   const pastedUrl = ref('')
   const realm = ref<TraeRealm>('cn')
@@ -95,6 +113,8 @@ export function useTraeOAuth() {
     loginId.value = ''
     callbackUrlPrefix.value = ''
     pastedUrl.value = ''
+    deviceId.value = ''
+    machineId.value = ''
     loading.value = false
     submitting.value = false
     error.value = ''
@@ -103,13 +123,31 @@ export function useTraeOAuth() {
   }
 
   /**
-   * 发起浏览器登录：向后端申请授权链接与会话。
-   * 成功 → true（调用方据此 window.open(loginUrl)）；失败 → false（error 已填充并 toast）。
+   * 发起一次浏览器登录。
+   *
+   * @param reuseDevice 显式指定要复用的设备号（形如 {device_id, machine_id}）。
+   *   传 null/缺省时：若已有上一次登录回显的 deviceId（同一弹窗内「重新发起」），
+   *   自动沿用它——这正是避免撞设备上限的关键默认行为。传 {device_id:''} 可强制新生成。
    */
-  const startLogin = async (targetRealm: TraeRealm, proxyId?: number | null): Promise<boolean> => {
+  const startLogin = async (
+    targetRealm: TraeRealm,
+    proxyId?: number | null,
+    reuseDevice?: TraeOAuthDeviceIdentity | null
+  ): Promise<boolean> => {
     // in-flight guard：按钮 disabled 依赖 DOM 异步更新，快速连点仍会进来第二个调用；
     // 并发两个会话会让后到的响应覆盖 login_id（先建会话泄漏，粘回旧链接报 TRACE_MISMATCH）。
     if (loading.value) return false
+
+    // 先算出本次要复用的设备号（必须在清空状态前取，否则会把自己刚回显的值抹掉）。
+    const nextDeviceId =
+      reuseDevice && 'device_id' in reuseDevice
+        ? reuseDevice.device_id || ''
+        : deviceId.value
+    const nextMachineId =
+      reuseDevice && 'machine_id' in reuseDevice
+        ? reuseDevice.machine_id || ''
+        : machineId.value
+
     clearCountdown()
     loading.value = true
     error.value = ''
@@ -121,13 +159,23 @@ export function useTraeOAuth() {
     remainingMs.value = 0
 
     try {
-      const payload: { realm: TraeRealm; proxy_id?: number } = { realm: targetRealm }
+      const payload: {
+        realm: TraeRealm
+        proxy_id?: number
+        device_id?: string
+        machine_id?: string
+      } = { realm: targetRealm }
       if (proxyId) payload.proxy_id = proxyId
+      if (nextDeviceId) payload.device_id = nextDeviceId
+      if (nextMachineId) payload.machine_id = nextMachineId
 
       const response = await adminAPI.trae.startTraeOAuthLogin(payload)
       loginUrl.value = response.login_url || ''
       loginId.value = response.login_id || ''
       callbackUrlPrefix.value = response.callback_url_prefix || ''
+      // 以后端回显为准（不合法/缺省的入参会被后端静默丢弃并新生成，回显才是真值）。
+      deviceId.value = response.device_id || nextDeviceId
+      machineId.value = response.machine_id || nextMachineId
       realm.value = targetRealm
       // 会话过期时刻由后端签发（epoch 秒）；缺省或异常值时回落 TTL 兜底，
       // 否则倒计时会立刻归零把用户挡在门外。
@@ -178,6 +226,11 @@ export function useTraeOAuth() {
         callback_url: url
       })
       const credentials = response.credentials || {}
+      // 换票得到的设备号才是与上游 token 真正绑定的值（可能是 BoundDeviceID 回显的
+      // 上游改写值）。必须同步下来，否则下次「给该账号重新登录」会拿旧值去生成
+      // 新设备号，白白多占一个上游设备槽。
+      if (credentials.device_id) deviceId.value = String(credentials.device_id)
+      if (credentials.machine_id) machineId.value = String(credentials.machine_id)
       // 换票成功后会话作废：停表并清空 login_id / 粘贴框，避免关闭弹窗时再发一次
       // 多余 cancel，也让提交按钮自动回到禁用态（防用户重复提交同一回调链接）。
       clearCountdown()
@@ -241,6 +294,8 @@ export function useTraeOAuth() {
     loginId,
     callbackUrlPrefix,
     pastedUrl,
+    deviceId,
+    machineId,
     realm,
     loading,
     submitting,

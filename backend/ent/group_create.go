@@ -906,6 +906,12 @@ func (_c *GroupCreate) SetNillableProfitSafetyBuffer(v *float64) *GroupCreate {
 	return _c
 }
 
+// SetFreeModels sets the "free_models" field.
+func (_c *GroupCreate) SetFreeModels(v []string) *GroupCreate {
+	_c.mutation.SetFreeModels(v)
+	return _c
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_c *GroupCreate) AddAPIKeyIDs(ids ...int64) *GroupCreate {
 	_c.mutation.AddAPIKeyIDs(ids...)
@@ -1211,6 +1217,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultProfitSafetyBuffer
 		_c.mutation.SetProfitSafetyBuffer(v)
 	}
+	if _, ok := _c.mutation.FreeModels(); !ok {
+		v := group.DefaultFreeModels
+		_c.mutation.SetFreeModels(v)
+	}
 	return nil
 }
 
@@ -1417,6 +1427,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.ProfitSafetyBuffer(); !ok {
 		return &ValidationError{Name: "profit_safety_buffer", err: errors.New(`ent: missing required field "Group.profit_safety_buffer"`)}
+	}
+	if _, ok := _c.mutation.FreeModels(); !ok {
+		return &ValidationError{Name: "free_models", err: errors.New(`ent: missing required field "Group.free_models"`)}
 	}
 	return nil
 }
@@ -1708,6 +1721,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ProfitSafetyBuffer(); ok {
 		_spec.SetField(group.FieldProfitSafetyBuffer, field.TypeFloat64, value)
 		_node.ProfitSafetyBuffer = value
+	}
+	if value, ok := _c.mutation.FreeModels(); ok {
+		_spec.SetField(group.FieldFreeModels, field.TypeJSON, value)
+		_node.FreeModels = value
 	}
 	if nodes := _c.mutation.APIKeysIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -2918,6 +2935,18 @@ func (u *GroupUpsert) UpdateProfitSafetyBuffer() *GroupUpsert {
 // AddProfitSafetyBuffer adds v to the "profit_safety_buffer" field.
 func (u *GroupUpsert) AddProfitSafetyBuffer(v float64) *GroupUpsert {
 	u.Add(group.FieldProfitSafetyBuffer, v)
+	return u
+}
+
+// SetFreeModels sets the "free_models" field.
+func (u *GroupUpsert) SetFreeModels(v []string) *GroupUpsert {
+	u.Set(group.FieldFreeModels, v)
+	return u
+}
+
+// UpdateFreeModels sets the "free_models" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateFreeModels() *GroupUpsert {
+	u.SetExcluded(group.FieldFreeModels)
 	return u
 }
 
@@ -4198,6 +4227,20 @@ func (u *GroupUpsertOne) AddProfitSafetyBuffer(v float64) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateProfitSafetyBuffer() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateProfitSafetyBuffer()
+	})
+}
+
+// SetFreeModels sets the "free_models" field.
+func (u *GroupUpsertOne) SetFreeModels(v []string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetFreeModels(v)
+	})
+}
+
+// UpdateFreeModels sets the "free_models" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateFreeModels() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateFreeModels()
 	})
 }
 
@@ -5644,6 +5687,20 @@ func (u *GroupUpsertBulk) AddProfitSafetyBuffer(v float64) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateProfitSafetyBuffer() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateProfitSafetyBuffer()
+	})
+}
+
+// SetFreeModels sets the "free_models" field.
+func (u *GroupUpsertBulk) SetFreeModels(v []string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetFreeModels(v)
+	})
+}
+
+// UpdateFreeModels sets the "free_models" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateFreeModels() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateFreeModels()
 	})
 }
 

@@ -107,6 +107,9 @@ type Group struct {
 	DefaultMappedModel          string
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
 	ModelAllowlist              GroupModelAllowlist
+	// FreeModels 分组级免费模型名单（命中即在本分组按 0 元计费，详见 group_free_models.go）。
+	// 它只是定价豁免，不参与模型枚举与准入白名单判定。
+	FreeModels []string
 	// CodexModelsManifestConfig 开启后，普通模型列表与 Codex manifest 优先使用
 	// 固定账号列表拉取并合并，不经过调度器（仅 openai 平台）。
 	CodexModelsManifestConfig GroupCodexModelsManifestConfig

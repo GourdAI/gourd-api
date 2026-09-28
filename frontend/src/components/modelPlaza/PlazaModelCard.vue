@@ -1,20 +1,27 @@
 <template>
   <article
-    class="plaza-model-card group/card relative flex min-w-0 flex-col rounded-xl border border-gray-200/80 bg-white p-4 shadow-card transition duration-200 hover:-translate-y-0.5 hover:border-primary-300 hover:shadow-card-hover dark:border-dark-700/60 dark:bg-dark-800/70 dark:hover:border-primary-500/50"
+    class="plaza-model-card group/card relative flex min-w-0 flex-col overflow-hidden rounded-2xl border border-gray-200/70 bg-white shadow-card transition duration-200 hover:-translate-y-0.5 hover:border-primary-300/70 hover:shadow-card-hover dark:border-dark-700/70 dark:bg-dark-800 dark:hover:border-primary-500/40"
   >
-    <!-- 头部：模型图标 + 名称 + 计费模式徽章；右上角倍率徽章与复制入口 -->
-    <header class="flex items-start gap-2.5">
+    <!-- 头部：模型图标 + 名称 + 计费说明徽章；右上角倍率徽章与复制入口 -->
+    <header class="flex items-start gap-2.5 px-4 pb-3 pt-4">
       <span
-        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-50 ring-1 ring-inset ring-gray-100 dark:bg-dark-900/40 dark:ring-dark-700/60"
+        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-gray-50 to-gray-100 ring-1 ring-inset ring-gray-200/70 dark:from-dark-700/60 dark:to-dark-800 dark:ring-dark-600/70"
       >
-        <ModelIcon :model="model.name" size="20px" />
+        <ModelIcon :model="entry.name" size="20px" />
       </span>
 
       <div class="min-w-0 flex-1">
-        <h4 class="truncate text-sm font-semibold text-gray-900 dark:text-white" :title="model.name">
-          {{ model.name }}
+        <h4 class="truncate text-[13px] font-semibold leading-5 tracking-tight text-gray-900 dark:text-white" :title="entry.name">
+          {{ entry.name }}
         </h4>
-        <div class="mt-1 flex flex-wrap items-center gap-1">
+        <div class="mt-1.5 flex flex-wrap items-center gap-1">
+          <span
+            v-if="model.free"
+            class="inline-flex items-center rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-400"
+            :title="t('modelPlaza.card.freeBadgeHint')"
+          >
+            {{ t('modelPlaza.card.freeBadge') }}
+          </span>
           <span
             v-if="!isToken"
             class="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-dark-700/70 dark:text-dark-300"
@@ -38,9 +45,9 @@
         </div>
       </div>
 
-      <div class="flex shrink-0 flex-col items-end gap-1">
+      <div class="flex shrink-0 flex-col items-end gap-1.5 pt-0.5">
         <span
-          class="whitespace-nowrap rounded-md bg-primary-50 px-2 py-0.5 font-mono text-xs font-bold text-primary-700 dark:bg-primary-400/10 dark:text-primary-300"
+          class="whitespace-nowrap rounded-full bg-primary-50 px-2 py-0.5 font-mono text-[11px] font-bold leading-4 text-primary-700 ring-1 ring-inset ring-primary-200/70 dark:bg-primary-400/10 dark:text-primary-300 dark:ring-primary-400/25"
           :title="rateTooltip"
         >
           <span
@@ -61,46 +68,24 @@
       </div>
     </header>
 
-    <!-- 价格块：标准价 + 每个分时时段各一块（同量纲便于横向对比） -->
-    <div
-      v-for="block in blocks"
-      :key="block.key"
-      :class="block.period ? 'mt-2.5 border-t border-dashed border-gray-200 pt-2.5 dark:border-dark-700/70' : 'mt-3'"
-    >
-      <div v-if="block.period" class="mb-1 flex items-center justify-between gap-2">
-        <span
-          class="inline-flex items-center gap-1 font-mono text-[10px] font-medium text-gray-500 dark:text-dark-300"
-          :title="periodHint"
-        >
-          <Icon name="clock" size="xs" class="h-3 w-3" />
-          <span v-if="model.time_pricing?.weekdays_only" class="font-sans">{{
-            t('modelPlaza.card.timePricingWeekdays')
-          }}</span>
-          {{ formatTimeWindow(block.period) }}
-        </span>
-        <span
-          class="whitespace-nowrap font-mono text-[10px] font-bold text-primary-600 dark:text-primary-400"
-          :title="t('modelPlaza.card.timeRateHint', { rate: effectiveRate, multiplier: block.period.multiplier })"
-        >
-          {{ periodRateValue(block.period) }}x
-        </span>
-      </div>
-
-      <!-- token 计费：输入 / 输出 / 缓存三行，实付为主行，官方参考为弱化副行 -->
-      <dl v-if="block.display.isToken" class="space-y-1">
+    <!-- 价格块：只展示实付价（官方参考价已下线）。档位行用固定列网格,标签左、金额右基线对齐 -->
+    <div class="plaza-price-block px-4 pb-4">
+      <!-- token 计费：输入 / 输出 / 缓存三行,阶梯时每档一行 -->
+      <dl v-if="display.isToken" class="plaza-price-rows">
         <div
-          v-for="cell in block.display.cells"
+          v-for="cell in display.cells"
           :key="cell.key"
-          class="flex items-start justify-between gap-3"
+          class="plaza-price-row"
+          :class="{ 'plaza-price-row-lead': cell.key === 'input' }"
         >
-          <dt class="shrink-0 pt-0.5 text-[11px] text-gray-400 dark:text-dark-500">
+          <dt class="plaza-price-label">
             {{ columnLabel(cell.key) }}
           </dt>
-          <dd class="min-w-0 flex-1 text-right">
+          <dd class="plaza-price-values">
             <div
               v-for="(line, idx) in cell.paid"
               :key="`paid-${idx}`"
-              class="font-mono text-xs font-semibold leading-5 text-gray-900 dark:text-gray-50"
+              class="plaza-price-line"
               :class="cell.key === 'cache' ? 'break-words' : 'whitespace-nowrap'"
             >
               <span
@@ -116,45 +101,66 @@
                 >{{ part.text }}</span
               >
             </div>
-            <!-- 官方参考价与实付同量纲且不随时段变化,只在标准价块披露一次 -->
-            <div v-if="cell.official && block.period === null" class="mt-0.5 space-y-0.5">
-              <div
-                v-for="(line, idx) in cell.official"
-                :key="`official-${idx}`"
-                class="font-mono text-[10px] leading-4 text-gray-400 dark:text-dark-500"
-                :class="cell.key === 'cache' ? 'break-words' : 'whitespace-nowrap'"
-                :title="t('modelPlaza.card.officialPrice')"
-              >
-                <span class="mr-1 font-sans">{{ t('modelPlaza.card.officialTag') }}</span>
-                <span v-if="line.tier" class="mr-1 font-sans">{{ line.tier }}</span>
-                <span v-for="(part, pi) in line.parts" :key="pi">{{ part.text }}</span>
-              </div>
-            </div>
           </dd>
         </div>
-        <p v-if="block.period === null" class="pt-0.5 text-right text-[10px] text-gray-300 dark:text-dark-600">
+        <p class="plaza-price-unit">
           {{ t('modelPlaza.card.unitPerMillion') }}
         </p>
       </dl>
 
-      <!-- 按次 / 按图片计费：单价芯片（多档时每档一枚） -->
-      <div v-else class="plaza-request-prices flex flex-wrap items-center gap-1.5">
+      <!-- 按次 / 按图片计费：计费口径已在头部徽章说过,价格行与 token 行同一权重排版 -->
+      <div v-else class="plaza-request-prices">
         <span
-          v-for="(item, idx) in block.display.requests"
+          v-for="(item, idx) in display.requests"
           :key="idx"
-          class="inline-flex items-center gap-1 rounded-md bg-gray-50 px-2 py-1 font-mono text-xs font-semibold text-gray-900 ring-1 ring-inset ring-gray-100 dark:bg-dark-900/40 dark:text-gray-50 dark:ring-dark-700/60"
+          class="plaza-request-chip"
+          :title="item.tier ? tierHint : undefined"
         >
-          <span v-if="item.tier" class="font-sans text-[10px] font-normal text-gray-400 dark:text-dark-500">{{
-            item.tier
-          }}</span>
-          {{ item.price }}
-          <span class="font-sans text-[10px] font-normal text-gray-400 dark:text-dark-500">{{
-            unitSuffix
-          }}</span>
+          <span v-if="item.tier" class="plaza-request-tier">{{ item.tier }}</span>
+          <span class="plaza-request-amount">{{ item.price }}</span>
+          <span class="plaza-request-tier">{{ unitSuffix }}</span>
         </span>
-        <span v-if="!block.display.requests.length" class="text-xs text-gray-400 dark:text-dark-500">-</span>
+        <span v-if="!display.requests.length" class="plaza-request-amount">-</span>
       </div>
     </div>
+
+    <!-- 分时倍率：折叠成一行提示,完整说明在 tooltip -->
+    <p
+      v-if="timeSummary"
+      class="flex items-start gap-1.5 border-t border-dashed border-gray-100 bg-gray-50/70 px-4 py-2 text-[11px] leading-4 text-gray-500 dark:border-dark-700/60 dark:bg-dark-900/30 dark:text-dark-400"
+      :title="periodHint"
+    >
+      <Icon name="clock" size="xs" class="mt-[1px] h-3 w-3 shrink-0 text-amber-500 dark:text-amber-400" />
+      <span class="min-w-0 font-mono break-words">{{ t('modelPlaza.card.timePricingSummary') }} {{ timeSummary }}</span>
+    </p>
+
+    <!-- 底部：该模型可用的分组（点击切到该组价格） -->
+    <footer
+      class="mt-auto flex flex-wrap items-center gap-1.5 border-t border-gray-100 bg-gray-50/60 px-4 py-2.5 dark:border-dark-700/70 dark:bg-dark-900/20"
+    >
+      <span class="shrink-0 text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-dark-500">{{
+        t('modelPlaza.card.availableIn')
+      }}</span>
+      <button
+        v-for="ref in entry.groups"
+        :key="ref.key"
+        type="button"
+        class="inline-flex min-w-0 max-w-full items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60"
+        :class="
+          ref.id === entry.displayGroupId
+            ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200 dark:bg-primary-400/10 dark:text-primary-300 dark:ring-primary-400/30'
+            : ref.visible
+              ? 'bg-gray-50 text-gray-500 ring-1 ring-inset ring-gray-100 hover:bg-gray-100 hover:text-gray-700 dark:bg-dark-900/40 dark:text-dark-400 dark:ring-dark-700/60 dark:hover:bg-dark-800 dark:hover:text-white'
+              : 'bg-gray-50/60 text-gray-400 ring-1 ring-dashed ring-inset ring-gray-200 hover:bg-gray-100 hover:text-gray-600 dark:bg-dark-900/30 dark:text-dark-500 dark:ring-dark-600/60 dark:hover:bg-dark-800 dark:hover:text-dark-200'
+        "
+        :title="groupChipTitle(ref)"
+        :aria-pressed="ref.id === entry.displayGroupId"
+        @click="$emit('selectGroup', ref.id)"
+      >
+        <span class="min-w-0 truncate">{{ ref.name }}</span>
+        <span class="shrink-0 font-mono">{{ ref.rateValue }}x</span>
+      </button>
+    </footer>
   </article>
 </template>
 
@@ -164,63 +170,72 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import { useClipboard } from '@/composables/useClipboard'
-import { BILLING_MODE_IMAGE } from '@/constants/channel'
-import type { PlazaModel, PlazaTimePricingPeriod } from '@/api/modelPlaza'
+import { BILLING_MODE_IMAGE, BILLING_MODE_VIDEO } from '@/constants/channel'
+import type { PlazaGroupRef, PlazaModelEntry } from './plazaCatalog'
 import {
-  effectiveGroupRate,
-  formatTimeWindow,
   isTokenModel,
   modelPrice,
   modelRateStruck,
   modelRateValue,
   timePeriodHint,
   timePeriodsOf,
+  timePeriodsSummary,
   type ModelPriceDisplay,
-  type PlazaPriceContext,
   type PriceLabels
 } from './plazaPricing'
 
 const props = defineProps<{
-  model: PlazaModel
-  /** 分组派生的价格环境（倍率 / 生图独立倍率 / 高峰窗口）。 */
-  context: PlazaPriceContext
+  /** 一个模型一张卡片（含它可用的全部分组）。 */
+  entry: PlazaModelEntry
 }>()
 
-const { t } = useI18n()
+defineEmits<{
+  /** 点击分组标签:把该模型的展示价切到该分组。 */
+  selectGroup: [groupId: number]
+}>()
+
+const { t, locale } = useI18n()
 const { copied, copyToClipboard } = useClipboard()
 
-const isToken = computed(() => isTokenModel(props.model))
-const effectiveRate = computed(() => effectiveGroupRate(props.context))
-const rateValue = computed(() => modelRateValue(props.model, props.context))
-const struckRate = computed(() => modelRateStruck(props.model, props.context))
+const model = computed(() => props.entry.model)
+const isToken = computed(() => isTokenModel(model.value))
+const rateValue = computed(() => modelRateValue(model.value, props.entry.context))
+const struckRate = computed(() => modelRateStruck(model.value, props.entry.context))
 
-const billingModeLabel = computed(() =>
-  props.model.pricing?.billing_mode === BILLING_MODE_IMAGE
-    ? t('modelPlaza.card.perImage')
-    : t('modelPlaza.card.perRequest')
-)
+const billingModeLabel = computed(() => {
+  const mode = model.value.pricing?.billing_mode
+  if (mode === BILLING_MODE_IMAGE) return t('modelPlaza.card.perImage')
+  if (mode === BILLING_MODE_VIDEO) return t('modelPlaza.card.perVideo')
+  return t('modelPlaza.card.perRequest')
+})
 
-const unitSuffix = computed(() =>
-  props.model.pricing?.billing_mode === BILLING_MODE_IMAGE
-    ? t('modelPlaza.card.perUnitImage')
-    : t('modelPlaza.card.perUnitRequest')
-)
+const unitSuffix = computed(() => {
+  const mode = model.value.pricing?.billing_mode
+  if (mode === BILLING_MODE_IMAGE) return t('modelPlaza.card.perUnitImage')
+  if (mode === BILLING_MODE_VIDEO) return t('modelPlaza.card.perUnitVideo')
+  return t('modelPlaza.card.perUnitRequest')
+})
 
 const tierHint = computed(() =>
-  props.model.long_context_basis === 'marginal'
+  model.value.long_context_basis === 'marginal'
     ? t('modelPlaza.card.tierHintMarginal')
     : t('modelPlaza.card.tierHint')
 )
 
+const groupName = computed(
+  () => props.entry.groups.find((g) => g.id === props.entry.displayGroupId)?.name ?? ''
+)
+
 const rateTooltip = computed(() => {
-  if (struckRate.value == null) return t('modelPlaza.card.rateTooltip', { rate: rateValue.value })
+  if (struckRate.value == null) {
+    return t('modelPlaza.card.rateTooltip', { group: groupName.value, rate: rateValue.value })
+  }
   return t('modelPlaza.card.customRateTooltip', {
-    groupRate: props.context.rateMultiplier,
+    group: groupName.value,
+    groupRate: props.entry.context.rateMultiplier,
     rate: rateValue.value
   })
 })
-
-const periodHint = computed(() => timePeriodHint(props.model, props.context, t))
 
 const labels = computed<PriceLabels>(() => ({
   cacheWrite: t('modelPlaza.card.cacheWriteShort'),
@@ -229,34 +244,39 @@ const labels = computed<PriceLabels>(() => ({
   perImage: t('modelPlaza.card.perUnitImage')
 }))
 
-/** 一个价格块：period 为 null 时是标准价，否则为该分时时段生效价。 */
-interface PriceBlock {
-  key: string
-  period: PlazaTimePricingPeriod | null
-  display: ModelPriceDisplay
-}
+const display = computed<ModelPriceDisplay>(() =>
+  modelPrice(model.value, props.entry.context, labels.value)
+)
 
-const blocks = computed<PriceBlock[]>(() => {
-  const standard: PriceBlock = {
-    key: 'standard',
-    period: null,
-    display: modelPrice(props.model, props.context, labels.value)
-  }
-  // 分时倍率只对 token 计费生效（后端写侧/读侧都拒绝非 token 配置），按次/按图的单价
-  // 不乘时段倍率——若真收到脏数据，这里也不展开时段块,避免「价格与标准价相同却标注时段倍率」。
-  const periodBlocks = isToken.value
-    ? timePeriodsOf(props.model).map<PriceBlock>((period, idx) => ({
-        key: `period-${idx}`,
-        period,
-        display: modelPrice(props.model, props.context, labels.value, period)
-      }))
-    : []
-  return [standard, ...periodBlocks]
+/**
+ * 分时摘要:一行带倍率,详情进 tooltip;非 token 模型后端不会配分时,这里同样不展示。
+ * 多段分隔符跟随语种,英文界面不用中文顿号。
+ */
+const timeSummary = computed(() => {
+  if (!isToken.value || !timePeriodsOf(model.value).length) return ''
+  const prefix = model.value.time_pricing?.weekdays_only
+    ? `${t('modelPlaza.card.timePricingWeekdays')} `
+    : ''
+  return (
+    prefix +
+    timePeriodsSummary(model.value, String(locale.value ?? '').toLowerCase().startsWith('zh') ? '、' : ', ')
+  )
 })
 
-/** 时段生效倍率 = 分组生效倍率 × 时段倍率（去掉浮点噪声）。 */
-function periodRateValue(period: PlazaTimePricingPeriod): number {
-  return Math.round(effectiveRate.value * period.multiplier * 1000) / 1000
+const periodHint = computed(() => timePeriodHint(model.value, props.entry.context, t))
+
+/**
+ * chip 提示语。当前展示组→告知可点回「全部」;被筛掉的组→明确告知会同时解除倍率筛选,
+ * 避免点了之后用户的筛选约束静默丢失。
+ */
+function groupChipTitle(ref: PlazaGroupRef): string {
+  if (ref.id === props.entry.displayGroupId) {
+    return t('modelPlaza.card.groupChipCurrent', { group: ref.name })
+  }
+  if (!ref.visible) {
+    return t('modelPlaza.card.groupChipHidden', { group: ref.name })
+  }
+  return t('modelPlaza.card.groupChipSwitch', { group: ref.name })
 }
 
 function columnLabel(key: 'input' | 'output' | 'cache'): string {
@@ -266,6 +286,62 @@ function columnLabel(key: 'input' | 'output' | 'cache'): string {
 }
 
 function copyModelName() {
-  void copyToClipboard(props.model.name)
+  void copyToClipboard(props.entry.name)
 }
 </script>
+
+<style scoped>
+/*
+ * 价格块网格:标签列固定宽度,金额列撑满并右对齐。
+ * 阶梯多档时每档一行,同一列内数字按列对齐,卡片之间高度差只来自档数差。
+ */
+.plaza-price-rows {
+  @apply space-y-1;
+}
+
+.plaza-price-row {
+  @apply grid grid-cols-[2.75rem_minmax(0,1fr)] items-baseline gap-2;
+}
+
+/* 输入价是比价基准(排序口径与它一致),给最强视觉权重 */
+.plaza-price-row-lead .plaza-price-line {
+  @apply text-[15px] leading-6;
+}
+
+.plaza-price-row-lead .plaza-price-label {
+  @apply text-gray-500 dark:text-dark-300;
+}
+
+.plaza-price-label {
+  @apply shrink-0 text-[11px] text-gray-400 dark:text-dark-500;
+}
+
+.plaza-price-values {
+  @apply min-w-0 text-right;
+}
+
+.plaza-price-line {
+  @apply font-mono text-[13px] font-semibold leading-5 tabular-nums text-gray-900 dark:text-gray-50;
+}
+
+.plaza-price-unit {
+  @apply pt-0.5 text-right text-[10px] text-gray-400 dark:text-dark-500;
+}
+
+/* 按次/按图:金额与 token 首行同字号,单栏靠右;不用卡片包裹避与 token 行争视觉权重 */
+.plaza-request-prices {
+  @apply flex flex-wrap items-baseline justify-end gap-x-2 gap-y-1;
+}
+
+.plaza-request-chip {
+  @apply inline-flex items-baseline gap-1 whitespace-nowrap;
+}
+
+.plaza-request-tier {
+  @apply font-sans text-[10px] font-normal text-gray-400 dark:text-dark-500;
+}
+
+.plaza-request-amount {
+  @apply font-mono text-[15px] font-semibold leading-6 tabular-nums text-gray-900 dark:text-gray-50;
+}
+</style>

@@ -36,6 +36,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -47,6 +48,8 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -114,12 +117,32 @@ func NewTraeLoginService(oauth *TraeOAuthService) *TraeLoginService {
 	return &TraeLoginService{oauth: oauth, pending: map[string]*traeLoginPending{}}
 }
 
+// TraeLoginStartOptions 发起登录的入参。
+//
+// DeviceID / MachineID 为可选的**设备号复用**入参（均为上游设备画像标识）：留空则
+// 本次登录新生成。必须允许复用，是因为 Trae 官方授权页有硬设备数上限——它自己的
+// 文案是「每个账号最多可在 3 台设备上保持登录状态。请下线一台设备后再继续登录」
+// （错误码 20401 / DEVICE_LIMIT_REACHED，取证自授权页 bundle）。若每次点「浏览器
+// 登录」都 mint 一个新 device_id + 新 EC 密钥对，则 token 过期重登、换票失败重试
+// 都会各占一个设备槽，重试几次就把账号锁死（且上游未暴露服务端解绑端点）。
+type TraeLoginStartOptions struct {
+	Realm     string
+	ClientID  string
+	ProxyID   *int64
+	DeviceID  string
+	MachineID string
+}
+
 // TraeLoginStartResult 授权 URL 生成结果。
 type TraeLoginStartResult struct {
 	LoginID   string `json:"login_id"`
 	LoginURL  string `json:"login_url"`
 	Callback  string `json:"callback_url_prefix"`
 	ExpiresAt int64  `json:"expires_at"`
+	// DeviceID / MachineID 回显本次使用的设备标识：调用方在「同一登录流程内重试」
+	// 与「给已有账号重新登录」时必须把它们传回去复用，否则每重试一次多占一个设备槽。
+	DeviceID  string `json:"device_id"`
+	MachineID string `json:"machine_id"`
 }
 
 // TraeLoginCredentials 登录完成后的凭据集（snake_case，可直接并入账号 credentials）。
@@ -159,13 +182,21 @@ func (r *TraeLoginResult) AccountName() string {
 	return strings.TrimSpace(r.Credentials.UID)
 }
 
-// StartLogin 生成一次浏览器授权登录：本地产生 PKCE / 设备标识 → GetLoginGuidance
-// 拿登录域 → 拼授权 URL。realm 归一为 cn/global。
+// StartLogin 生成一次浏览器授权登录（不指定设备号，即新生成）。
+// 保留此签名是为了不改动已有调用点；需要复用设备号时用 StartLoginWithOptions。
 func (s *TraeLoginService) StartLogin(ctx context.Context, realm, clientID string, proxyID *int64) (*TraeLoginStartResult, error) {
+	return s.StartLoginWithOptions(ctx, TraeLoginStartOptions{Realm: realm, ClientID: clientID, ProxyID: proxyID})
+}
+
+// StartLoginWithOptions 生成一次浏览器授权登录：本地产生 PKCE / 设备标识 →
+// GetLoginGuidance 拿登录域 → 拼授权 URL。realm 归一为 cn/global。
+func (s *TraeLoginService) StartLoginWithOptions(ctx context.Context, opts TraeLoginStartOptions) (*TraeLoginStartResult, error) {
 	if s == nil || s.oauth == nil {
 		return nil, infraerrors.New(http.StatusInternalServerError, "TRAE_LOGIN_NOT_CONFIGURED", "trae login service is not configured")
 	}
-	realm = traeRealmFromValues(realm, "", "")
+	realm := traeRealmFromValues(opts.Realm, "", "")
+	clientID := opts.ClientID
+	proxyID := opts.ProxyID
 	traceID, err := newTraeUUIDv4()
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "TRAE_LOGIN_RANDOM_FAILED", "generate login trace id failed: %v", err)
@@ -179,13 +210,18 @@ func (s *TraeLoginService) StartLogin(ctx context.Context, realm, clientID strin
 	challenge := base64.RawURLEncoding.EncodeToString(challengeSum[:])
 	// device_id 必须是 8~24 位纯数字（上游设备号画像；hex/UUID 会被授权页判非法，
 	// 表现为用户侧"网络错误，请刷新页面重试"）。machine_id 用 UUID v4 形态。
-	deviceID, err := newTraeLoginDeviceID()
-	if err != nil {
-		return nil, infraerrors.Newf(http.StatusInternalServerError, "TRAE_LOGIN_RANDOM_FAILED", "generate device id failed: %v", err)
+	// 不合法/缺省的复用入参一律静默回落到新生成（不能因为前端传了旧形态脏值就把登录卡住）。
+	deviceID := traeSanitizeLoginDeviceID(opts.DeviceID)
+	if deviceID == "" {
+		if deviceID, err = newTraeLoginDeviceID(); err != nil {
+			return nil, infraerrors.Newf(http.StatusInternalServerError, "TRAE_LOGIN_RANDOM_FAILED", "generate device id failed: %v", err)
+		}
 	}
-	machineID, err := newTraeUUIDv4()
-	if err != nil {
-		return nil, infraerrors.Newf(http.StatusInternalServerError, "TRAE_LOGIN_RANDOM_FAILED", "generate machine id failed: %v", err)
+	machineID := traeSanitizeLoginMachineID(opts.MachineID)
+	if machineID == "" {
+		if machineID, err = newTraeUUIDv4(); err != nil {
+			return nil, infraerrors.Newf(http.StatusInternalServerError, "TRAE_LOGIN_RANDOM_FAILED", "generate machine id failed: %v", err)
+		}
 	}
 	port, err := newTraeCallbackPort()
 	if err != nil {
@@ -231,6 +267,8 @@ func (s *TraeLoginService) StartLogin(ctx context.Context, realm, clientID strin
 		LoginURL:  verificationURI,
 		Callback:  fmt.Sprintf("http://127.0.0.1:%d/authorize?", port),
 		ExpiresAt: deadline.Unix(),
+		DeviceID:  deviceID,
+		MachineID: machineID,
 	}, nil
 }
 
@@ -259,8 +297,16 @@ func (s *TraeLoginService) SubmitCallback(ctx context.Context, loginID, pastedUR
 	if !found {
 		return nil, infraerrors.New(http.StatusNotFound, "TRAE_LOGIN_NOT_FOUND", "login session not found (service restarted or already completed), restart login")
 	}
+	// 截断/包裹提示先行计算：它只在两个**已确定失败**的分支上用来取代笼统措词（
+	// 见 traeCallbackTruncationHint 的调用约束）。必须同时覆盖两条失败路径：
+	// 被截断的 authCodeInfo JSON 解码失败会被 traeAuthCodeFromInfo 静默吞掉（
+	// 降级成"没有授权码"），只挂在解析失败分支上根本不会命中。
+	truncationHint := traeCallbackTruncationHint(pastedURL)
 	params, err := traeParseCallbackURL(pastedURL)
 	if err != nil {
+		if truncationHint != "" {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "TRAE_LOGIN_CALLBACK_TRUNCATED", "%s", truncationHint)
+		}
 		return nil, infraerrors.Newf(http.StatusBadRequest, "TRAE_LOGIN_CALLBACK_INVALID", "%v", err)
 	}
 	if params.errMsg != "" {
@@ -272,6 +318,11 @@ func (s *TraeLoginService) SubmitCallback(ctx context.Context, loginID, pastedUR
 		return nil, infraerrors.New(http.StatusBadRequest, "TRAE_LOGIN_TRACE_MISMATCH", "callback URL belongs to another login, paste the URL from THIS login attempt")
 	}
 	if params.authCode == "" && params.refreshToken == "" {
+		// 截断最常见就落在这一条（而不是解析失败）：给可操作指引，避免用户以为
+		// 登录本身失败而回去反复重登——每重登一次就多占一个上游设备槽。
+		if truncationHint != "" {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "TRAE_LOGIN_CALLBACK_TRUNCATED", "%s", truncationHint)
+		}
 		return nil, infraerrors.New(http.StatusBadRequest, "TRAE_LOGIN_NO_CODE", "no authCode/refreshToken in pasted URL — copy the FULL address-bar URL (everything after ?)")
 	}
 	proxyURL := s.oauth.resolveProxyURL(ctx, session.ProxyID)
@@ -877,6 +928,75 @@ func newTraeCallbackPort() (int, error) {
 		return 0, err
 	}
 	return 20000 + int(uint16(b[0])<<8|uint16(b[1]))%45535, nil
+}
+
+// traeSanitizeLoginDeviceID 校验可复用的设备号：必须是 8~24 位纯数字（与上游
+// 设备号画像同口径）。不合式返回空串，由调用方回落新生成。
+func traeSanitizeLoginDeviceID(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !traeIsNumericID(trimmed) {
+		return ""
+	}
+	return trimmed
+}
+
+// traeSanitizeLoginMachineID 校验可复用的机器码：接受 UUID v4 形态与 32hex 形态
+// （账号里存的可能是两者之一：本服务落库的是去掉连字符的 32hex，而用户手工粘的
+// storage.json 常带连字符）。授权 URL / DeviceInfo 统一用带连字符形态。
+// 长度/字符不合法时返回空串（由调用方新生成）。
+func traeSanitizeLoginMachineID(raw string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" {
+		return ""
+	}
+	// 先按连字符数分流：uuid.Parse **也接受** 32 位无连字符 hex，如果先跑它会
+	// 把紧凑形态原样返回，导致下游拿到两种形态的 machine_id（设备画像漂移）。
+	if strings.Count(trimmed, "-") == 4 {
+		if _, err := uuid.Parse(trimmed); err == nil {
+			return trimmed
+		}
+		return ""
+	}
+	compact := strings.ReplaceAll(trimmed, "-", "")
+	if len(compact) != 32 {
+		return ""
+	}
+	sum, err := hex.DecodeString(compact)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+}
+
+// traeCallbackTruncationHint 识别「地址栏复制不完整」这一最高频粘贴错误。
+// authCodeInfo 与 userInfo 是两段内嵌 JSON，是整条 URL 里最长的参数，用户选地址栏
+// 文本时极易被截断（或粘上引号/CJK 括号包裹）。
+//
+// 调用约束：本函数只能用作**错误文案升级**，不能当硬拦。因为一条被截断但尾端恰好
+// 完整的 URL 可能仍能解析、且带合法 authCode；反之末尾为 `=` 的正常链接也不代表坏。
+// 所以只在解析失败 / 找不到授权码这两个已经确定失败的分支上，用本提示**取代**
+// 原来的笼统措词（把问题归因到「没拷全」而不是「登录失败」）。
+func traeCallbackTruncationHint(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	const selectAll = " — in the browser address bar press Ctrl+A to select the whole URL, then copy and paste again"
+	for _, marker := range []string{"\u2026", "..."} { // 省略号 / 三个点
+		if strings.Contains(trimmed, marker) {
+			return "pasted URL looks truncated (contains an ellipsis)" + selectAll
+		}
+	}
+	for _, wrap := range []string{`“`, `”`, `（`, `）`, `"`} {
+		if strings.Contains(trimmed, wrap) {
+			return "pasted text appears wrapped in quotes/brackets" + selectAll
+		}
+	}
+	// 尾端截断的三种形态：不完整百分号转义、空参数名、参数名后无值。
+	if strings.HasSuffix(trimmed, "%") || strings.HasSuffix(trimmed, "&") || strings.HasSuffix(trimmed, "=") {
+		return "pasted URL is cut off mid-parameter" + selectAll
+	}
+	return ""
 }
 
 func traeEnsureHTTPSScheme(raw string) string {

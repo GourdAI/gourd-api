@@ -60,18 +60,25 @@ func TestTraeChatAttemptsPrimaryChannelShape(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, true, streamOptions["include_usage"])
 
-	// messages 原样保留（不做任何 Trae 侧重建）。
+	// messages 形态：上游 content 是 []*LLMRawMessageContent，**裸字符串会被 400 拒**
+	// （cannot unmarshal string into Go struct field LLMRawMessage.messages.content），
+	// 故纯文本必须被数组化为 {type:"text",text:...}。
 	messages, ok := primary["messages"].([]any)
 	require.True(t, ok)
 	require.Len(t, messages, 2)
 	first := messages[0].(map[string]any)
 	require.Equal(t, "system", first["role"])
-	require.Equal(t, "sys", first["content"])
-	require.Equal(t, "hello", messages[1].(map[string]any)["content"])
+	require.Equal(t, []any{map[string]any{"type": "text", "text": "sys"}}, first["content"],
+		"system 角色的纯文本 content 也必须数组化（上游声明与角色无关）")
+	require.Equal(t, []any{map[string]any{"type": "text", "text": "hello"}}, messages[1].(map[string]any)["content"])
 
-	// OpenAI 参数透传。
+	// OpenAI 参数透传。tools[].function.parameters 上游是 string 类型（OpenAI 是 object），
+	// 不字符串化会被上游参数校验拒掉，表现为整请求失败。
 	require.Contains(t, primary, "tools")
+	tools := primary["tools"].([]any)
 	require.Equal(t, "auto", primary["tool_choice"])
+	// 回退通道（ide/v1/chat）不携带工具：上面的 tools 夹具无 parameters，不得被凭空造出。
+	require.NotContains(t, tools[0].(map[string]any)["function"].(map[string]any), "parameters")
 	require.EqualValues(t, 0.3, primary["temperature"])
 	require.EqualValues(t, 128, primary["max_tokens"])
 	require.EqualValues(t, 7, primary["seed"])
@@ -265,6 +272,28 @@ func TestTraeIDEPayloadSkippedWithoutUserMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, blankAttempts, 2)
 	require.Equal(t, "   ", decodeAttempt(t, blankAttempts[1].body)["user_input"])
+}
+
+// P2 回归（review 发现）：归一层把 tool_choice:"none" 连同 tools 一起摘掉后，出站
+// 报文已不依赖工具，此时 ide/v1/chat 回退必须仍可用（旧闸门看入站原文，会把这类
+// 请求的回退通道误关掉）。真正带工具的请求结论不变（见 PrimaryChannelShape）。
+func TestTraeChatAttemptsKeepsFallbackWhenToolChoiceNoneStripsTools(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"glm-5","messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],` +
+		`"tool_choice":"none"}`)
+
+	attempts, err := traeChatAttempts(body, TraeCredentials{UID: "u1", AccessToken: "at"}, 7)
+	require.NoError(t, err)
+	require.Len(t, attempts, 2, "none 已取消工具依赖，回退通道不得被误关")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(attempts[0].body, &payload))
+	require.NotContains(t, payload, "tools", "none + tools 必须一起摘除")
+	require.NotContains(t, payload, "tool_choice")
+
+	require.False(t, traeRequestDeclaresTools(attempts[0].body), "归一后的报文不应再声明工具")
+	require.True(t, traeRequestDeclaresTools(body), "入站原文确实带工具（旧闸门误判的根源）")
 }
 
 func TestTraeValidTurns(t *testing.T) {
