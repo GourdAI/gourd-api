@@ -836,6 +836,69 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:  false,
 	}
 
+	// ---- 火山方舟 豆包 Seed 对话/编程模型 ----
+	// Trae 渠道目录以品牌原始写法下发型号（Doubao-Seed-2.1-Pro、Doubao-Seed-2.0-Code、
+	// seed-code-pro-0430），方舟/百炼侧此前无任何兜底卡，导致这些名字在定价链四处
+	// （分组卡→渠道卡→目录→兜底卡）全部查无 → 定价闸门判未定价 → /v1/models 与模型
+	// 广场整批剔除、入口同时 404（2026-09-29 报障，与 2026-09-28 Qoder 别名同构）。
+	// 汇率口径 ÷7.14（¥1≈$0.14），与上方 doubao-embedding-vision 及本表其他国产模型一致；
+	// 价目取官方「中国内地」基础档（最低输入阶梯），与 qmodel/q37fmodel 的「基础档价」
+	// 口径一致，更长上下文由运营者按需在渠道/分组价卡上加档覆盖。
+	s.fallbackPrices["doubao-seed-2.1-pro"] = &ModelPricing{
+		InputPricePerToken:     0.84e-6,  // ¥6/MTok ≈ $0.84
+		OutputPricePerToken:    4.20e-6,  // ¥30/MTok ≈ $4.20
+		CacheReadPricePerToken: 0.168e-6, // ¥1.2/MTok ≈ $0.168（缓存命中）
+		SupportsCacheBreakdown: false,
+	}
+	// Doubao-Seed-2.0-Code（¥3.2/¥16、缓存 ¥0.64，≤32K 档）。同时承接 Trae 的
+	// seed-code-pro-0430：该型号无独立公开价目，按豆包编程模型现役档计价，
+	// 取有缓存价的 2.0-Code 卡而非更旧的 Seed-Code（¥1.2/¥8、缓存价零一手证据），
+	// 偏保守且不因缓存价缺失把命中 token 记成 $0。
+	s.fallbackPrices["doubao-seed-2.0-code"] = &ModelPricing{
+		InputPricePerToken:     0.448e-6, // ¥3.2/MTok ≈ $0.448
+		OutputPricePerToken:    2.24e-6,  // ¥16/MTok ≈ $2.24
+		CacheReadPricePerToken: 0.09e-6,  // ¥0.64/MTok ≈ $0.09
+		SupportsCacheBreakdown: false,
+	}
+	// Doubao-Seed-2.1-Turbo：官方发布口径「价格仅为 2.1 Pro 的一半」→ ¥3/¥15，
+	// 缓存命中按同比例 ¥0.6。单独建卡是为了让家族默认规则能把它从旗舰档卡里
+	// 排除出去（否则未来出现的 turbo 名会被按 Pro 多收一倍）。
+	s.fallbackPrices["doubao-seed-2.1-turbo"] = &ModelPricing{
+		InputPricePerToken:     0.42e-6,  // ¥3/MTok ≈ $0.42
+		OutputPricePerToken:    2.10e-6,  // ¥15/MTok ≈ $2.10
+		CacheReadPricePerToken: 0.084e-6, // ¥0.6/MTok ≈ $0.084
+		SupportsCacheBreakdown: false,
+	}
+
+	// ---- 千问（Trae 目录写法）----
+	// qwen-3.7-plus 不在这里单列：它与 Qoder 的 qmodel（Qwen3.7-Plus）是同一模型，
+	// 按 2026-09-22「同款模型对齐」口径复用那张卡，避免同一模型出现两份价目。
+	// 其余三个写法在本表零命中，且 qwen 系列刻意不做子串兜底（见上方国产 LLM 注释），
+	// 所以必须显式建卡 + 显式规则，否则依旧被闸门剪掉。
+	s.fallbackPrices["qwen-3.6-plus"] = &ModelPricing{
+		InputPricePerToken:     0.28e-6,  // ¥2/MTok ≈ $0.28（≤256K 档）
+		OutputPricePerToken:    1.68e-6,  // ¥12/MTok ≈ $1.68
+		CacheReadPricePerToken: 0.028e-6, // 显式缓存命中按输入 10% ≈ $0.028
+		SupportsCacheBreakdown: false,
+	}
+	s.fallbackPrices["qwen-3.5"] = &ModelPricing{
+		InputPricePerToken:     0.112e-6, // ¥0.8/MTok ≈ $0.112（qwen3.5-plus ≤128K 档）
+		OutputPricePerToken:    0.672e-6, // ¥4.8/MTok ≈ $0.672
+		CacheReadPricePerToken: 0.011e-6, // 显式缓存命中 ¥0.08/MTok ≈ $0.011
+		SupportsCacheBreakdown: false,
+	}
+	// Trae 的 qwen3-coder 为裸名（无 -plus/-flash 后缀）。按 coder-plus 档计价：
+	// 裸名无法判定子档，取家族内已取价的最高档保守计费，与 auto 借最高档同口径，
+	// 确保智能/省略命名的 coder 流量不以 $0 白偷。带档后缀的子档（-flash / -next /
+	// -30b-a3b）价格低于 coder-plus，由 isCheaperQwenVariant 排除后维持原有「无价」，
+	// 需要精细差异时由渠道/分组价卡覆盖。
+	s.fallbackPrices["qwen3-coder"] = &ModelPricing{
+		InputPricePerToken:     0.56e-6,  // ¥4/MTok ≈ $0.56（coder-plus ≤32K 档）
+		OutputPricePerToken:    2.24e-6,  // ¥16/MTok ≈ $2.24
+		CacheReadPricePerToken: 0.112e-6, // 输入缓存命中 ¥0.8/MTok ≈ $0.112
+		SupportsCacheBreakdown: false,
+	}
+
 	// xAI Grok 4.5: $2 input / $0.30 cached input / $6 output below 200k;
 	// long-context rates are $4 / $0.60 / $12 (>=200k prompt tokens).
 	s.fallbackPrices["grok-4.5"] = &ModelPricing{
@@ -1213,6 +1276,61 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["doubao-embedding-vision"]
 	}
 
+	// 火山方舟 豆包 Seed 对话/编程模型（Trae 渠道目录写法）。
+	// 顺序纪律：上方 doubao-embedding-vision 已经最优先命中，此处的 seed 子串与
+	// doubao-seed-2 前缀都不得抢走它（因此媒体护栏里的 embedding/vision 是事保险，
+	// 不依赖它）；带小数点的具体型号必须排在家族默认之前。
+	if strings.Contains(modelLower, "seed-2.1-pro") || strings.Contains(modelLower, "seed2.1pro") {
+		return s.fallbackPrices["doubao-seed-2.1-pro"]
+	}
+	// seed-code 子串同时覆盖 seed-code-pro-0430；排在 seed-2.0-code 之后不会抢它
+	// （后者不含 seed-code 子串）。
+	if strings.Contains(modelLower, "seed-2.0-code") || strings.Contains(modelLower, "seed-code") {
+		return s.fallbackPrices["doubao-seed-2.0-code"]
+	}
+	// turbo 必须排在家族默认之前，否则会被旗舰档默认卡抢走（多收一倍）。
+	if strings.Contains(modelLower, "seed-2.1-turbo") || strings.Contains(modelLower, "seed2.1turbo") {
+		return s.fallbackPrices["doubao-seed-2.1-turbo"]
+	}
+	// 家族默认：仅限当前一代 doubao-seed-2.*（方舟新名仍沿该命名下发）。
+	// 护栏，缺一不可：
+	//  1. 不收更宽的 doubao- 前缀：存量 doubao-1.5-pro/1.5-lite 价格低一个量级，
+	//     宽匹配会把它们按旗舰档多收；新名字由 fallback warn 日志暴露后再补卡。
+	//  2. 排除图片/视频/向量化（seedance/seedream/embedding/vision），否则按张/按秒
+	//     计费的流量会被按 token 计价（与 grok 家族同款护栏）。
+	//  3. 排除低档后缀（flash/lite/mini/thinking），它们是更便宜的变体，宁维持
+	//     原有「无价」也不得按旗舰档多收。
+	if strings.HasPrefix(modelLower, "doubao-seed-2") &&
+		!isDoubaoMediaFamilyModel(modelLower) && !isCheaperDoubaoVariant(modelLower) {
+		return s.fallbackPrices["doubao-seed-2.1-pro"]
+	}
+
+	// 千问（Trae 目录写法 qwen-3.x-plus / qwen-3.5 / qwen3-coder）。
+	// 百炼官方 Model ID 是 qwen3.7-plus（qwen 与数字之间无连字符），而 Trae 下发的是
+	// qwen-3.7-plus，两者差一个连字符；Qoder 的闭集别名表只收官方拼法，所以这里必须
+	// 把 Trae 写法接上：qwen-3.7-plus 复用 qmodel（同款模型对齐），其余三个走新建卡。
+	// 护栏，缺一不可：
+	//  1. 不收更宽的 qwen 前缀族：qwen-plus / qwen-max / qwen-turbo 等存量写法此前
+	//     故意处于无价状态，本次报障只涉及 Trae 目录内实际存在的型号。
+	//  2. qwen-3.7-plus / qwen-3.6-plus 两条已要求字面带 -plus，更便宜的 flash 变体
+	//     （qwen3.5-flash、qwen3.6-flash）天然不会命中。
+	//  3. qwen-3.5 与 qwen3-coder 是裸名/短名，必须显式排除更便宜的子档（见
+	//     isCheaperQwenVariant），否则 coder-flash/next/30b 会被按 coder-plus 多收。
+	if strings.Contains(modelLower, "qwen-3.7-plus") || strings.Contains(modelLower, "qwen3.7-plus") {
+		return s.fallbackPrices["qmodel"]
+	}
+	if strings.Contains(modelLower, "qwen-3.6-plus") || strings.Contains(modelLower, "qwen3.6-plus") {
+		return s.fallbackPrices["qwen-3.6-plus"]
+	}
+	if (strings.Contains(modelLower, "qwen-3.5") || strings.Contains(modelLower, "qwen3.5")) &&
+		!isCheaperQwenVariant(modelLower) {
+		return s.fallbackPrices["qwen-3.5"]
+	}
+	if (strings.Contains(modelLower, "qwen3-coder") || strings.Contains(modelLower, "qwen-3-coder")) &&
+		!isCheaperQwenVariant(modelLower) {
+		return s.fallbackPrices["qwen3-coder"]
+	}
+
 	// OpenAI（GPT-5 / Codex 族）：仅匹配已知型号，避免未知 OpenAI 型号误计价。
 	if normalized := normalizeKnownOpenAICodexModel(modelLower); normalized != "" {
 		switch normalized {
@@ -1283,6 +1401,47 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 
 	return nil
+}
+
+// isDoubaoMediaFamilyModel matches Volcengine Ark ids billed per image/video/
+// audio/vector unit rather than per token, so a new doubao-* chat name cannot
+// slip into the Seed family default card while a media model picks up token
+// pricing. Mirrors isGrokMediaFamilyModel (same guard, same rationale).
+func isDoubaoMediaFamilyModel(model string) bool {
+	for _, marker := range []string{
+		"seedance", "seedream", "embedding", "image", "video", "audio",
+		"speech", "asr", "tts", "vision",
+	} {
+		if strings.Contains(model, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCheaperQwenVariant reports that a qwen id names an explicitly cheaper tier
+// (flash/turbo/next/minus/30b-a3b). Those tiers are priced well below the
+// cards above, so they must stay unbilled (unchanged behaviour) rather than
+// silently inherit the plus-tier card and over-bill downstream customers.
+func isCheaperQwenVariant(model string) bool {
+	for _, marker := range []string{"flash", "turbo", "next", "minus", "30b", "embedding"} {
+		if strings.Contains(model, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCheaperDoubaoVariant reports that a doubao id names an explicitly cheaper
+// tier than the Seed 2.1 Pro flagship card, so the family default must not
+// inherit the flagship rate for it (over-billing downstream customers).
+func isCheaperDoubaoVariant(model string) bool {
+	for _, marker := range []string{"flash", "lite", "mini", "thinking", "turbo", "1.5", "1.6"} {
+		if strings.Contains(model, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *BillingService) grokUnknownTextFamilyFallback(model string) *ModelPricing {
