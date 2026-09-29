@@ -242,3 +242,36 @@ func TestQoderFallbackPricingAutoUsesTopTier(t *testing.T) {
 	require.InDelta(t, 15e-6, auto.OutputPricePerToken, 1e-12)
 }
 
+// TestQoderDisplayNameAliasesResolveToOfficialKeyCards 回归（2026-09-28 报障）：
+// Qoder 目录的 qwen 系列展示名（Qwen3.8-Max 等）此前在定价链无任何可解价卡：
+// 子串规则刻意不为 qwen 兜底（防误计价），而出站链早已把展示名归一为官方 key
+// 计费——两边口径倒挂导致「没价格 + 模型广场不显示 + 入口 404」。
+// 修复后展示名必须与官方 key 命中同一张价卡（而不是另立一张，避免双表漂移）。
+func TestQoderDisplayNameAliasesResolveToOfficialKeyCards(t *testing.T) {
+	t.Parallel()
+	svc := newTestBillingService()
+
+	for display, key := range map[string]string{
+		"Qwen3.8-Max":   "qmodel_38max",
+		"Qwen3.8-Flash": "qfmodel",
+		"Qwen3.7-Max":   "qmodel_latest",
+		"Qwen3.7-Plus":  "qmodel",
+		"Qwen3.7-Flash": "q37fmodel",
+		// 小写别名形态与大小写变体同样命中（输入大小写不敏感）。
+		"qwen3.8-max":   "qmodel_38max",
+		"QWEN3.8-FLASH": "qfmodel",
+	} {
+		got, err := svc.GetModelPricing(display)
+		require.NoErrorf(t, err, "展示名 %s 必须可解析出价格", display)
+		want := svc.getFallbackPricing(key)
+		require.NotNilf(t, want, "官方 key %s 必须有价卡", key)
+		require.InDeltaf(t, want.InputPricePerToken, got.InputPricePerToken, 1e-12, "%s 应同 %s 的输入价", display, key)
+		require.InDeltaf(t, want.OutputPricePerToken, got.OutputPricePerToken, 1e-12, "%s 应同 %s 的输出价", display, key)
+	}
+
+	// 防误计价底线不变：闭集之外的 qwen 名称不得被末位兜底命中。
+	_, err := svc.GetModelPricing("qwen3.9-flash")
+	require.ErrorIs(t, err, ErrModelPricingUnavailable, "闭集外名称不得被猜测计价")
+	_, err = svc.GetModelPricing("qwen-max")
+	require.ErrorIs(t, err, ErrModelPricingUnavailable)
+}

@@ -29,7 +29,26 @@ func TestModelPricingGate_BlocksUnpricedModel(t *testing.T) {
 
 	require.False(t, gate.HasPricing(context.Background(), "hy4-preview", nil),
 		"未定价模型必须判定为无定价（否则仍会被免费放行）")
-	require.False(t, gate.HasPricing(context.Background(), "qwen3.8-flash", nil))
+	require.False(t, gate.HasPricing(context.Background(), "totally-unpriced-model", nil))
+}
+
+// TestModelPricingGate_QoderDisplayNameAliasesArePriced 回归（2026-09-28 报障）：
+// qwen3.8-flash 等 Qoder 展示名在出站链已归一为官方 key 计费（normalizeQoderModelKey），
+// 定价链必须同口径归一——否则闸门将整个 qwen 系列判为未定价：模型广场整批剔除、
+// 管理端候选消失、入口请求 404「no pricing is configured」。
+func TestModelPricingGate_QoderDisplayNameAliasesArePriced(t *testing.T) {
+	gate := newGateForTest(t, true)
+
+	for _, model := range []string{
+		"qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.7-flash",
+		"Qwen3.8-Max", "Qwen3.8-Flash",
+	} {
+		require.Truef(t, gate.HasPricing(context.Background(), model, nil), "%s 必须判为已定价", model)
+	}
+
+	// 防误计价底线不变：闭集之外的 qwen 名称不得被兜底。
+	require.False(t, gate.HasPricing(context.Background(), "qwen-max", nil))
+	require.False(t, gate.HasPricing(context.Background(), "qwen3.9-flash", nil))
 }
 
 // TestModelPricingGate_AllowsPricedModel 正向不误伤：

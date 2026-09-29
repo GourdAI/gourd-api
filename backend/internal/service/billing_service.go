@@ -1,4 +1,4 @@
-﻿package service
+package service
 
 import (
 	"context"
@@ -928,6 +928,8 @@ func (s *BillingService) initFallbackPricing() {
 	//     Qwen3.7-Flash 官方阶梯 0.030/0.130 → 0.200/0.800，兜底取基础档）
 	//   - auto                     → 平台最高档（Kimi-K3 卡 $3/$15）保守计价，
 	//     智能路由不得以 $0 白嫖；该名同时覆盖 WorkBuddy 的同名 auto 入口。
+	// 展示名/别名（Qwen3.8-Flash → qfmodel 等）不在表内单列：由 getFallbackPricing
+	// 末位的闭集归一（normalizeQoderModelKey）按官方 key 取价，避免两份价卡表。
 	s.fallbackPrices["dmodel"] = &ModelPricing{
 		InputPricePerToken:     deepseekProOffPeakInputPrice,
 		OutputPricePerToken:    deepseekProOffPeakOutputPrice,
@@ -1022,6 +1024,8 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// qoder.go DefaultQoderModelIDs 对齐，请求什么代号就查什么代号。
 	// 必须在其它子串规则之前判断：代号无品牌前缀（如 auto/dmodel），
 	// 落到下方任何 Contains 链都有误命中风险。
+	// 展示名/别名（qwen3.8-flash 等）的闭集归一放在链末尾（见函数尾部），
+	// 避免抢在其它家族规则之前改变既有匹配顺序。
 	if pricing, ok := s.fallbackPrices[modelLower]; ok && isQoderModelCode(modelLower) {
 		return pricing
 	}
@@ -1262,6 +1266,20 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// the current default text card so a new model cannot ship unbilled.
 	if pricing := s.grokUnknownTextFamilyFallback(modelLower); pricing != nil {
 		return pricing
+	}
+
+	// 末位兜底：Qoder 展示名/别名（qwen3.8-flash、Qwen3.8-Max 等）闭集归一后
+	// 按官方 key 取价卡。
+	//
+	// 这些展示名不在上方任何子串规则里（qwen 系列刻意不做子串兜底，防误计价），
+	// 而转发/计费出站链早已把它们归一为官方 key（normalizeQoderModelKey）：
+	// 定价链若不归一，模型广场、/v1/models 与管理端候选会因「查无价」把 qwen
+	// 系列整批剔除（准入中间件同时 404），与真实计费口径倒挂（2026-09-28 报障）。
+	// 只认闭集命中的官方 key，未知值不猜测，维持原有 nil 语义。
+	if normalized := normalizeQoderModelKey(modelLower); normalized != modelLower {
+		if pricing, ok := s.fallbackPrices[normalized]; ok && isQoderModelCode(normalized) {
+			return pricing
+		}
 	}
 
 	return nil

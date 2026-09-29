@@ -187,6 +187,11 @@ func qoderModelDisplayName(key string) string {
 // 且响应的 model 字段恒为 auto，客户端会看到「模型不一致」）。
 //
 // 键统一按小写比较（调用方先 ToLower）；值必须是 qoderModelCatalog 中存在的 key。
+//
+// 该闭集同时被计费兜底价卡链末位复用（billing_service.getFallbackPricing）：
+// 展示名 → key 归一后按 key 取价，保证定价链（闸门/广场/候选过滤）与出站计费链
+// 同口径。qwen 系列展示名没有任何子串兜底规则，不在此归一就会被判「无价」
+// 并整批剪出模型广场（2026-09-28 线上报障的根因）。
 var qoderModelAliasCatalog = map[string]string{
 	// Qwen
 	"qwen3.8-max":   "qmodel_38max",

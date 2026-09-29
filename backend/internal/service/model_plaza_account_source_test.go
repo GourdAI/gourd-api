@@ -233,6 +233,45 @@ func TestListPlazaGroups_NoGatewayFallsBackToChannelOnly(t *testing.T) {
 	require.Equal(t, []string{"dmodel"}, plazaNames(out[0].Models))
 }
 
+// TestListPlazaGroups_QoderDisplayNameAliasesShowWithPricing 回归（2026-09-28 报障）：
+// Qoder 账号 model_mapping 使用展示名（qwen3.8-flash 等）时，此前定价链无归一：
+// 闸门判未定价 → 广场整批剔除（用户报「广场不显示 qwen 系列」）；闸门关闭时
+// 有卡但 pricing=nil（无价）。修复后展示名必须展示且带实付价（同官方 key 卡）。
+func TestListPlazaGroups_QoderDisplayNameAliasesShowWithPricing(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Pricing.RequirePricedModels = true
+	billing := NewBillingService(cfg, nil)
+	resolver := NewModelPricingResolver(nil, billing)
+
+	gateway := &GatewayService{accountRepo: &plazaAccountRepoStub{
+		byGroup: map[int64][]Account{
+			10: {plazaAccount(1, PlatformQoder, "qwen3.8-flash", "qwen3.8-max", "dmodel")},
+		},
+	}}
+	repo := &mockChannelRepository{
+		listAllFn: func(context.Context) ([]Channel, error) { return nil, nil },
+	}
+	groups := []Group{{ID: 10, Name: "Qoder", Platform: PlatformQoder, RateMultiplier: 1}}
+	svc := NewModelPlazaService(repo, &stubGroupRepoForAvailable{activeGroups: groups}, nil, billing, resolver, gateway)
+
+	out, err := svc.ListGroups(context.Background())
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, []string{"dmodel", "qwen3.8-flash", "qwen3.8-max"}, plazaNames(out[0].Models),
+		"展示名不得因闸门误判未定价而被剔除")
+
+	byName := make(map[string]PlazaModel, len(out[0].Models))
+	for _, m := range out[0].Models {
+		byName[m.Name] = m
+	}
+	flash := byName["qwen3.8-flash"]
+	require.NotNil(t, flash.Pricing, "展示名必须展示出实付价（此前 pricing=nil）")
+	require.NotNil(t, flash.Pricing.InputPrice)
+	require.InDelta(t, 0.15e-6, *flash.Pricing.InputPrice, 1e-12, "qwen3.8-flash 实付输入价 = qfmodel 卡")
+	require.NotNil(t, flash.Pricing.OutputPrice)
+	require.InDelta(t, 0.47e-6, *flash.Pricing.OutputPrice, 1e-12, "qwen3.8-flash 实付输出价 = qfmodel 卡")
+}
+
 // TestFallbackPlazaModelIDsSkipsMultiProtocolProviders 与网关 compositeAvailableModels 的
 // 注释同口径：CN 供应商没有可用静态目录，回落会错返 Claude 列表。
 func TestFallbackPlazaModelIDsSkipsMultiProtocolProviders(t *testing.T) {
