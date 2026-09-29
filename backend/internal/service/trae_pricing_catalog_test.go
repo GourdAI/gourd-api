@@ -84,15 +84,20 @@ func TestTraePreviouslyUnpricedModelsResolveToOfficialCards(t *testing.T) {
 	}
 
 	// 同款模型对齐（2026-09-22 口径）：Trae 的 qwen-3.7-plus 与 Qoder 的
-	// Qwen3.7-Plus 是同一个模型，必须复用 qmodel 那张卡，不得出现两份价目。
+	// Qwen3.7-Plus 是同一个模型，必须复用 qmodel 那一张卡（同一个指针），不得
+	// 出现两份价目。用 Same 而不是比金额：若有人另建一张同价卡（正是本条要防的
+	// 双表漂移），比数字的断言会恒绿，而 Same 会当场失败。
 	trae := svc.getFallbackPricing("qwen-3.7-plus")
 	require.NotNil(t, trae)
-	require.InDelta(t, svc.getFallbackPricing("qmodel").InputPricePerToken, trae.InputPricePerToken, 1e-12)
-	require.InDelta(t, svc.getFallbackPricing("qmodel").OutputPricePerToken, trae.OutputPricePerToken, 1e-12)
+	require.Same(t, svc.getFallbackPricing("qmodel"), trae,
+		"qwen-3.7-plus 必须复用 qmodel 价卡本体，不得另建第二份价目")
 
-	// 大小写宽容：闸门入口已 ToLower，这里确认大写/小写两种写法同卡。
-	require.InDelta(t, trae.InputPricePerToken,
-		svc.getFallbackPricing("QWEN-3.7-PLUS").InputPricePerToken, 1e-12)
+	// 大小写与首尾空白：闸门会 trim 后放行，计费链不 trim 就会 fail-closed（查无价），
+	// 两边必须同口径；同时验证百炼官方拼法（无连字符）与 Trae 拼法落同一张卡。
+	require.Same(t, trae, svc.getFallbackPricing("  QWEN-3.7-PLUS  "),
+		"带大小写/首尾空白的 Trae 写法必须与归一后同卡")
+	require.Same(t, svc.getFallbackPricing("qwen3.7-plus"), trae,
+		"百炼官方拼法与 Trae 拼法必须同卡")
 }
 
 // TestTraePricingRulesDoNotOverBillCheaperVariants 反向保护（比"能不能展示"更要命）：
@@ -121,10 +126,17 @@ func TestTraePricingRulesDoNotOverBillCheaperVariants(t *testing.T) {
 	}
 
 	// 媒体族：按张/按秒计费，绝不可命中 token 价卡。
+	// 前 3 项靠宽前缀护栏；后 4 项是 code review 拓出的「子串规则短路绕过护栏」回归集：
+	// 旧写法下 seed-code / seed-2.0-code / seed-2.1-turbo / seed-2.1-pro 子句命中即
+	// return，媒体判据根本没机会跑，这些名字会被按 token 计费。
 	for _, model := range []string{
 		"doubao-seedance-2-0",
 		"doubao-seedream-5-0-pro",
 		"doubao-seed-2.1-asr",
+		"doubao-seed-2.0-code2video",
+		"seed-code-asr",
+		"doubao-seed-2.1-turbo-asr",
+		"doubao-seed-2.1-pro-image",
 	} {
 		require.Nilf(t, svc.getFallbackPricing(model), "%s 是媒体型号，不得按 token 计价", model)
 	}
@@ -136,6 +148,76 @@ func TestTraePricingRulesDoNotOverBillCheaperVariants(t *testing.T) {
 	require.Greater(t, pro.InputPricePerToken, turbo.InputPricePerToken)
 	require.InDelta(t, 0.42e-6, turbo.InputPricePerToken, 1e-12)
 	require.InDelta(t, 2.10e-6, turbo.OutputPricePerToken, 1e-12)
+}
+
+// TestTraePricingFamilyDefaultDoesNotGrabCheaperSiblings 专项守护 code review
+// 拓出的 4 处误抢路径（都属于"新规则把兄弟型号抢到不相干价卡"）。
+func TestTraePricingFamilyDefaultDoesNotGrabCheaperSiblings(t *testing.T) {
+	t.Parallel()
+	svc := newTestBillingService()
+
+	// 上一代 / 未来代不得被 2.1 Pro 旗舰卡抢走。
+	for _, model := range []string{
+		"doubao-seed-2.0",
+		"doubao-seed-2.0-pro",
+		"doubao-seed-2.0-0425",
+		"doubao-seed-2.5",
+		"doubao-seed-2.5-pro",
+	} {
+		require.Nilf(t, svc.getFallbackPricing(model),
+			"%s 不是当前代型号，价格未知，必须维持无价而非按旗舰档多收", model)
+	}
+
+	// 当前代/上一代的 -code 编程型号必须走编程档卡（¥3.2/¥16），不得落到旗舰卡（¥6/¥30）。
+	for _, model := range []string{
+		"Doubao-Seed-2.1-Code",
+		"doubao-seed-2.0-code-0828",
+	} {
+		pricing := svc.getFallbackPricing(model)
+		require.NotNilf(t, pricing, "%s 必须命中编程档卡", model)
+		require.InDeltaf(t, 0.448e-6, pricing.InputPricePerToken, 1e-12,
+			"%s 必须按编程档 ¥3.2 计价，不得被旗舰档 ¥6 抢走", model)
+	}
+
+	// 未知代际的 -code（2.5-code）必须无价：上一代编程价不适用于未来代，静默少收
+	// 比不上架更难发现；编程档的代际判据必须与旗舰档对称，不能一边宽一边窄。
+	require.Nil(t, svc.getFallbackPricing("doubao-seed-2.5-code"),
+		"未来代编程型号不得静默按 2.0 编程档计价")
+
+	// qwen 裸名规则不得抢走价格更高/不同的 coder 与 max 档。
+	for _, model := range []string{
+		"qwen3.5-coder",
+		"qwen3.5-max",
+		"qwen-3.5-max",
+		"qwen-3.5-flash",
+	} {
+		require.Nilf(t, svc.getFallbackPricing(model),
+			"%s 不得被 qwen-3.5 裸名规则按 plus 档计价", model)
+	}
+
+	// 开源权重/规模后缀不得被裸名规则混为商用 API 同价（480b-a35b 不含 30b 子串，
+	// 旧 marker 表接不住，与裸 qwen3-coder 同价就是错收）。
+	for _, model := range []string{
+		"qwen3-coder-480b-a35b-instruct",
+		"qwen3.5-235b-a22b",
+		"qwen3.5-14b-base",
+	} {
+		require.Nilf(t, svc.getFallbackPricing(model),
+			"%s 是开源权重档，不得被裸名规则按商用 plus/coder 档计价", model)
+	}
+
+	// doubao-seed-2.1-code-flash：既不能命中旗舰，也不能命中编程档（flash 更便宜）。
+	require.Nil(t, svc.getFallbackPricing("doubao-seed-2.1-code-flash"))
+
+	// seed-code 历史名带 turbo 后缀 / pro 名带 flash 后缀：旧写法下子串规则命中即
+	// return，低档护栏根本没机会跑——必须维持无价。
+	require.Nil(t, svc.getFallbackPricing("seed-code-pro-0430-turbo"),
+		"更便宜子档不得被子串规则短路抢走护栏而按编程/旗舰档多收")
+	require.Nil(t, svc.getFallbackPricing("doubao-seed-2.1-pro-flash"),
+		"pro 子句不得抢走 flash 低档")
+
+	// 家族判据不得漏到后面的宽匹配里：非豆包 Seed 命名的存量名字必须原样维持无价。
+	require.Nil(t, svc.getFallbackPricing("doubao-pro"))
 }
 
 // TestListPlazaGroups_TraeCatalogModelsAllVisible 端到端复现用户报障：账号

@@ -1081,7 +1081,10 @@ func (s *BillingService) initFallbackPricing() {
 
 // getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
-	modelLower := strings.ToLower(model)
+	// TrimSpace 与定价闸门（model_pricing_gate.go）保持同一口径：闸门 trim 后放行、
+	// 本函数不 trim 会让带首尾空白的名字在计费链上查无价（fail-closed），而
+	// trae_models.go 已证实上游确实会下发带空白的 config_name。
+	modelLower := strings.ToLower(strings.TrimSpace(model))
 
 	// Qoder 平台模型代号（精确匹配，不参与子串规则）：代号集合封闭且与
 	// qoder.go DefaultQoderModelIDs 对齐，请求什么代号就查什么代号。
@@ -1277,32 +1280,12 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 
 	// 火山方舟 豆包 Seed 对话/编程模型（Trae 渠道目录写法）。
-	// 顺序纪律：上方 doubao-embedding-vision 已经最优先命中，此处的 seed 子串与
-	// doubao-seed-2 前缀都不得抢走它（因此媒体护栏里的 embedding/vision 是事保险，
-	// 不依赖它）；带小数点的具体型号必须排在家族默认之前。
-	if strings.Contains(modelLower, "seed-2.1-pro") || strings.Contains(modelLower, "seed2.1pro") {
-		return s.fallbackPrices["doubao-seed-2.1-pro"]
-	}
-	// seed-code 子串同时覆盖 seed-code-pro-0430；排在 seed-2.0-code 之后不会抢它
-	// （后者不含 seed-code 子串）。
-	if strings.Contains(modelLower, "seed-2.0-code") || strings.Contains(modelLower, "seed-code") {
-		return s.fallbackPrices["doubao-seed-2.0-code"]
-	}
-	// turbo 必须排在家族默认之前，否则会被旗舰档默认卡抢走（多收一倍）。
-	if strings.Contains(modelLower, "seed-2.1-turbo") || strings.Contains(modelLower, "seed2.1turbo") {
-		return s.fallbackPrices["doubao-seed-2.1-turbo"]
-	}
-	// 家族默认：仅限当前一代 doubao-seed-2.*（方舟新名仍沿该命名下发）。
-	// 护栏，缺一不可：
-	//  1. 不收更宽的 doubao- 前缀：存量 doubao-1.5-pro/1.5-lite 价格低一个量级，
-	//     宽匹配会把它们按旗舰档多收；新名字由 fallback warn 日志暴露后再补卡。
-	//  2. 排除图片/视频/向量化（seedance/seedream/embedding/vision），否则按张/按秒
-	//     计费的流量会被按 token 计价（与 grok 家族同款护栏）。
-	//  3. 排除低档后缀（flash/lite/mini/thinking），它们是更便宜的变体，宁维持
-	//     原有「无价」也不得按旗舰档多收。
-	if strings.HasPrefix(modelLower, "doubao-seed-2") &&
-		!isDoubaoMediaFamilyModel(modelLower) && !isCheaperDoubaoVariant(modelLower) {
-		return s.fallbackPrices["doubao-seed-2.1-pro"]
+	// 分派与全部护栏集中在 doubaoSeedFamilyFallback 内部：上一版把护栏挂在个别
+	// `||` 分支上，短路让 seed-code / seed-2.0-code / seed-2.1-pro / seed-2.1-turbo
+	// 四条完全不过护栏（doubao-seed-2.0-code2video 按 token、
+	// doubao-seed-2.1-pro-flash 按旗舰档……都是多收下游客户的钱）。
+	if pricing, decided := s.doubaoSeedFamilyFallback(modelLower); decided {
+		return pricing
 	}
 
 	// 千问（Trae 目录写法 qwen-3.x-plus / qwen-3.5 / qwen3-coder）。
@@ -1316,18 +1299,30 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	//     （qwen3.5-flash、qwen3.6-flash）天然不会命中。
 	//  3. qwen-3.5 与 qwen3-coder 是裸名/短名，必须显式排除更便宜的子档（见
 	//     isCheaperQwenVariant），否则 coder-flash/next/30b 会被按 coder-plus 多收。
-	if strings.Contains(modelLower, "qwen-3.7-plus") || strings.Contains(modelLower, "qwen3.7-plus") {
+	// 两种拼法都接：带连字符的是 Trae 目录写法（上轮闸门 404 的直接受害项），
+	// 不带的是百炼官方 Model ID（同时也会被函数末位的 Qoder 闭集归一接住）。
+	// 保留双入口是有意的冗余（计费闸门宁可多一层命中，不可漏），但两条都必须
+	// 过 isCheaperQwenVariant：否则 qwen3.7-plus-flash 这类拼接写法会被按 plus 档多收。
+	if (strings.Contains(modelLower, "qwen-3.7-plus") || strings.Contains(modelLower, "qwen3.7-plus")) &&
+		!isCheaperQwenVariant(modelLower) {
 		return s.fallbackPrices["qmodel"]
 	}
-	if strings.Contains(modelLower, "qwen-3.6-plus") || strings.Contains(modelLower, "qwen3.6-plus") {
+	if (strings.Contains(modelLower, "qwen-3.6-plus") || strings.Contains(modelLower, "qwen3.6-plus")) &&
+		!isCheaperQwenVariant(modelLower) {
 		return s.fallbackPrices["qwen-3.6-plus"]
 	}
+	// qwen-3.5 是裸名（Trae 目录写法，无档位后缀），必须额外排除 coder/max：
+	// 百炼的 qwen3.5-coder / qwen3.5-max 价格与 qwen3.5-plus 不同档（coder 档
+	// ¥4/¥16 是这里的 5 倍），若被裸名规则抢走会按 1/5 的价格少收；把它们留作
+	// 「无价」维持报障前的原状，需要上架时由渠道/分组价卡精确覆盖。
 	if (strings.Contains(modelLower, "qwen-3.5") || strings.Contains(modelLower, "qwen3.5")) &&
-		!isCheaperQwenVariant(modelLower) {
+		!isCheaperQwenVariant(modelLower) &&
+		!strings.Contains(modelLower, "coder") && !strings.Contains(modelLower, "max") &&
+		!hasQwenOpenWeightSpec(modelLower) {
 		return s.fallbackPrices["qwen-3.5"]
 	}
 	if (strings.Contains(modelLower, "qwen3-coder") || strings.Contains(modelLower, "qwen-3-coder")) &&
-		!isCheaperQwenVariant(modelLower) {
+		!isCheaperQwenVariant(modelLower) && !hasQwenOpenWeightSpec(modelLower) {
 		return s.fallbackPrices["qwen3-coder"]
 	}
 
@@ -1403,6 +1398,81 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	return nil
 }
 
+// doubaoSeedFamilyFallback 分派火山方舟豆包 Seed 对话/编程型号的兜底价卡。
+// decided=true 表示该名字属于豆包 Seed 命名线、已由本函数定论（定论可以是
+// 「无价」）；decided=false 表示与豆包家族无关，交回调用方继续匹配。
+//
+// 全部护栏在此一次性排好，不再挂在个别子串分支上：//
+//  1. 家族判据只认 doubao-seed* / seed-2* / seed-code* 三种写法，不收宽泛的
+//     doubao- 前缀（存量 doubao-pro / doubao-1.5-* 价格低一个量级，必须维持
+//     原有匹配语义，不得进入本函数被判家族默认）。
+//  2. 媒体族（seedance/seedream/embedding/image/video/audio/speech/asr/tts/vision）
+//     一律无价——它们按张/按秒计费，命中任何 token 价卡都是错收。这一条必须先于
+//     下面所有型号判定，否则 seed-code-asr / seed-2.0-code2video / 2.1-turbo-asr
+//     会被子串规则短路抢走。
+//  3. turbo 有独立卡，必须排在「更便宜子档」护栏之前（turbo 本身就是低档名）。
+//  4. 未知代际（doubao-seed-2.0 / 2.0-pro / 2.5-*）一律无价，与家族默认的代际
+//     判据严格对称；否则未来代会被上一代价格静默少收。新型号由
+//     TestTraeFallbackPricingCoversCatalog 在 CI 里拓出来，而不是在生产里默默错价。
+func (s *BillingService) doubaoSeedFamilyFallback(model string) (*ModelPricing, bool) {
+	if !isDoubaoSeedFamilyModel(model) {
+		return nil, false
+	}
+	if isDoubaoMediaFamilyModel(model) {
+		return nil, true
+	}
+	if strings.Contains(model, "seed-2.1-turbo") || strings.Contains(model, "seed2.1turbo") {
+		return s.fallbackPrices["doubao-seed-2.1-turbo"], true
+	}
+	// 编程档：seed-code 子串覆盖历史名 seed-code-pro-0430；当前代的 -code 后缀
+	// （如 Doubao-Seed-2.1-Code）不接就会落到旗舰默认，¥6/¥30 vs ¥3.2/¥16 多收一倍。
+	if strings.Contains(model, "seed-2.0-code") || strings.Contains(model, "seed-code") ||
+		(strings.HasPrefix(model, "doubao-seed-2.1") && strings.Contains(model, "code")) {
+		if isCheaperDoubaoVariant(model) {
+			return nil, true
+		}
+		return s.fallbackPrices["doubao-seed-2.0-code"], true
+	}
+	// 更便宜子档（flash/lite/mini/thinking/上一代 1.5、1.6）一律无价，不得按旗舰档多收。
+	if isCheaperDoubaoVariant(model) {
+		return nil, true
+	}
+	if strings.Contains(model, "seed-2.1-pro") || strings.Contains(model, "seed2.1pro") ||
+		strings.HasPrefix(model, "doubao-seed-2.1") {
+		return s.fallbackPrices["doubao-seed-2.1-pro"], true
+	}
+	return nil, true
+}
+
+// isDoubaoSeedFamilyModel 是 doubaoSeedFamilyFallback 的入口判据（输入需已小写）。
+// 故意不收宽泛的 doubao- 前缀；也包含 doubao-seedance/seedream 等媒体名，它们
+// 会在下一步被媒体护栏拦下（宁可接管后判无价，也不让它们漏到后面的宽匹配里）。
+func isDoubaoSeedFamilyModel(model string) bool {
+	return strings.HasPrefix(model, "doubao-seed") ||
+		strings.HasPrefix(model, "seed-2") ||
+		strings.Contains(model, "seed-code")
+}
+
+// hasQwenOpenWeightSpec 报告 qwen 名字带了开源权重/部署规模后缀（如
+// …-480b-a35b-instruct、qwen3-14b-base、-vl、-ocr、-omni、-preview）。百炼商用
+// API 的 plus/coder 档与开源权重档不同价（开源侧普遍更便宜或按时长计费），
+// 裸名规则（qwen-3.5 / qwen3-coder）不能把它们混为同一价卡。规模判据取
+// 「数字紧跟字母 b」这一形式而非穷举常量，因此 5b/0.6b/a35b/235b 都接得住，
+// 新规模名不会静默混档。
+func hasQwenOpenWeightSpec(model string) bool {
+	for _, marker := range []string{"instruct", "base", "-vl", "vl-", "ocr", "omni", "preview"} {
+		if strings.Contains(model, marker) {
+			return true
+		}
+	}
+	for i := 1; i < len(model); i++ {
+		if model[i] == 'b' && model[i-1] >= '0' && model[i-1] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
 // isDoubaoMediaFamilyModel matches Volcengine Ark ids billed per image/video/
 // audio/vector unit rather than per token, so a new doubao-* chat name cannot
 // slip into the Seed family default card while a media model picks up token
@@ -1419,12 +1489,15 @@ func isDoubaoMediaFamilyModel(model string) bool {
 	return false
 }
 
-// isCheaperQwenVariant reports that a qwen id names an explicitly cheaper tier
-// (flash/turbo/next/minus/30b-a3b). Those tiers are priced well below the
-// cards above, so they must stay unbilled (unchanged behaviour) rather than
-// silently inherit the plus-tier card and over-bill downstream customers.
+// isCheaperQwenVariant reports that a qwen id names a tier that is NOT the
+// plus-tier card above (flash/turbo/next/minus/lite/mini/free/30b/embedding).
+// Those names sit at a different price point, so they must stay unbilled
+// (unchanged behaviour) rather than silently inherit the plus-tier card and
+// mis-bill downstream customers. Note: "coder"/"max" are deliberately NOT in
+// this list — the qwen3-coder card itself would self-exclude; they are
+// excluded on the bare-name rule explicitly instead.
 func isCheaperQwenVariant(model string) bool {
-	for _, marker := range []string{"flash", "turbo", "next", "minus", "30b", "embedding"} {
+	for _, marker := range []string{"flash", "turbo", "next", "minus", "30b", "embedding", "lite", "mini", "free", "thinking"} {
 		if strings.Contains(model, marker) {
 			return true
 		}
