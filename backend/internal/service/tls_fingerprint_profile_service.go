@@ -173,7 +173,12 @@ func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profil
 // 逻辑：
 //  1. 未启用 TLS 指纹 → 返回 nil（不伪装）
 //  2. 启用 + 绑定了 profile_id → 从缓存查找对应 profile
-//  3. 启用 + 未绑定或找不到 → 返回空 Profile（使用代码内置默认值）
+//  3. 启用 + 未绑定或找不到 → 按平台返回内置默认 Profile
+//
+// 第 3 步必须按平台区分：传输层指纹要与该平台上真实官方客户端的 TLS 栈同源，否则与
+// HTTP 层声明的客户端身份互相矛盾（比不伪装更容易被判为异常）。
+// OpenAI/Codex 的 CLI 是 Rust + rustls，套用 Node.js/Claude Code 形状即为错配，
+// 故返回 rustls 形状；其余平台沿用历史 Node.js 默认值（本次改动不改变其行为）。
 func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsfingerprint.Profile {
 	if account == nil || !account.IsTLSFingerprintEnabled() {
 		return nil
@@ -190,8 +195,18 @@ func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsf
 			return p
 		}
 	}
-	// TLS 启用但无绑定 profile → 空 Profile → dialer 使用内置默认值
-	return &tlsfingerprint.Profile{Name: "Built-in Default (Node.js 24.x)"}
+	// TLS 启用但无可用模板 → 按平台回落内置默认
+	return defaultTLSProfileForPlatform(account.Platform)
+}
+
+// defaultTLSProfileForPlatform 返回平台对应的内置默认 TLS Profile。
+//
+// 未列出的平台一律沿用 Node.js 默认值，保持改动前的行为不变。
+func defaultTLSProfileForPlatform(platform string) *tlsfingerprint.Profile {
+	if platform == PlatformOpenAI {
+		return tlsfingerprint.CodexRustlsProfile()
+	}
+	return tlsfingerprint.NodeDefaultProfile()
 }
 
 // --- 缓存管理 ---

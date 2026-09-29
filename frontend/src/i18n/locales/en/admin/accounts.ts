@@ -1153,7 +1153,7 @@
         },
         tlsFingerprint: {
           label: 'TLS Fingerprint Simulation',
-          hint: 'Simulate Node.js/Claude Code client TLS fingerprint',
+          hint: 'Simulate the official client TLS fingerprint for this platform (Claude → Node.js/Claude Code, OpenAI → Codex CLI/rustls), or pick a profile',
           defaultProfile: 'Built-in Default',
           randomProfile: 'Random'
         },

@@ -1222,7 +1222,7 @@
         },
         tlsFingerprint: {
           label: 'TLS 指纹模拟',
-          hint: '模拟 Node.js/Claude Code 客户端的 TLS 指纹',
+          hint: '模拟该平台官方客户端的 TLS 指纹（Claude → Node.js/Claude Code，OpenAI → Codex CLI/rustls），也可指定模板',
           defaultProfile: '内置默认',
           randomProfile: '随机'
         },

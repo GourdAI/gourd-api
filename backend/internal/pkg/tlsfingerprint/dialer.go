@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/proxy"
@@ -331,6 +332,16 @@ func isGREASEValue(v uint16) bool {
 	return v&0x0f0f == 0x0a0a && v>>8 == v&0xff
 }
 
+// hasExtensionID reports whether the ordered extension list contains the given type ID.
+func hasExtensionID(ids []uint16, want uint16) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
 // buildClientHelloSpecFromProfile constructs ClientHelloSpec from a Profile.
 // This is a standalone function that can be used by both Dialer and HTTPProxyDialer.
 func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
@@ -445,6 +456,19 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 	if enableGREASE && (profile == nil || len(profile.Extensions) == 0) {
 		extensions = append([]utls.TLSExtension{&utls.UtlsGREASEExtension{}}, extensions...)
 		extensions = append(extensions, &utls.UtlsGREASEExtension{})
+	}
+
+	// Guard against a silently ineffective profile: extensions are built strictly from the
+	// ordered ID list, so a profile that sets ALPNProtocols/KeyShareGroups but omits the
+	// matching extension ID will negotiate as if those fields were never configured.
+	// ALPN(16) absence is the dangerous one — it lets the server pick HTTP/2 while this
+	// transport only speaks HTTP/1.1 (see utls issue #16).
+	if profile != nil && len(profile.Extensions) > 0 && len(profile.ALPNProtocols) > 0 &&
+		!hasExtensionID(extOrder, 16) {
+		slog.Warn("tls_fingerprint_profile_alpn_ineffective",
+			"profile", profile.Name,
+			"alpn", strings.Join(profile.ALPNProtocols, ","),
+			"hint", "add extension id 16 to the profile's extensions list, or ALPN is not sent")
 	}
 
 	return &utls.ClientHelloSpec{
