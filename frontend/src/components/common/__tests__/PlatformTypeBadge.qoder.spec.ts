@@ -22,8 +22,8 @@ describe('PlatformTypeBadge Qoder', () => {
 
     expect(wrapper.text()).toContain('Qoder')
     expect(wrapper.text()).toContain('Key')
-    expect(wrapper.html()).toContain('bg-purple-100')
-    expect(wrapper.html()).not.toContain('bg-violet-100')
+    expect(wrapper.html()).toContain('bg-brandpurple-100')
+    expect(wrapper.html()).not.toContain('bg-brandviolet-100')
   })
 
   it('renders the Qoder platform icon mark (gradient rounded square with Q glyph)', () => {

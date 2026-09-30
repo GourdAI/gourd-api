@@ -4,19 +4,33 @@ package service
 //
 // 为什么用这个端点而不是 /v1/models：Trae 聊天域没有 OpenAI 形态的模型列表端点，
 // 上游把「当前 IDE 版本可用哪些模型」放在对话参数详情接口里下发（请求体带
-// function=solo_work_lite，与 llm_utils_chat 同一 function 取值），响应
+// function=solo_agent，与 llm_utils_chat **必须同一个 function 取值**，见
+// traeChatFunction 注释），响应
 // config_info_list[].config_name 就是聊天请求体里的 model / config_name 取值，
 // 因此拉到即可直接用作对外模型 ID，无需再做名字换算。
 //
+// 【function 与聊天侧必须同表】上游按 function 分片下发可调目录，拉到 A 表却用
+// B 表调用，会把「本通道必 4001」的模型开放给下游（2026-09-29 报障形态：
+// qwen3.8-flash 在 solo_agent 表内、不在 solo_work_lite 表内）。
+//
 // 三条过滤纪律（缺一会把不可调的条目开放给用户）：
 //  1. config_switch=false → 上游已下线，调用必失败；
-//  2. is_invisible_to_user=true → 内部 subagent / 实验通道（如 browser_use_subagent），
-//     对用户暴露没有意义；
-//  3. display_name 为空 → 企业租户占位模板，不是真实模型。
+//  2. is_invisible_to_user=true → 内部 subagent / 实验通道（如 browser_use_subagent）
+//     或自动回落档（*-auto、*_advisor_*），对用户暴露没有意义；
+//  3. display_name 为空 → 企业内部工具条目（custom_model_*、title_generation、
+//     input_optimization、summary），不是面向用户的真实模型；实测调用会
+//     HTTP 200 + 流内 code:4023。
 // 两个布尔字段都是「缺省即视为可见/启用」，上游并不总是显式下发。
 //
-// 该端点不提供 reasoning / modalities，所以这里产出的元数据一律不完整，
-// SyncUpstreamModelCatalog 会回一条 metadata_partial 警告（而不是假装同步成功）。
+// 第四条为冗余防线：usage 不是 chat_completion 的一律丢弃（内部工具条目的
+// usage 取值是 title_generation / summary / input_optimization / custom_model）。
+// 2026-09-29 全表实测：该判据与上述 2/3 条完全重合（18 个被拦条目全部已被
+// 空 display_name 或 hidden 拦住），保留它是因为上游一旦给内部条目补上
+// display_name，第三条会失效而第四条仍然成立。
+//
+// 元数据：该端点**确实**提供 reasoning / modalities / 窗口上限（2026-09-29 dump
+// 一手 schema 为凭，见 parseTraeModelCatalog 内的字段读取），所以同步产出的元数据
+// 可以过 upstreamModelMetadataIsComplete，不再回 metadata_partial 告警。
 
 import (
 	"bytes"
@@ -33,7 +47,14 @@ import (
 
 // traeModelListBody get_detail_param 的请求体（字段与聊天侧同族，取默认目录形态：
 // 只要模型表，不要 prompt）。null 字段必须保留，上游按缺键/空值区分处理。
-const traeModelListBody = `{"function":"solo_work_lite","config_names":null,"need_prompt":false,"current_config_info":null,"poly_prompt":true,"mode_type":null,"agent_type":null}`
+//
+// function 不得写死字面量：必须与聊天侧 traeChatFunction 同一来源，否则拉到一张表
+// 却用另一张表调用，会把必 4001 的模型开放给下游（2026-09-29 报障形态）。
+// 其余字段固定不变，因此只把 function 一段用占位符注入。
+var traeModelListBody = fmt.Sprintf(
+	`{"function":%q,"config_names":null,"need_prompt":false,"current_config_info":null,"poly_prompt":true,"mode_type":null,"agent_type":null}`,
+	traeCatalogFunction,
+)
 
 // parseTraeModelCatalog 解析并过滤目录响应，返回保持上游顺序的模型 ID 与元数据表。
 // 全被过滤时返回空切片（调用方据此报「上游没有返回可同步模型」，不静默成功）。
@@ -71,6 +92,12 @@ func parseTraeModelCatalog(body []byte) ([]string, map[string]UpstreamModelMetad
 		if hidden, present := traeCatalogEntryBool(entry, "is_invisible_to_user"); present && hidden {
 			continue
 		}
+		// 第二道防线：内部工具条目的 usage 不是 chat_completion（title_generation /
+		// summary / input_optimization / custom_model）。字段缺失时保留，不拿「没下发」
+		// 当「不可用」，与上面两个布尔开关同纪律。
+		if usage := traeCatalogEntryString(entry, "usage"); usage != "" && usage != traeCatalogUsageChat {
+			continue
+		}
 		displayName := strings.TrimSpace(traeCatalogEntryNestedString(entry, "display_config", "display_name"))
 		if displayName == "" {
 			continue
@@ -80,14 +107,103 @@ func parseTraeModelCatalog(body []byte) ([]string, map[string]UpstreamModelMetad
 		}
 		seen[name] = struct{}{}
 		modelIDs = append(modelIDs, name)
-		entryMeta := UpstreamModelMetadata{ID: name, DisplayName: displayName}
-		if window, ok := traeCatalogEntryNestedInt64(entry, "context_window_tokens", "dev"); ok && window > 0 {
-			entryMeta.ContextWindow = window
-			entryMeta.MaxContextWindow = window
-		}
-		metadata[name] = entryMeta
+		metadata[name] = traeEntryMetadata(name, displayName, entry)
 	}
 	return modelIDs, metadata, nil
+}
+
+// traeCatalogUsageChat 是面向用户的对话模型在目录里的 usage 取值（2026-09-29 全表实测：
+// 18 个对外条目全为该值，所有内部条目均不是）。
+const traeCatalogUsageChat = "chat_completion"
+
+// traeEntryMetadata 从目录条目提取对外元数据。
+//
+// 字段来源（2026-09-29 对 solo_agent 表 dump 的一手 schema）：
+//   - context_window_tokens{dev,max}：dev=默认窗口（200000/256000），max=Max 模式上限
+//     （1000000）；max 只会收紧下游 descriptor（见 openai_codex_model_metadata 的
+//     ContextWindow = min(...)），不会放大实际发送上限；
+//   - reasoning_effort_config{default_level,options[],support_thinking}：注意 Trae 的
+//     "light" 不在 normalizeReasoningLevel 白名单里（会被丢掉），所以
+//     ["light","high","extra_high"] 归一后是 ["high","xhigh"]；default_level="high" 仍在
+//     保留集内，不需要额外的兼容映射；
+//   - display_config.multimodal → InputModalities（与 qoder_models.go 同口径：
+//     true=[text,image]，false=[text]），保证过 upstreamModelMetadataIsComplete；
+//   - model_detail_list[] 按 model_name 后缀分 __dev / __max 两档，各自的
+//     prompt_max_tokens / max_tokens 不同（dev 168000/32000，max 936000/64000）。
+func traeEntryMetadata(name, displayName string, entry map[string]any) UpstreamModelMetadata {
+	meta := UpstreamModelMetadata{ID: name, DisplayName: displayName}
+
+	if window, ok := traeCatalogEntryNestedInt64(entry, "context_window_tokens", "dev"); ok && window > 0 {
+		meta.ContextWindow = window
+		meta.MaxContextWindow = window
+	}
+	if maxWindow, ok := traeCatalogEntryNestedInt64(entry, "context_window_tokens", "max"); ok && maxWindow > meta.ContextWindow {
+		meta.MaxContextWindow = maxWindow
+	}
+
+	// 输入模态：该端点只给一个 multimodal 布尔，没有逐项模态表。
+	if vision, ok := traeCatalogEntryNestedBool(entry, "display_config", "multimodal"); ok {
+		if vision {
+			meta.InputModalities = []string{"text", "image"}
+		} else {
+			meta.InputModalities = []string{"text"}
+		}
+	}
+
+	// 推理能力：support_thinking 是定论字段，拿到才写 Reasoning（nil 会被
+	// upstreamModelMetadataIsComplete 判为不完整，继续回 metadata_partial 告警）。
+	if support, ok := traeCatalogEntryNestedBool(entry, "reasoning_effort_config", "support_thinking"); ok {
+		supportsReasoning := support
+		meta.Reasoning = &supportsReasoning
+		if supportsReasoning {
+			if levels, have := traeCatalogEntryNestedStringSlice(entry, "reasoning_effort_config", "options"); have && len(levels) > 0 {
+				meta.SupportedReasoningLevels = levels
+				// default_level 也要过一遍归一（上游下发 "extra_high"，levels 里已是 "xhigh"），
+				// 否则拿原值去比归一后的列表必定落空，只能退到 levels[0]。
+				def := normalizeReasoningLevel(traeCatalogEntryNestedString(entry, "reasoning_effort_config", "default_level"))
+				if def != "" && traeHasReasoningLevel(levels, def) {
+					meta.DefaultReasoningLevel = def
+				} else {
+					meta.DefaultReasoningLevel = levels[0]
+				}
+			}
+		}
+	}
+
+	if out, ok := traeDevDetailInt64(entry, "max_tokens"); ok {
+		meta.MaxOutputTokens = out
+	}
+	return meta
+}
+
+// traeHasReasoningLevel 报告归一后的档位列表里是否含给定值。
+func traeHasReasoningLevel(levels []string, want string) bool {
+	for _, l := range levels {
+		if l == want {
+			return true
+		}
+	}
+	return false
+}
+
+// traeDevDetailInt64 从 model_detail_list 里取 dev 档（model_name 以 __max 结尾的跳过，
+// 没有则取首个非 max 项）的整型字段。max 档属于 Max 模式，不能当作默认输出上限。
+func traeDevDetailInt64(entry map[string]any, field string) (int64, bool) {
+	for _, item := range traeCatalogEntrySlice(entry, "model_detail_list") {
+		if modelName, _ := item["model_name"].(string); strings.HasSuffix(strings.TrimSpace(modelName), "__max") {
+			continue
+		}
+		for _, key := range []string{field, traeSnakeToCamel(field)} {
+			if key == "" {
+				continue
+			}
+			if n, ok := traeToInt64(item[key]); ok && n > 0 {
+				return n, true
+			}
+		}
+		return 0, false
+	}
+	return 0, false
 }
 
 // traeLocateModelConfigList 在多候选信封路径里定位 config_info_list。
@@ -160,6 +276,76 @@ func traeCoerceMapSlice(raw any) []map[string]any {
 		}
 	}
 	return out
+}
+
+// traeCatalogEntrySlice 取对象切片（model_detail_list 这类嵌套数组）。
+func traeCatalogEntrySlice(entry map[string]any, key string) []map[string]any {
+	for _, candidate := range []string{key, traeSnakeToCamel(key)} {
+		if candidate == "" {
+			continue
+		}
+		if v, ok := entry[candidate]; ok {
+			if list := traeCoerceMapSlice(v); list != nil {
+				return list
+			}
+		}
+	}
+	return nil
+}
+
+// traeCatalogEntryNestedBool 取嵌套对象里的布尔开关，并回报字段是否存在。
+// 不存在必须回 false-exists：调用方要区分「上游说 false」与「上游没说」。
+func traeCatalogEntryNestedBool(entry map[string]any, objectKey, fieldKey string) (bool, bool) {
+	for _, candidate := range []string{objectKey, traeSnakeToCamel(objectKey)} {
+		if candidate == "" {
+			continue
+		}
+		if sub := traeMapKey(entry, candidate); sub != nil {
+			if v, ok := traeCatalogEntryBool(sub, fieldKey); ok {
+				return v, true
+			}
+		}
+	}
+	return false, false
+}
+
+// traeCatalogEntryNestedStringSlice 取嵌套对象里的字符串数组（reasoning_effort_config
+// 的 options）。第二个返回值是「键是否存在」，调用方据此区分「没有该字段」与
+// 「有但为空数组」。每项经 normalizeReasoningLevel 过一道，不认识的写法（如 Trae
+// 的 "light"）直接丢弃，与 qoder 侧同一口径。
+func traeCatalogEntryNestedStringSlice(entry map[string]any, objectKey, fieldKey string) ([]string, bool) {
+	for _, candidate := range []string{objectKey, traeSnakeToCamel(objectKey)} {
+		if candidate == "" {
+			continue
+		}
+		sub := traeMapKey(entry, candidate)
+		if sub == nil {
+			continue
+		}
+		for _, key := range []string{fieldKey, traeSnakeToCamel(fieldKey)} {
+			if key == "" {
+				continue
+			}
+			raw, ok := sub[key]
+			if !ok {
+				continue
+			}
+			list, isArr := raw.([]any)
+			if !isArr {
+				continue
+			}
+			out := make([]string, 0, len(list))
+			for _, item := range list {
+				s, isStr := item.(string)
+				if !isStr {
+					continue
+				}
+				out = append(out, s)
+			}
+			return normalizeReasoningLevels(out), true
+		}
+	}
+	return nil, false
 }
 
 // traeCatalogEntryString / Bool / NestedString / NestedInt64 是目录条目的宽容取值助手：

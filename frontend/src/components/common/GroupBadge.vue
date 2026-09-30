@@ -165,10 +165,10 @@ const labelClass = computed(() => {
     return `${base} bg-emerald-200/60 text-emerald-800 dark:bg-emerald-800/40 dark:text-emerald-300`
   }
   if (props.platform === 'gemini') {
-    return `${base} bg-blue-200/60 text-blue-800 dark:bg-blue-800/40 dark:text-blue-300`
+    return `${base} bg-brandblue-200/60 text-brandblue-800 dark:bg-brandblue-800/40 dark:text-brandblue-300`
   }
   if (props.platform === 'antigravity') {
-    return `${base} bg-purple-200/60 text-purple-800 dark:bg-purple-800/40 dark:text-purple-300`
+    return `${base} bg-brandpurple-200/60 text-brandpurple-800 dark:bg-brandpurple-800/40 dark:text-brandpurple-300`
   }
   if (props.platform === 'grok') {
     return `${base} bg-zinc-300/70 text-zinc-800 dark:bg-zinc-700/60 dark:text-zinc-200`
@@ -177,7 +177,7 @@ const labelClass = computed(() => {
     return `${base} bg-pink-200/60 text-pink-800 dark:bg-pink-800/40 dark:text-pink-300`
   }
   if (props.platform === 'zhipu') {
-    return `${base} bg-indigo-200/60 text-indigo-800 dark:bg-indigo-800/40 dark:text-indigo-300`
+    return `${base} bg-brandindigo-200/60 text-brandindigo-800 dark:bg-brandindigo-800/40 dark:text-brandindigo-300`
   }
   if (props.platform === 'deepseek') {
     return `${base} bg-teal-200/60 text-teal-800 dark:bg-teal-800/40 dark:text-teal-300`
@@ -186,18 +186,18 @@ const labelClass = computed(() => {
     return `${base} bg-rose-200/60 text-rose-800 dark:bg-rose-800/40 dark:text-rose-300`
   }
   if (props.platform === 'workbuddy') {
-    return `${base} bg-violet-200/60 text-violet-800 dark:bg-violet-800/40 dark:text-violet-300`
+    return `${base} bg-brandviolet-200/60 text-brandviolet-800 dark:bg-brandviolet-800/40 dark:text-brandviolet-300`
   }
   if (props.platform === 'qoder') {
-    return `${base} bg-purple-200/60 text-purple-800 dark:bg-purple-800/40 dark:text-purple-300`
+    return `${base} bg-brandpurple-200/60 text-brandpurple-800 dark:bg-brandpurple-800/40 dark:text-brandpurple-300`
   }
   if (props.platform === 'trae') {
-    return `${base} bg-sky-200/60 text-sky-800 dark:bg-sky-800/40 dark:text-sky-300`
+    return `${base} bg-brandsky-200/60 text-brandsky-800 dark:bg-brandsky-800/40 dark:text-brandsky-300`
   }
   if (props.platform === 'composite') {
-    return `${base} bg-cyan-200/70 text-cyan-900 dark:bg-cyan-900/50 dark:text-cyan-300`
+    return `${base} bg-brandcyan-200/70 text-brandcyan-900 dark:bg-brandcyan-900/50 dark:text-brandcyan-300`
   }
-  return `${base} bg-violet-200/60 text-violet-800 dark:bg-violet-800/40 dark:text-violet-300`
+  return `${base} bg-brandviolet-200/60 text-brandviolet-800 dark:bg-brandviolet-800/40 dark:text-brandviolet-300`
 })
 
 const peakRateClass = computed(() => {
@@ -223,12 +223,12 @@ const badgeClass = computed(() => {
   }
   if (props.platform === 'gemini') {
     return isSubscription.value
-      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-      : 'bg-sky-50 text-sky-700 dark:bg-sky-900/20 dark:text-sky-400'
+      ? 'bg-brandblue-100 text-brandblue-700 dark:bg-brandblue-900/30 dark:text-brandblue-400'
+      : 'bg-brandsky-50 text-brandsky-700 dark:bg-brandsky-900/20 dark:text-brandsky-400'
   }
   if (props.platform === 'antigravity') {
     return isSubscription.value
-      ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+      ? 'bg-brandpurple-100 text-brandpurple-700 dark:bg-brandpurple-900/30 dark:text-brandpurple-400'
       : 'bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-900/20 dark:text-fuchsia-400'
   }
   if (props.platform === 'grok') {
@@ -243,8 +243,8 @@ const badgeClass = computed(() => {
   }
   if (props.platform === 'zhipu') {
     return isSubscription.value
-      ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
-      : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-400'
+      ? 'bg-brandindigo-100 text-brandindigo-700 dark:bg-brandindigo-900/30 dark:text-brandindigo-400'
+      : 'bg-brandindigo-50 text-brandindigo-700 dark:bg-brandindigo-900/20 dark:text-brandindigo-400'
   }
   if (props.platform === 'deepseek') {
     return isSubscription.value
@@ -258,27 +258,27 @@ const badgeClass = computed(() => {
   }
   if (props.platform === 'workbuddy') {
     return isSubscription.value
-      ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400'
-      : 'bg-violet-50 text-violet-700 dark:bg-violet-900/20 dark:text-violet-400'
+      ? 'bg-brandviolet-100 text-brandviolet-700 dark:bg-brandviolet-900/30 dark:text-brandviolet-400'
+      : 'bg-brandviolet-50 text-brandviolet-700 dark:bg-brandviolet-900/20 dark:text-brandviolet-400'
   }
   if (props.platform === 'qoder') {
     return isSubscription.value
-      ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-      : 'bg-purple-50 text-purple-700 dark:bg-purple-900/20 dark:text-purple-400'
+      ? 'bg-brandpurple-100 text-brandpurple-700 dark:bg-brandpurple-900/30 dark:text-brandpurple-400'
+      : 'bg-brandpurple-50 text-brandpurple-700 dark:bg-brandpurple-900/20 dark:text-brandpurple-400'
   }
   if (props.platform === 'trae') {
     return isSubscription.value
-      ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400'
-      : 'bg-sky-50 text-sky-700 dark:bg-sky-900/20 dark:text-sky-400'
+      ? 'bg-brandsky-100 text-brandsky-700 dark:bg-brandsky-900/30 dark:text-brandsky-400'
+      : 'bg-brandsky-50 text-brandsky-700 dark:bg-brandsky-900/20 dark:text-brandsky-400'
   }
   if (props.platform === 'composite') {
     return isSubscription.value
-      ? 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300'
-      : 'bg-cyan-50 text-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-300'
+      ? 'bg-brandcyan-100 text-brandcyan-800 dark:bg-brandcyan-900/30 dark:text-brandcyan-300'
+      : 'bg-brandcyan-50 text-brandcyan-800 dark:bg-brandcyan-900/20 dark:text-brandcyan-300'
   }
   // Fallback: original colors
   return isSubscription.value
-    ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400'
+    ? 'bg-brandviolet-100 text-brandviolet-700 dark:bg-brandviolet-900/30 dark:text-brandviolet-400'
     : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
 })
 </script>

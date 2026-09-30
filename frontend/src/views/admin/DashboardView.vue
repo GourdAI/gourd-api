@@ -443,8 +443,8 @@ const isDarkMode = computed(() => {
 
 // Chart colors
 const chartColors = computed(() => ({
-  text: isDarkMode.value ? '#e5e7eb' : '#374151',
-  grid: isDarkMode.value ? '#374151' : '#e5e7eb'
+  text: isDarkMode.value ? '#e4e4e7' : '#3f3f46',
+  grid: isDarkMode.value ? '#3f3f46' : '#e4e4e7'
 }))
 
 // Line chart options (for user trend chart)
@@ -541,18 +541,18 @@ const userTrendChartData = computed(() => {
 
   const sortedDates = Array.from(allDates).sort()
   const colors = [
-    '#3b82f6',
+    '#00be93',
     '#10b981',
     '#f59e0b',
     '#ef4444',
-    '#8b5cf6',
+    '#e0429f',
     '#ec4899',
-    '#14b8a6',
+    '#00be93',
     '#f97316',
-    '#6366f1',
+    '#c223c7',
     '#84cc16',
-    '#06b6d4',
-    '#a855f7'
+    '#84cc16',
+    '#4b91a0'
   ]
 
   const datasets = Array.from(userGroups.values()).map((group, idx) => ({

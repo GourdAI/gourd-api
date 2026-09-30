@@ -159,7 +159,7 @@ const chartData = computed(() => {
       {
         label: t('channelMonitorV2.chart.ttftDataset'),
         data: ttftP50,
-        borderColor: '#0ea5e9',
+        borderColor: '#12b76a',
         backgroundColor: 'rgba(14, 165, 233, 0.08)',
         yAxisID: 'yTtft',
         tension: 0.4,
@@ -205,11 +205,11 @@ function smoothTrend(values: Array<number | null>): Array<number | null> {
 }
 
 const chartOptions = computed(() => {
-  const text = isDark.value ? '#9ca3af' : '#6b7280'
-  const grid = isDark.value ? '#374151' : '#f3f4f6'
-  const tooltipBg = isDark.value ? '#1f2937' : '#ffffff'
-  const tooltipTitle = isDark.value ? '#f3f4f6' : '#111827'
-  const tooltipBody = isDark.value ? '#d1d5db' : '#4b5563'
+  const text = isDark.value ? '#a1a1aa' : '#71717a'
+  const grid = isDark.value ? '#3f3f46' : '#f4f4f5'
+  const tooltipBg = isDark.value ? '#27272a' : '#ffffff'
+  const tooltipTitle = isDark.value ? '#f4f4f5' : '#18181b'
+  const tooltipBody = isDark.value ? '#d4d4d8' : '#52525b'
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -260,12 +260,12 @@ const chartOptions = computed(() => {
         position: 'right' as const,
         min: 0,
         ticks: {
-          color: '#0ea5e9',
+          color: '#12b76a',
           font: { size: 10 },
           callback: (v: string | number) => formatMonitorMs(Number(v)),
         },
         grid: { display: false },
-        title: { display: true, text: t('channelMonitorV2.metrics.ttftP50'), color: '#0ea5e9', font: { size: 11 } },
+        title: { display: true, text: t('channelMonitorV2.metrics.ttftP50'), color: '#12b76a', font: { size: 11 } },
       },
     },
   }

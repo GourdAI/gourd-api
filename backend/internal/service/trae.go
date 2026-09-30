@@ -38,9 +38,17 @@ const (
 // DefaultTraeModelIDs 是 Trae CN 官方目录的默认模型 ID，供 /v1/models 在尚未同步
 // 上游列表时回退，以及账号白名单预填。上游模型表由 x-ide-version-code 决定（见
 // credentials.ide_version_code），此处取当前 CN 目录的常用子集。
+//
+// 【与可调通道对齐】本表必须落在 traeCatalogFunction（solo_agent）能调通的模型上：
+// 2026-09-29 实测把 solo_agent 可见表（18 项）里本表缺的 7 个补齐。这些名字在旧的
+// solo_work_lite 通道下发过去只会得到流内 4001，写在默认表里等于送给用户一个必失败
+// 的选项。保留原有未在新表里出现的条目（存量部署的白名单可能已在用，移除是破坏性变更），
+// 它们靠「同步上游模型」矫正。
 func DefaultTraeModelIDs() []string {
 	return []string{
 		"glm-5.3",
+		"glm-5.3-flash",
+		"glm-5.3-flashx",
 		"glm-5.2",
 		"glm-5.1",
 		"glm-5",
@@ -48,10 +56,14 @@ func DefaultTraeModelIDs() []string {
 		"glm-5v-turbo",
 		"glm-4.7",
 		"glm-4.6",
+		"qwen3.8-flash",
+		"qwen3.8-max",
 		"qwen-3.7-plus",
 		"qwen-3.6-plus",
 		"qwen-3.5",
 		"qwen3-coder",
+		"kimi-k2.8-preview",
+		"kimi-k3",
 		"kimi-k2.7-code",
 		"kimi-k2.6",
 		"kimi-k2.5",
@@ -62,8 +74,12 @@ func DefaultTraeModelIDs() []string {
 		"minimax-m3",
 		"minimax-m2.7",
 		"Doubao-Seed-2.1-Pro",
+		"Doubao-Seed-2.1-Turbo",
+		"Doubao-Seed-Evolving",
+		"Doubao-Seed-Code",
 		"Doubao-Seed-2.0-Code",
 		"seed-code-pro-0430",
+		"step-5-preview",
 		"auto",
 	}
 }

@@ -899,6 +899,18 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown: false,
 	}
 
+	// step-5-preview（阶跃星辰 Step 5 Preview，Trae solo_agent 表可见项）。
+	// 官方开放平台定价页未在本次可取到，取 Artificial Analysis 记录的等值
+	// （¥7/¥20 测得 $1.00/$2.70）与仓内一致的 ÷7.14 汇率口径换算：¥7/¥20。
+	// 缓存命中官方标 ¥0.35。该模型 2026-09-29 实测在 solo_agent 下可调用，
+	// 不建卡会被定价闸门剔除出 /v1/models 与模型广场（同 2026-09-29 报障形态）。
+	s.fallbackPrices["step-5-preview"] = &ModelPricing{
+		InputPricePerToken:     0.98e-6,  // ¥7/MTok ≈ $0.98
+		OutputPricePerToken:    2.80e-6,  // ¥20/MTok ≈ $2.80
+		CacheReadPricePerToken: 0.049e-6, // ¥0.35/MTok ≈ $0.049
+		SupportsCacheBreakdown: false,
+	}
+
 	// xAI Grok 4.5: $2 input / $0.30 cached input / $6 output below 200k;
 	// long-context rates are $4 / $0.60 / $12 (>=200k prompt tokens).
 	s.fallbackPrices["grok-4.5"] = &ModelPricing{
@@ -1272,6 +1284,13 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["minimax-m2"]
 	}
 
+	// 阶跃星辰 Step（Trae solo_agent 目录可见项 step-5-preview）。
+	// 只认完整型号名而不收 step- 宽前缀：step 在很多无关名字里作子串出现（如
+	// 第三方包装名），且 step-1/step-3 等旧代价格低一个量级，宽匹配会静默多收。
+	if strings.Contains(modelLower, "step-5-preview") {
+		return s.fallbackPrices["step-5-preview"]
+	}
+
 	// 火山方舟 豆包 Embedding（多模态向量化）。
 	// most-specific-first：放在未来任何 doubao-embedding / doubao 宽匹配之前。
 	// 覆盖带版本后缀的别名（如 doubao-embedding-vision-251215）。
@@ -1436,6 +1455,15 @@ func (s *BillingService) doubaoSeedFamilyFallback(model string) (*ModelPricing, 
 	// 更便宜子档（flash/lite/mini/thinking/上一代 1.5、1.6）一律无价，不得按旗舰档多收。
 	if isCheaperDoubaoVariant(model) {
 		return nil, true
+	}
+	// Seed-Evolving：官方定价页（ai.volcengine.com/model）标输入 ¥6/百万、输出 ¥30/百万，
+	// 与 2.1 Pro 完全同档；Trae 侧它的 before_consumption_rate 也是 0.8，与 2.1 Pro 一致
+	// （两路证据互证）。名字里不含 2.1/pro/code 任何一个子串，不显式接住就会落到本函数
+	// 末尾的「家族接管但判无价」出口，于是被定价闸门整批剔除（2026-09-30 把它加入
+	// DefaultTraeModelIDs 后由 TestTraeFallbackPricingCoversCatalog 拓出）。
+	// 位置在便宜子档护栏之后，所以 seed-evolving-flash 这类未来名仍先被判无价。
+	if strings.Contains(model, "seed-evolving") || strings.Contains(model, "seedevolving") {
+		return s.fallbackPrices["doubao-seed-2.1-pro"], true
 	}
 	if strings.Contains(model, "seed-2.1-pro") || strings.Contains(model, "seed2.1pro") ||
 		strings.HasPrefix(model, "doubao-seed-2.1") {

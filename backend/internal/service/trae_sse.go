@@ -391,19 +391,26 @@ func traeJSONInt(v any) int64 {
 	return 0
 }
 
-// traeModelUnavailableCode 上游「模型不在当前 IDE 版本表内」的业务码。
+// traeModelUnavailableCode 上游「config_name 在当前 function 的模型表内找不到」的业务码。
 //
 // 为什么单独识别：该码不落账号状态（trae_upstream_error.go 归 unknown，避免把
 // 请求级问题误标成账号坏了），但管理员在面板上只看到一句上游原文的
-// "model not available"，完全看不出真实原因其实是「本服务发的 config_name 不在
-// x-ide-version-code 对应的模型表里」——要么该模型本就不可调，要么需要先在管理页
-// 同步上游模型 / 提升凭据 ide_version_code。提示只能追加到**管理端可见的 Ops
+// "param is invalid"，完全看不出真实原因。提示只能追加到**管理端可见的 Ops
 // Detail**（见 traeBusinessErrorDetail），绝不能进 traeStreamError.Error()：那条
 // 文本会被 traeCCErrorFrame 原样写进下发给调用方的 SSE error 帧。
+//
+// 【为什么不是「版本表过期 / 提升 ide_version_code」】上一版提示把 4001 归因于
+// x-ide-version-code 太旧，实测不成立（2026-09-29，同一张有效账号票）：本仓默认画像
+// 0.1.61/20260820 在 solo_agent 表里**能拉到** qwen3.8-flash，发给 solo_work_lite 才报
+// 4001；而改用 IDE 插件真实头 1.107.1/20260212 拉到的表反而**没有**该模型。按旧提示
+// 去「提升 ide_version_code」会把本来可用的模型拉没，是反向操作。
+// 真实机制：上游按 function 分片下发可调表（见 traeCatalogFunction），一个 config_name
+// 只能通过「列出它的那个 function」调用，因此排查方向是「本服务出站 function 与该
+// 模型所属分片是否一致」，而不是版本码新旧。
 const traeModelUnavailableCode = "4001"
 
-// traeModelUnavailableHint 4001 的管理端处置提示（含内部字段名，禁止外发）。
-const traeModelUnavailableHint = " | hint: model id is not in the upstream catalog for the current x-ide-version-code; sync upstream models on the account, or set credentials.ide_version_code to a newer Trae IDE build"
+// traeModelUnavailableHint 4001 的管理端处置提示（含本仓内部字段名，禁止外发）。
+const traeModelUnavailableHint = " | hint: config_name is not in the upstream catalog for the chat function we sent (traeCatalogFunction); Trae splits callable rosters per function, so this is a channel mismatch, not an expired x-ide-version-code -- do NOT raise credentials.ide_version_code to fix it (2026-09-29: solo_agent lists qwen3.8-flash / glm-5.3-flash / kimi-k2.8-preview, solo_work_lite does not)"
 
 // traeUpstreamHint 按业务码给出可执行的处置提示（无提示返回空串）。
 //

@@ -523,7 +523,7 @@ function formatBucketRange(value: string) {
 .health-healthy  { background: #22c55e; }
 .health-warning  { background: #f59e0b; }
 .health-critical { background: #ef4444; }
-.health-unknown  { background: #9ca3af; }
+.health-unknown  { background: #a1a1aa; }
 
 .score-legend {
   background: linear-gradient(
@@ -552,7 +552,7 @@ function formatBucketRange(value: string) {
 }
 .pulse-cell.has-data:hover,
 .pulse-cell.has-data:focus-visible {
-  outline: 2px solid rgb(var(--color-primary-500, 99 102 241) / 0.55);
+  outline: 2px solid rgb(var(--color-primary-500, 0 190 147) / 0.55);
   outline-offset: 1px;
   z-index: 5;
 }
@@ -570,7 +570,7 @@ function formatBucketRange(value: string) {
   max-width: 16rem;
   transform: translateX(-50%) translateY(4px);
   border-radius: 0.75rem;
-  border: 1px solid rgb(229 231 235);
+  border: 1px solid rgb(228 228 231);
   background: rgb(255 255 255);
   padding: 0.5rem 0.625rem;
   box-shadow: 0 10px 25px -5px rgb(0 0 0 / 0.15);
@@ -580,26 +580,26 @@ function formatBucketRange(value: string) {
   white-space: nowrap;
 }
 :global(.dark) .pulse-tooltip {
-  border-color: rgb(55 65 81);
-  background: rgb(17 24 39);
-  color: rgb(229 231 235);
+  border-color: rgb(63 63 70);
+  background: rgb(24 24 27);
+  color: rgb(228 228 231);
 }
 .pulse-tooltip-line {
   display: block;
   font-size: 11px;
   line-height: 1.45;
-  color: rgb(75 85 99);
+  color: rgb(82 82 91);
 }
 :global(.dark) .pulse-tooltip-line {
-  color: rgb(209 213 219);
+  color: rgb(212 212 216);
 }
 .pulse-tooltip-title {
   margin-bottom: 0.2rem;
   font-weight: 600;
-  color: rgb(17 24 39);
+  color: rgb(24 24 27);
 }
 :global(.dark) .pulse-tooltip-title {
-  color: rgb(243 244 246);
+  color: rgb(244 244 245);
 }
 .pulse-cell:hover .pulse-tooltip,
 .pulse-cell:focus-visible .pulse-tooltip {
@@ -620,33 +620,33 @@ function formatBucketRange(value: string) {
   max-width: min(18rem, calc(100vw - 1.5rem));
   transform: translate(-50%, -100%);
   border-radius: 0.75rem;
-  border: 1px solid rgb(229 231 235);
+  border: 1px solid rgb(228 228 231);
   background: rgb(255 255 255);
   padding: 0.5rem 0.625rem;
   box-shadow: 0 18px 40px -12px rgb(0 0 0 / 0.28);
   white-space: nowrap;
 }
 :global(.dark) .matrix-floating-tooltip {
-  border-color: rgb(55 65 81);
-  background: rgb(17 24 39);
-  color: rgb(229 231 235);
+  border-color: rgb(63 63 70);
+  background: rgb(24 24 27);
+  color: rgb(228 228 231);
 }
 .matrix-floating-tooltip-line {
   display: block;
   font-size: 11px;
   line-height: 1.45;
-  color: rgb(75 85 99);
+  color: rgb(82 82 91);
 }
 :global(.dark) .matrix-floating-tooltip-line {
-  color: rgb(209 213 219);
+  color: rgb(212 212 216);
 }
 .matrix-floating-tooltip-title {
   margin-bottom: 0.2rem;
   font-weight: 600;
-  color: rgb(17 24 39);
+  color: rgb(24 24 27);
 }
 :global(.dark) .matrix-floating-tooltip-title {
-  color: rgb(243 244 246);
+  color: rgb(244 244 245);
 }
 
 @media (max-width: 640px) {

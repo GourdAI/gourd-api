@@ -47,7 +47,7 @@ describe('PlatformTypeBadge Grok plans', () => {
     expect(wrapper.find('[data-testid="grok-plan-icon"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="grok-free-plan-icon"]').exists()).toBe(false)
     // Heavy uses purple plan chip
-    expect(wrapper.html()).toContain('bg-purple-100')
+    expect(wrapper.html()).toContain('bg-brandpurple-100')
 
     await wrapper.setProps({ platform: 'openai', planType: 'free' })
     expect(wrapper.text()).toContain('Free')
@@ -60,28 +60,28 @@ describe('PlatformTypeBadge Grok plans', () => {
       props: { platform: 'grok', type: 'oauth', planType: 'free' },
     })
     expect(free.html()).toContain('bg-gray-100')
-    expect(free.html()).not.toContain('bg-purple-100')
-    expect(free.html()).not.toContain('bg-cyan-100')
+    expect(free.html()).not.toContain('bg-brandpurple-100')
+    expect(free.html()).not.toContain('bg-brandcyan-100')
 
     const superGrok = mount(PlatformTypeBadge, {
       props: { platform: 'grok', type: 'oauth', planType: 'supergrok' },
     })
     expect(superGrok.text()).toContain('SuperGrok')
-    expect(superGrok.html()).toContain('bg-cyan-100')
+    expect(superGrok.html()).toContain('bg-brandcyan-100')
     expect(superGrok.find('[data-testid="grok-plan-icon"]').exists()).toBe(true)
 
     const heavy = mount(PlatformTypeBadge, {
       props: { platform: 'grok', type: 'oauth', planType: 'Heavy' },
     })
     expect(heavy.text()).toContain('Heavy')
-    expect(heavy.html()).toContain('bg-purple-100')
+    expect(heavy.html()).toContain('bg-brandpurple-100')
     expect(heavy.find('[data-testid="grok-plan-icon"]').exists()).toBe(true)
 
     const lite = mount(PlatformTypeBadge, {
       props: { platform: 'grok', type: 'oauth', planType: 'supergrok_lite' },
     })
     expect(lite.text()).toContain('SuperGrok Lite')
-    expect(lite.html()).toContain('bg-cyan-100')
+    expect(lite.html()).toContain('bg-brandcyan-100')
   })
 
   it('uses a dedicated 12px currentColor Grok mark with a Free sparkle', () => {
@@ -142,6 +142,6 @@ describe('PlatformTypeBadge WorkBuddy', () => {
 
     expect(wrapper.text()).toContain('WorkBuddy')
     expect(wrapper.text()).toContain('Key')
-    expect(wrapper.html()).toContain('bg-violet-100')
+    expect(wrapper.html()).toContain('bg-brandviolet-100')
   })
 })

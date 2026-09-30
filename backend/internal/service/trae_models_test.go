@@ -411,10 +411,12 @@ func TestFetchTraeUpstreamModelsPostsCatalogEndpointWithJSONAccept(t *testing.T)
 	require.Equal(t, http.MethodPost, call.method)
 	require.Equal(t, traeModelListPath, call.path)
 
-	// 请求体契约：function=solo_work_lite，null 占位字段必须保留（上游按缺键/空值区分处理）。
+	// 请求体契约：function=solo_agent（必须与聊天侧 traeChatFunction 同表，否则拉到的
+	// 模型调不通），null 占位字段必须保留（上游按缺键/空值区分处理）。
 	var sent map[string]any
 	require.NoError(t, json.Unmarshal([]byte(call.body), &sent))
-	require.Equal(t, "solo_work_lite", sent["function"])
+	require.Equal(t, traeChatFunction, sent["function"],
+		"目录 function 必须等于聊天 function：上游按 function 分片下发可调表，两侧不同表会把必 4001 的模型开放给下游")
 	require.Equal(t, false, sent["need_prompt"])
 	require.Equal(t, true, sent["poly_prompt"])
 	require.Contains(t, sent, "config_names")

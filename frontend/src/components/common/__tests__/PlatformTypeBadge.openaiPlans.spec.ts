@@ -24,7 +24,7 @@ describe('PlatformTypeBadge ChatGPT plan tiers', () => {
       const wrapper = mountPlan('openai', planType)
 
       expect(wrapper.text()).toContain('Pro 20x')
-      expect(wrapper.html()).toContain('bg-violet-100')
+      expect(wrapper.html()).toContain('bg-brandviolet-100')
     }
   })
 
@@ -33,7 +33,7 @@ describe('PlatformTypeBadge ChatGPT plan tiers', () => {
       const wrapper = mountPlan('openai', planType)
 
       expect(wrapper.text()).toContain('Pro 5x')
-      expect(wrapper.html()).toContain('bg-violet-100')
+      expect(wrapper.html()).toContain('bg-brandviolet-100')
       expect(wrapper.text()).not.toContain('Pro 20x')
     }
   })
@@ -42,7 +42,7 @@ describe('PlatformTypeBadge ChatGPT plan tiers', () => {
     const wrapper = mountPlan('openai', 'team')
 
     expect(wrapper.text()).toContain('Business Standard')
-    expect(wrapper.html()).toContain('bg-indigo-100')
+    expect(wrapper.html()).toContain('bg-brandindigo-100')
   })
 
   it('labels self_serve_business_prolite as Business Premium sharing the Team color', () => {
@@ -50,7 +50,7 @@ describe('PlatformTypeBadge ChatGPT plan tiers', () => {
       const wrapper = mountPlan('openai', planType)
 
       expect(wrapper.text()).toContain('Business Premium')
-      expect(wrapper.html()).toContain('bg-indigo-100')
+      expect(wrapper.html()).toContain('bg-brandindigo-100')
       expect(wrapper.text()).not.toContain('self_serve_business_prolite')
     }
   })
@@ -58,7 +58,7 @@ describe('PlatformTypeBadge ChatGPT plan tiers', () => {
   it('keeps plus, free and abnormal labels unchanged', () => {
     const plus = mountPlan('openai', 'plus')
     expect(plus.text()).toContain('Plus')
-    expect(plus.html()).toContain('bg-sky-100')
+    expect(plus.html()).toContain('bg-brandsky-100')
 
     const free = mountPlan('openai', 'free')
     expect(free.text()).toContain('Free')
@@ -73,8 +73,8 @@ describe('PlatformTypeBadge ChatGPT plan tiers', () => {
     const wrapper = mountPlan('openai', 'enterprise')
 
     expect(wrapper.text()).toContain('enterprise')
-    expect(wrapper.html()).not.toContain('bg-violet-100')
-    expect(wrapper.html()).not.toContain('bg-indigo-100')
+    expect(wrapper.html()).not.toContain('bg-brandviolet-100')
+    expect(wrapper.html()).not.toContain('bg-brandindigo-100')
   })
 
   it('does not apply the ChatGPT tier naming to other platforms', () => {

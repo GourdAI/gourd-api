@@ -408,11 +408,11 @@ export function getPlatformTagClass(platform: string): string {
   switch (platform) {
     case 'anthropic': return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
     case 'openai': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-    case 'gemini': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-    case 'antigravity': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+    case 'gemini': return 'bg-brandblue-100 text-brandblue-700 dark:bg-brandblue-900/30 dark:text-brandblue-400'
+    case 'antigravity': return 'bg-brandpurple-100 text-brandpurple-700 dark:bg-brandpurple-900/30 dark:text-brandpurple-400'
     case 'grok': return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
     case 'kimi': return 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400'
-    case 'zhipu': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
+    case 'zhipu': return 'bg-brandindigo-100 text-brandindigo-700 dark:bg-brandindigo-900/30 dark:text-brandindigo-400'
     case 'deepseek': return 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400'
     default: return 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400'
   }
@@ -423,11 +423,11 @@ export function getPlatformTextClass(platform: string): string {
   switch (platform) {
     case 'anthropic': return 'text-orange-700 dark:text-orange-400'
     case 'openai': return 'text-emerald-700 dark:text-emerald-400'
-    case 'gemini': return 'text-blue-700 dark:text-blue-400'
-    case 'antigravity': return 'text-purple-700 dark:text-purple-400'
+    case 'gemini': return 'text-brandblue-700 dark:text-brandblue-400'
+    case 'antigravity': return 'text-brandpurple-700 dark:text-brandpurple-400'
     case 'grok': return 'text-slate-700 dark:text-slate-300'
     case 'kimi': return 'text-pink-700 dark:text-pink-400'
-    case 'zhipu': return 'text-indigo-700 dark:text-indigo-400'
+    case 'zhipu': return 'text-brandindigo-700 dark:text-brandindigo-400'
     case 'deepseek': return 'text-teal-700 dark:text-teal-400'
     default: return ''
   }

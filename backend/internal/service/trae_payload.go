@@ -30,8 +30,33 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// traeChatFunction 主通道的 function 路由值（SOLO 免费对话通道）。
-const traeChatFunction = "solo_work_lite"
+// traeCatalogFunction 是 Trae 上游「可调模型表」的分片键：目录接口
+// get_detail_param 用它拉哪张表，聊天接口 llm_utils_chat 就必须用同一个值发，
+// 否则「拉到 A 表、用 B 表调用」会把必 4001 的模型开放给下游。
+//
+// 【为什么是 solo_agent 而不是 solo_work_lite】上游把可调用模型按 function 分片，
+// 一个 config_name 只能通过「列出它的那个 function」调用；发错 function 得到的是
+// HTTP 200 + 流内 code:4001「param is invalid」，而不是 4xx（2026-09-29 实测）。
+// 同一张有效账号票逐 function 实测（版本画像 0.1.61/20260820）：
+//   - solo_work_lite 可见表 30 条：qwen3.8-flash / glm-5.3-flash / glm-5.3-flashx /
+//     kimi-k2.8-preview / Doubao-Seed-Code / step-5-preview 不在表内，发过去必 4001；
+//   - solo_agent 可见表 36 条：上述模型全在，且实测**全部正常出流**；
+//   - 两表 27 个交集模型用 solo_agent 调用全部出流，solo_work_lite 独有的
+//     kimi-k2.6 / kimi-k2.7-code 用 solo_agent **同样能调** —— 切换零损失；
+//   - solo_agent_lite / solo_work_remote / inline_chat 调 qwen3.8-flash 仍 4001。
+//
+// 第三方实现记载「llm_utils_chat 除 solo_work_lite 外一律 4001」「qwen3.8-flash
+// 插件侧无可调用通道」（cpa-multi-plugins variant.go、dsh-connect-trae README）均
+// 不成立：他们的 CN 目录只请求 solo_work_remote + solo_work_lite，从未在本仓这套
+// 版本画像下试过 solo_agent。改这个值必须同时改两处消费点：聊天侧
+// traeChatFunction 与目录侧 traeModelListBody。
+const traeCatalogFunction = "solo_agent"
+
+// traeChatFunction 主通道的 function 路由值。
+//
+// 与目录侧同源（见 traeCatalogFunction 的实测记录）：两侧一旦分头改动，
+// 同步回来的模型表与实际可调用表就会不一致，用户会拿到必 4001 的模型。
+const traeChatFunction = traeCatalogFunction
 
 // errTraeNoUserInput ide/v1/chat 形态没有任何可用 user 输入。
 var errTraeNoUserInput = errors.New("trae: no user input in request messages")
