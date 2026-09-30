@@ -44,9 +44,13 @@ const props = defineProps<{
   loading?: boolean
 }>()
 
+// 多系列分类色：铂金黑主题下图表保留色相但降低彩度（见 tailwind.config.js 的
+// viz* 命名空间）。原来的 rgb(59,130,246) 与 rgb(168,85,247) 分别是
+// 色相 217°/271°，落在本次要求清除的「蓝紫」区间内。
+// 序号/金额与笔数分属两个轴，钢蓝 + 松绿差异足够。
 const colors = [
-  ['rgb(59, 130, 246)', 'rgba(59, 130, 246, 0.1)'],
-  ['rgb(168, 85, 247)', 'rgba(168, 85, 247, 0.1)'],
+  ['rgb(111, 139, 166)', 'rgba(111, 139, 166, 0.1)'],
+  ['rgb(154, 111, 146)', 'rgba(154, 111, 146, 0.1)'],
   ['rgb(245, 158, 11)', 'rgba(245, 158, 11, 0.1)'],
   ['rgb(239, 68, 68)', 'rgba(239, 68, 68, 0.1)'],
 ]
@@ -73,8 +77,8 @@ const chartData = computed(() => {
       {
         label: t('payment.admin.orderCount'),
         data: props.data.map(d => d.count),
-        borderColor: 'rgb(16, 185, 129)',
-        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        borderColor: 'rgb(76, 143, 121)',
+        backgroundColor: 'rgba(76, 143, 121, 0.1)',
         fill: false,
         tension: 0.3,
         pointRadius: 3,

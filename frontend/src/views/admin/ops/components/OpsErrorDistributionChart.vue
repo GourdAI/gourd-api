@@ -23,7 +23,7 @@ const { t } = useI18n()
 
 const isDarkMode = computed(() => document.documentElement.classList.contains('dark'))
 const colors = computed(() => ({
-  blue: '#00be93',
+  blue: '#6f8ba6',
   red: '#ef4444',
   orange: '#f59e0b',
   gray: '#a1a1aa',

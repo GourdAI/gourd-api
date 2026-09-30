@@ -45,10 +45,10 @@ watch(
 
 const isDarkMode = computed(() => document.documentElement.classList.contains('dark'))
 const colors = computed(() => ({
-  blue: '#00be93',
-  blueAlpha: '#00be9320',
-  green: '#10b981',
-  greenAlpha: '#10b98120',
+  blue: '#6f8ba6',
+  blueAlpha: '#6f8ba620',
+  green: '#4c8f79',
+  greenAlpha: '#4c8f7920',
   grid: isDarkMode.value ? '#3f3f46' : '#f4f4f5',
   text: isDarkMode.value ? '#a1a1aa' : '#71717a'
 }))

@@ -60,9 +60,12 @@
     @apply bg-gray-400 dark:bg-dark-500;
   }
 
-  /* 选中文本样式 */
+  /* 选中文本样式
+   * 官网取 rgba(255,255,255,.22) —— 高亮靠光而不是色素。
+   * 亮色模式没有白可选，所以用反向的深银洗，避免选区看起来像未加载。 */
   ::selection {
-    @apply bg-primary-500/20 text-primary-900 dark:text-primary-100;
+    @apply bg-primary-200/70 text-gray-900;
+    @apply dark:bg-white/25 dark:text-white;
   }
 
 
@@ -79,11 +82,18 @@
     @apply active:scale-[0.98];
   }
 
+  /* 主行动按钮 —— 反转式（铂金黑的核心）
+   * 官网全站不用彩色按钮，强调由「白」承载。落到双主题上就是：
+   *   亮色：近黑银面 + 白字（白 on primary-900 = 17.6:1）
+   *   暗色：白-银面 + 近黑字
+   * 不走 500/600：那一档与 gray-500/600 明度几乎相同，做按钮面会「像灰片」。
+   * 阴影也去掉彩色（原 shadow-primary-500/25 就是上一版「绿墙」的来源之一）。 */
   .btn-primary {
-    @apply bg-gradient-to-r from-primary-500 to-primary-600;
-    @apply text-white shadow-md shadow-primary-500/25;
-    @apply hover:from-primary-600 hover:to-primary-700 hover:shadow-lg hover:shadow-primary-500/30;
-    @apply dark:shadow-primary-500/20;
+    @apply bg-primary-900 text-white;
+    @apply shadow-sm ring-1 ring-inset ring-white/10;
+    @apply hover:bg-primary-800;
+    @apply dark:bg-primary-100 dark:text-primary-950;
+    @apply dark:ring-white/0 dark:hover:bg-white;
   }
 
   .btn-secondary {
@@ -171,7 +181,8 @@
     @apply text-gray-900 dark:text-gray-100;
     @apply placeholder:text-gray-400 dark:placeholder:text-dark-400;
     @apply transition-all duration-200;
-    @apply focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/30;
+    @apply focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-400/25;
+    @apply dark:focus:border-primary-300 dark:focus:ring-primary-300/25;
     @apply disabled:cursor-not-allowed disabled:bg-gray-100 dark:disabled:bg-dark-900;
   }
 
@@ -571,10 +582,16 @@
     padding-right: 0.875rem;
   }
 
+  /* 激活态：品牌去彩后，primary-50 (#f5f7fa) 与白侧边栏只差 1.03:1，
+   * 完全看不出「当前页」。改用明度差更大的 primary-200 (vs 白 1.32)，
+   * 并把文字提到 primary-900；暗色反向用 primary-800 面 + primary-100 字。
+   * 再补一条左侧指示条 —— 官网的选中态就是靠「加亮 + 细线」而不是底色。 */
   .sidebar-link-active {
-    @apply bg-primary-50 dark:bg-primary-900/20;
-    @apply text-primary-600 dark:text-primary-400;
-    @apply hover:bg-primary-100 dark:hover:bg-primary-900/30;
+    @apply bg-primary-200 text-primary-900;
+    @apply dark:bg-primary-800 dark:text-primary-100;
+    @apply hover:bg-primary-200 dark:hover:bg-primary-700;
+    @apply shadow-[inset_2px_0_0_0_theme('colors.gray.900')];
+    @apply dark:shadow-[inset_2px_0_0_0_theme('colors.white')];
   }
 
   .sidebar-section {
@@ -658,9 +675,11 @@
     @apply h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-700;
   }
 
+  /* 迕度条：填充用深银（亮）/ 银白（暗），不用彩度迕度渐变 */
   .progress-bar {
-    @apply h-full bg-gradient-to-r from-primary-500 to-primary-400;
+    @apply h-full bg-primary-700;
     @apply transition-all duration-300;
+    @apply dark:bg-primary-200;
   }
 
   /* ============ 开关 ============ */
@@ -670,13 +689,15 @@
     @apply transition-colors duration-200;
   }
 
+  /* 开关的 on/off 全赖明度差区分（铂金黑没有彩度可用）：
+   * 亮色用近黑轨道 + 白块，暗色用银白轨道 + 近黑块。 */
   .switch-active {
-    @apply bg-primary-500;
+    @apply bg-primary-800 dark:bg-primary-100;
   }
 
   .switch-thumb {
     @apply absolute left-0.5 top-0.5 h-5 w-5 rounded-full;
-    @apply bg-white shadow-sm;
+    @apply bg-white shadow-sm dark:bg-primary-950;
     @apply transition-transform duration-200;
   }
 
@@ -748,9 +769,11 @@
 }
 
 @layer utilities {
-  /* 文字渐变 */
+  /* 文字渐变：官网标题的金属处理（白→银→白）。
+   * 亮色模式底色是白的，所以反向走深→浅→深。 */
   .text-gradient {
-    @apply bg-gradient-to-r from-primary-500 to-accent-500 bg-clip-text text-transparent;
+    @apply bg-gradient-to-r from-gray-900 via-gray-500 to-gray-900 bg-clip-text text-transparent;
+    @apply dark:from-white dark:via-gray-400 dark:to-white;
   }
 
   /* 玻璃效果 */

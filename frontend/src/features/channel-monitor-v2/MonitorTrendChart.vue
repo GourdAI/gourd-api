@@ -145,8 +145,8 @@ const chartData = computed(() => {
       {
         label: t('channelMonitorV2.chart.cacheDataset'),
         data: cacheRates,
-        borderColor: '#10b981',
-        backgroundColor: 'rgba(16, 185, 129, 0.08)',
+        borderColor: '#4c8f79',
+        backgroundColor: 'rgba(76, 143, 121, 0.08)',
         yAxisID: 'yPct',
         tension: 0.4,
         cubicInterpolationMode: 'monotone' as const,
@@ -159,8 +159,11 @@ const chartData = computed(() => {
       {
         label: t('channelMonitorV2.chart.ttftDataset'),
         data: ttftP50,
-        borderColor: '#12b76a',
-        backgroundColor: 'rgba(14, 165, 233, 0.08)',
+        // 本系列与上一系列（松绿 160°）原本都是绿色系（色相差 8°），
+        // 在图上几乎无法区分；改为黄铜色（35°）拉开。
+        // 右轴刻度与轴标题跟本系列同色，一并改。
+        borderColor: '#b58a4e',
+        backgroundColor: 'rgba(181, 138, 78, 0.08)',
         yAxisID: 'yTtft',
         tension: 0.4,
         cubicInterpolationMode: 'monotone' as const,
@@ -260,12 +263,12 @@ const chartOptions = computed(() => {
         position: 'right' as const,
         min: 0,
         ticks: {
-          color: '#12b76a',
+          color: '#b58a4e',
           font: { size: 10 },
           callback: (v: string | number) => formatMonitorMs(Number(v)),
         },
         grid: { display: false },
-        title: { display: true, text: t('channelMonitorV2.metrics.ttftP50'), color: '#12b76a', font: { size: 11 } },
+        title: { display: true, text: t('channelMonitorV2.metrics.ttftP50'), color: '#b58a4e', font: { size: 11 } },
       },
     },
   }

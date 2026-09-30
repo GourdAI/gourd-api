@@ -185,8 +185,10 @@ export function useSwipeSelect(
     const isDark = document.documentElement.classList.contains('dark')
     Object.assign(marqueeEl.style, {
       position: 'fixed',
-      background: isDark ? 'rgba(96, 165, 250, 0.15)' : 'rgba(59, 130, 246, 0.12)',
-      border: isDark ? '1.5px solid rgba(96, 165, 250, 0.5)' : '1.5px solid rgba(59, 130, 246, 0.4)',
+      // 框选遮罩：原为系统蓝（rgb 59,130,246 / 96,165,250，色相 217°），
+      // 铂金黑主题下选择态改用冷银，与 ::selection 保持同一物质感。
+      background: isDark ? 'rgba(238, 240, 243, 0.14)' : 'rgba(110, 112, 115, 0.12)',
+      border: isDark ? '1.5px solid rgba(238, 240, 243, 0.5)' : '1.5px solid rgba(110, 112, 115, 0.45)',
       borderRadius: '4px',
       pointerEvents: 'none',
       zIndex: '9999',

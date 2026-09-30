@@ -22,7 +22,9 @@
 .driver-active-element {
   position: relative !important;
   z-index: 99999999 !important;
-  outline: 4px solid rgba(0, 190, 147, 0.22) !important;
+  /* driver.js 的高亮环：原为薄荷 rgba(0,190,147,.22)。
+   * 第三方库样式无法用 Tailwind 类，所以直写与 primary-400 (#a2a4a7) 同源的冷银。 */
+  outline: 4px solid rgba(162, 164, 167, 0.35) !important;
   border-radius: 4px !important;
 }
 
@@ -196,12 +198,19 @@
   white-space: nowrap !important; /* Force no wrap */
 }
 
+/* 「下一步」按钮与 .btn-primary 保持同一设计语言：反转式。
+   * driver.js 不吃 Tailwind 类，所以值与 primary-900/800/100/950 手工对齐。 */
 .theme-tour-popover .driver-popover-next-btn {
-  background-color: #00be93 !important;
+  background-color: #1c1e21 !important;
   color: #ffffff !important;
   box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
 }
-.theme-tour-popover .driver-popover-next-btn:hover { background-color: #008068 !important; }
+.theme-tour-popover .driver-popover-next-btn:hover { background-color: #2c2e31 !important; }
+.dark .theme-tour-popover .driver-popover-next-btn {
+  background-color: #eef0f3 !important;
+  color: #0b0d10 !important;
+}
+.dark .theme-tour-popover .driver-popover-next-btn:hover { background-color: #ffffff !important; }
 
 .theme-tour-popover .driver-popover-prev-btn {
   background-color: white !important;
