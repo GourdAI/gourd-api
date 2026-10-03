@@ -124,9 +124,8 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			return
 		}
 		// 专属分组授权校验：用户对该专属分组的授权被撤销后应拒绝（与主中间件一致，防止越权）。
-		// 个人订阅探测必须与主中间件同源（validateAPIKeyGroupAllowedWithPersonal），
-		// 否则持有个人订阅的用户在主端点可用、在 Gemini 端点被 403。
-		if !validateAPIKeyGroupAllowedWithPersonal(c, apiKey, subscriptionService) {
+		// 与主中间件同源：只看分组权限，不因「持有个人订阅」而放行（订阅是额度钱包，不是通行证）。
+		if !validateAPIKeyGroupAllowed(apiKey) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
 			MarkIngressRejected(c, IngressRejectGroupNotAllowed)
 			abortWithGoogleError(c, 403, "API Key 所属专属分组不再允许当前用户使用")

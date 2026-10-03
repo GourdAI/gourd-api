@@ -76,18 +76,39 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 		return nil
 	}
 
-	keys := []string{modelKey}
+	// 写入侧存在两套模型名口径：管理员自定义临时不可调度规则
+	// (triggerTempUnschedulable) 记录的是客户端请求的原始模型名，而
+	// model-not-found / Codex Spark / 生图冷却
+	// (modelRateLimitKeyForUpstreamModelNotFound) 记录的是账号映射后的上游模型名。
+	// 只查映射名时，前者在配了 model_mapping 的账号上永远命中不了：冷却写进了 DB
+	// 却拦不住调度，同一账号被反复选中并再次撞上上游 404。因此两个键都要查。
+	keys := make([]string, 0, 3)
+	keys = append(keys, modelKey)
+	if raw := strings.TrimSpace(requestedModel); raw != "" && raw != modelKey {
+		keys = append(keys, raw)
+	}
+	// 家族级 scope：原始名与映射名任一命中家族即纳入（两个写入口径都可能落在家族 key 上）。
+	matchesAny := func(predicate func(string) bool) bool {
+		for _, name := range keys {
+			if predicate(name) {
+				return true
+			}
+		}
+		return false
+	}
 	switch a.Platform {
 	case PlatformAntigravity:
-		if isAntigravityGeminiModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {
+		if matchesAny(isAntigravityGeminiModel) && !containsString(keys, antigravityGeminiModelRateLimitKey) {
 			keys = append(keys, antigravityGeminiModelRateLimitKey)
 		}
 	case PlatformOpenAI:
-		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) && modelKey != openAIImageGenerationRateLimitKey {
+		if matchesAny(func(name string) bool {
+			return openAIImageGenerationRateLimitApplies(ctx, name, name)
+		}) && !containsString(keys, openAIImageGenerationRateLimitKey) {
 			keys = append(keys, openAIImageGenerationRateLimitKey)
 		}
 	case PlatformAnthropic:
-		if isAnthropicFableModel(modelKey) && modelKey != anthropicFableRateLimitKey {
+		if matchesAny(isAnthropicFableModel) && !containsString(keys, anthropicFableRateLimitKey) {
 			keys = append(keys, anthropicFableRateLimitKey)
 		}
 	}

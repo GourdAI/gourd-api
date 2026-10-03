@@ -160,7 +160,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		if abortIfAPIKeyGroupUnavailable(c, apiKey) {
 			return
 		}
-		if abortIfAPIKeyGroupNotAllowed(c, apiKey, subscriptionService) {
+		if abortIfAPIKeyGroupNotAllowed(c, apiKey) {
 			return
 		}
 		ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID)
@@ -195,8 +195,9 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 
 		// 订阅读取（倍率自省不需要）：
 		// - 订阅型分组：必须命中该分组的订阅（保持原有 403 语义），并依赖 apiKey.Group 非空；
-		// - 其他情形：探测「个人订阅」（group_id=0，全部分组通用），命中则按订阅扣费。
-		//   命中后不再重复查询分组槽位，避免同请求二次回源。
+		// - 其他情形：探测「个人订阅」（group_id=0）。注意：这一步**不授予任何分组准入**
+		//   （准入已由上方 abortIfAPIKeyGroupNotAllowed 按分组权限严格判完），
+		//   它只决定“这笔请求的扣费从哪份额度里走”。
 		if subscriptionService != nil && !billingInfoRequest {
 			if groupIsSubscription {
 				sub, subErr := subscriptionService.GetActiveSubscription(
@@ -422,11 +423,10 @@ func abortIfAPIKeyGroupUnavailable(c *gin.Context, apiKey *service.APIKey) bool 
 	return true
 }
 
-// abortIfAPIKeyGroupNotAllowed 多分组语义：候选集合中至少一个分组对当前用户可见即放行。
-// 严格判定失败时补一次「个人订阅」探测（仅在失败路径上，不影响热路径），
-// 使持有个人订阅的用户不因专属分组/公开分组限制而被拦。
-func abortIfAPIKeyGroupNotAllowed(c *gin.Context, apiKey *service.APIKey, subscriptionService *service.SubscriptionService) bool {
-	if validateAPIKeyGroupAllowedWithPersonal(c, apiKey, subscriptionService) {
+// abortIfAPIKeyGroupNotAllowed 多分组语义：候选集合中至少一个分组对当前用户可用即放行。
+// 这里**不看订阅**（含个人订阅）：订阅只决定「按什么额度扣费」，不决定「能用哪些分组」。
+func abortIfAPIKeyGroupNotAllowed(c *gin.Context, apiKey *service.APIKey) bool {
+	if validateAPIKeyGroupAllowed(apiKey) {
 		return false
 	}
 	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
@@ -435,34 +435,13 @@ func abortIfAPIKeyGroupNotAllowed(c *gin.Context, apiKey *service.APIKey, subscr
 	return true
 }
 
-// validateAPIKeyGroupAllowedWithPersonal 与 canUserBindGroup 同口径的准入判定：
-// 严格判定失败时补一次「个人订阅」探测（仅在失败路径上，不影响热路径）。
-//
-// 必须被所有平台的 auth 中间件共用：否则同一把 Key 在主中间件放行、
-// 在 Gemini 端点被拦（跨端点 403 分叉）。
-func validateAPIKeyGroupAllowedWithPersonal(c *gin.Context, apiKey *service.APIKey, subscriptionService *service.SubscriptionService) bool {
-	if validateAPIKeyGroupAllowed(apiKey) {
-		return true
-	}
-	if c == nil || c.Request == nil || subscriptionService == nil || apiKey == nil || apiKey.User == nil {
-		return false
-	}
-	personal, err := subscriptionService.GetActiveSubscription(c.Request.Context(), apiKey.User.ID, 0)
-	if err != nil || personal == nil {
-		return false
-	}
-	return validateAPIKeyGroupAllowed(apiKey, true)
-}
-
 // validateAPIKeyGroupAllowed 判定 key 是否有「至少一个用户可用的候选分组」。
 //
 // 兼容规则：
 //   - 未绑定分组（GroupID 为 nil）：保持历史语义放行（后续由未分组拦截中间件处理）；
 //   - 单分组 key：与旧实现的 canUserBindGroup 判定逐位等价；
-//   - 多分组 key：候选集内任一通过即可（不再因为某单分组被取消授权而 403）；
-//   - hasPersonal=true：用户持有个人订阅，视同拥有全部分组准入（与 canUserBindGroup 同口径）。
-func validateAPIKeyGroupAllowed(apiKey *service.APIKey, hasPersonal ...bool) bool {
-	personal := len(hasPersonal) > 0 && hasPersonal[0]
+//   - 多分组 key：候选集内任一通过即可（不再因为某单分组被取消授权而 403）。
+func validateAPIKeyGroupAllowed(apiKey *service.APIKey) bool {
 	if apiKey == nil || apiKey.GroupID == nil || apiKey.User == nil {
 		return true
 	}
@@ -482,11 +461,6 @@ func validateAPIKeyGroupAllowed(apiKey *service.APIKey, hasPersonal ...bool) boo
 		}
 		if group.IsSubscriptionType() {
 			// 订阅型分组：订阅有效性在后续订阅校验/计费层判定（与历史行为一致）。
-			return true
-		}
-		// 持有个人订阅的用户对标准分组有全量准入（专属分组与限制公开分组都适用）；
-		// 订阅型候选已在上方无条件放行，不会被 personal 误判。
-		if personal {
 			return true
 		}
 		if apiKey.User.CanBindGroup(group.ID, group.IsExclusive) {

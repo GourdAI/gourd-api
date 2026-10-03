@@ -218,6 +218,18 @@ func normalizeSubLimit(v *float64) *float64 {
 	return v
 }
 
+// HasEffectiveLimit 报告该订阅是否至少有一项生效额度（日/周/月任一）。
+//
+// 用于守住一个资损口子：个人订阅（GroupID=0）若三列额度全空，在「订阅模式」下等于
+// 全平台不限额免费——管理员只建了有效期、忘填额度就会发生。因此无额度的个人订阅
+// 不应接管计费（退回余额扣费），见三处 isSubscriptionMode 判定。
+// 分组订阅不受此限制：其「不限额」由分组自身配置决定，属基线语义。
+func (s *UserSubscription) HasEffectiveLimit(group *Group) bool {
+	return s.EffectiveDailyLimit(group) != nil ||
+		s.EffectiveWeeklyLimit(group) != nil ||
+		s.EffectiveMonthlyLimit(group) != nil
+}
+
 // limitFallbackGroup 返回可用于额度回退的分组：仅当订阅归属该分组时，
 // 才继承分组额度；个人订阅（GroupID=0）不受任何分组额度约束。
 func (s *UserSubscription) limitFallbackGroup(group *Group) *Group {

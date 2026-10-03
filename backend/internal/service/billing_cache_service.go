@@ -750,9 +750,13 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 		return ErrBillingServiceUnavailable
 	}
 
-	// 判断计费模式：分组订阅（分组为订阅型）或个人订阅（GroupID=0，全分组通用）
+	// 判断计费模式：分组订阅（分组为订阅型）或个人订阅（GroupID=0，不绑分组）。
+	// 个人订阅额外要求「至少有一项额度」才接管扣费：三列全空 = 不限额，
+	// 若直接走订阅模式会让该用户在全平台免费使用（只设有效期、忘填额度的典型误操作）。
+	// 分组订阅不受此限：它的「不限额」由分组配置决定，是基线语义。
 	isSubscriptionMode := subscription != nil &&
-		(subscription.GroupID == 0 || (group != nil && group.IsSubscriptionType()))
+		((group != nil && group.IsSubscriptionType()) ||
+			(subscription.GroupID == 0 && subscription.HasEffectiveLimit(group)))
 
 	if isSubscriptionMode {
 		if err := s.checkSubscriptionEligibility(ctx, user.ID, group, subscription); err != nil {

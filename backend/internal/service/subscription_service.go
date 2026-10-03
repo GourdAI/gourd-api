@@ -829,28 +829,19 @@ func (s *SubscriptionService) GetByID(ctx context.Context, id int64) (*UserSubsc
 // 使用 L1 缓存 + singleflight 加速中间件热路径。
 // 返回缓存对象的浅拷贝，调用方可安全修改字段而不会污染缓存或触发 data race。
 //
-// 槽位语义（关键，勿改）：//   - (user, group) 槽位只承载两种值：该分组的**专属**订阅，或「该分组确无专属订阅」的负哨兵；
-//   - (user, 0) 槽位只承载**个人订阅**（全分组通用额度）；
-//   - 分组槽位 miss 时**不得**直接回退读个人订阅：那会让刚分配的分组专属订阅被个人订阅
-//     遮蔽（扣错订阅、额度显示与归属全错）。兜底只在负哨兵已确认「无专属订阅」时进行。
+// 槽位语义（关键，勿改）：
+//   - (user, groupID>0) 只承载该分组的**专属**订阅（严格归属，不继承个人订阅）；
+//   - (user, 0) 只承载**个人订阅**（额度钱包），由调用方显式探测，与分组无关；
+//   - 两个槽位互不回退：分组请求命中个人订阅会让刚分配的专属订阅被遮蔽（扣错订阅、
+//     额度与归属全错）；反之若由分组槽位返回个人订阅，则等于把「钱包」当成「通行证」。
 func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID, groupID int64) (*UserSubscription, error) {
 	key := subCacheKey(userID, groupID)
 
 	if s.subCacheL1 != nil {
 		if v, ok := s.subCacheL1.Get(key); ok {
 			if _, neg := v.(*subCacheNegative); neg {
-				// 负哨兵：该分组无专属订阅。优先从个人订阅规范槽位取（避开 DB）；
-				// 但**不得**在个人槽位 miss 时直接报 NotFound：分配新个人订阅会失效 (user,0)
-				// 而分组负哨兵仍在 TTL 内存活，直接报错会让新订阅最长 30s 不生效。
-				// 此时继续往下走 singleflight 回源（repo 会正确回退到个人订阅）。
-				if groupID != 0 {
-					if personal, hit := s.personalFromL1(userID); hit {
-						return personal, nil
-					}
-				} else {
-					// 个人槽位自身的负哨兵：确认无任何订阅。
-					return nil, ErrSubscriptionNotFound
-				}
+				// 负哨兵：该槽位确无生效订阅（仅因本槽位 miss 而写入，不会跨槽位兼容）。
+				return nil, ErrSubscriptionNotFound
 			} else if sub, ok := v.(*UserSubscription); ok {
 				cp := *sub
 				return &cp, nil
@@ -862,22 +853,18 @@ func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID,
 	value, err, _ := s.subCacheGroup.Do(key, func() (any, error) {
 		sub, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, userID, groupID)
 		if err != nil {
-			// 仅对「个人订阅」探测槽位 (user,0) 做短 TTL 负缓存：
-			// 该路径在每个普通分组请求上都会触发，不缓存会让无订阅用户每请求多一次 DB 往返。
-			if groupID == 0 && s.subCacheL1 != nil && errors.Is(err, ErrSubscriptionNotFound) {
+			// 两个槽位都做短 TTL 负缓存（1 个请求一次 DB 往返不可接受）；
+			// 失效由分配/撤销/改额度路径显式清理对应槽位（仅 (user,sub.GroupID)）。
+			if s.subCacheL1 != nil && errors.Is(err, ErrSubscriptionNotFound) {
 				_ = s.subCacheL1.SetWithTTL(key, &subCacheNegative{}, 1, s.subNegativeTTL())
 			}
 			return nil, err // 直接透传 repo 已翻译的错误（NotFound → ErrSubscriptionNotFound，其他错误原样返回）
 		}
-		// 写入 L1 缓存：以订阅自身的 group_id 为规范槽位，使失效精确（改个人额度只清 (user,0)）。
-		// 分组请求回退命中个人订阅时，额外给分组槽位打负哨兵：
-		// 它只表达「本分组无专属订阅」（不携带额度），因此个人额度变更仍由 (user,0) 槽位失效保证。
+		// 写入 L1 缓存：以订阅自身的 group_id 为规范槽位，使失效精确。
+		// repo 严格匹配分组，因此 sub.GroupID == groupID，规范槽位就是本次请求的 key。
 		if s.subCacheL1 != nil {
 			ttl := s.jitteredTTL(s.subCacheTTL)
 			_ = s.subCacheL1.SetWithTTL(subCacheKey(userID, sub.GroupID), sub, 1, ttl)
-			if groupID != 0 && sub.GroupID == 0 {
-				_ = s.subCacheL1.SetWithTTL(key, &subCacheNegative{}, 1, s.subNegativeTTL())
-			}
 		}
 		return sub, nil
 	})
@@ -891,24 +878,6 @@ func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID,
 	}
 	cp := *sub
 	return &cp, nil
-}
-
-// personalFromL1 读取个人订阅规范槽位 (user,0) 的缓存值（浅拷贝）。
-// 负哨兵/缺失均返回 ok=false，由调用方回源 DB。
-func (s *SubscriptionService) personalFromL1(userID int64) (*UserSubscription, bool) {
-	v, ok := s.subCacheL1.Get(subCacheKey(userID, 0))
-	if !ok {
-		return nil, false
-	}
-	if _, neg := v.(*subCacheNegative); neg {
-		return nil, false
-	}
-	sub, ok := v.(*UserSubscription)
-	if !ok || sub == nil || sub.GroupID != 0 {
-		return nil, false
-	}
-	cp := *sub
-	return &cp, true
 }
 
 // ListUserSubscriptions 获取用户的所有订阅

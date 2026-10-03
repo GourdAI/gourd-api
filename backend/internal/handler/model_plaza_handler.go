@@ -150,10 +150,7 @@ func (h *ModelPlazaHandler) Get(c *gin.Context) {
 		}
 	}
 
-	// 个人订阅（哨兵 group_id=0）已在 GetUserGroupVisibility 里写入集合，
-	// 命中则视同拥有全部分组可见性（与绑定层 canUserBindGroup 同口径）。
-	_, hasPersonalSubscription := allowedGroups[0]
-	visible := filterPlazaVisibleGroups(groups, allowedGroups, restrictPublicGroups, hasPersonalSubscription)
+	visible := filterPlazaVisibleGroups(groups, allowedGroups, restrictPublicGroups)
 
 	out := make([]modelPlazaGroup, 0, len(visible))
 	for i := range visible {
@@ -173,17 +170,10 @@ func filterPlazaVisibleGroups(
 	groups []service.PlazaGroup,
 	allowedGroups map[int64]struct{},
 	restrictPublicGroups bool,
-	hasPersonalSubscription ...bool,
 ) []service.PlazaGroup {
-	personal := len(hasPersonalSubscription) > 0 && hasPersonalSubscription[0]
 	visible := make([]service.PlazaGroup, 0, len(groups))
 	for _, g := range groups {
 		if g.IsExclusive || (restrictPublicGroups && allowedGroups != nil) {
-			if personal {
-				// 持有个人订阅：专属/受限分组同样可见
-				visible = append(visible, g)
-				continue
-			}
 			if allowedGroups == nil {
 				continue
 			}

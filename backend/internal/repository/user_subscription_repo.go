@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -118,21 +117,13 @@ func (r *userSubscriptionRepository) GetByUserIDAndGroupID(ctx context.Context, 
 	return userSubscriptionEntityToService(m), nil
 }
 
-// GetActiveByUserIDAndGroupID 获取用户在指定分组下的活跃订阅。
-// groupID 无专属订阅时回退到「个人订阅」（group_id=0）：不绑定分组、
-// 全分组通用额度，用户自选模型，仅按日/周/月额度扣费。
+// GetActiveByUserIDAndGroupID 获取用户「严格归属该分组」的活跃订阅。
+//
+// 故意不做「本分组无专属订阅时回退个人订阅 (group_id=0)」：本方法同时服务于
+// 准入校验（api_key_service.canUserBindGroup 绑定分组、admin_group 改 Key 分组），
+// 一旦回退就等于「持有个人订阅即可绑定任意订阅型分组」，属于权限扩张。
+// 个人订阅是「额度钱包」，由调用方显式探测 (userID, 0) 槽位（见鉴权中间件）。
 func (r *userSubscriptionRepository) GetActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
-	sub, err := r.queryActiveByUserGroup(ctx, userID, groupID)
-	if err == nil {
-		return sub, nil
-	}
-	if groupID != 0 && errors.Is(err, service.ErrSubscriptionNotFound) {
-		return r.queryActiveByUserGroup(ctx, userID, 0)
-	}
-	return nil, err
-}
-
-func (r *userSubscriptionRepository) queryActiveByUserGroup(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
 	client := clientFromContext(ctx, r.client)
 	m, err := client.UserSubscription.Query().
 		Where(

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// personalSlotRepoStub 复刻真实仓储的「分组订阅优先，缺失回退个人订阅」语义，
+// personalSlotRepoStub 复刻真实仓储的「槽位严格归属」语义（分组不回退个人订阅），
 // 并记录回源次数，用于验证 L1 槽位是否被错误短路。
 type personalSlotRepoStub struct {
 	userSubRepoNoop
@@ -46,13 +46,7 @@ func (r *personalSlotRepoStub) GetActiveByUserIDAndGroupID(_ context.Context, us
 		cp := *sub
 		return &cp, nil
 	}
-	// 与仓储一致：分组槽位无专属订阅时回退个人订阅（group_id=0）。
-	if groupID != 0 {
-		if sub := r.match(userID, 0); sub != nil {
-			cp := *sub
-			return &cp, nil
-		}
-	}
+	// 与仓储一致：严格归属本槽位，绝不回退到另一个槽位。
 	return nil, ErrSubscriptionNotFound
 }
 
@@ -119,8 +113,9 @@ func activeSub(id, userID, groupID int64) UserSubscription {
 	}
 }
 
-// P0-2：分组槽位 miss 时不得直读个人订阅槽位跳过 DB。
-// 否则用户新分配的分组专属订阅会被个人订阅遮蔽 —— 扣错订阅、额度与归属全错。
+// 槽位隔离：分组槽位只返回该分组的专属订阅。
+// 个人订阅是额度钱包，不得由分组槽位返回（否则等于把钱包当通行证）；
+// 它由调用方显式探测 (user,0)，同时刚分配的分组专属订阅不能被个人订阅遮蔽。
 func TestGetActiveSubscription_GroupSlotMissDoesNotShadowNewGroupSubscription(t *testing.T) {
 	repo := &personalSlotRepoStub{subs: []UserSubscription{
 		activeSub(1, 10, 0), // 个人订阅
@@ -134,36 +129,47 @@ func TestGetActiveSubscription_GroupSlotMissDoesNotShadowNewGroupSubscription(t 
 	svc.subCacheL1.Wait()
 	require.Equal(t, 1, repo.activeCalls)
 
+	// 分组 20 无专属订阅：必须报 NotFound，而不是被个人订阅遮蔽。
+	_, err = svc.GetActiveSubscription(context.Background(), 10, 20)
+	require.ErrorIs(t, err, ErrSubscriptionNotFound, "分组槽位不得返回个人订阅")
+	svc.subCacheL1.Wait()
+	require.Equal(t, 2, repo.activeCalls, "分组槽位 miss 必须回源 DB")
+
 	// 分配分组专属订阅并失效分组槽位（模拟 AssignSubscription 的失效路径）。
 	repo.subs = append(repo.subs, activeSub(2, 10, 20))
 	svc.InvalidateSubCache(10, 20)
 
 	sub, err := svc.GetActiveSubscription(context.Background(), 10, 20)
 	require.NoError(t, err)
-	require.Equal(t, int64(20), sub.GroupID, "必须命中分组专属订阅，不能被个人订阅遮蔽")
-	require.Equal(t, 2, repo.activeCalls, "分组槽位 miss 必须回源 DB")
+	require.Equal(t, int64(20), sub.GroupID, "必须命中分组专属订阅")
 }
 
-// P0-2 补充：回退命中个人订阅后，分组槽位打负哨兵；后续同分组请求走负哨兵 → 个人槽位，
-// 既不多打 DB，也不会把「无专属订阅」误当成「有专属订阅」。
-func TestGetActiveSubscription_FallbackToPersonalIsCachedAsNegativeSlot(t *testing.T) {
+// 两个槽位各自独立缓存：分组无专属订阅的负哨兵不影响个人槽位可取到额度。
+func TestGetActiveSubscription_SlotsAreIndependent(t *testing.T) {
 	repo := &personalSlotRepoStub{subs: []UserSubscription{activeSub(1, 10, 0)}}
 	svc := newPersonalSlotSvc(t, repo)
 
-	first, err := svc.GetActiveSubscription(context.Background(), 10, 20)
-	require.NoError(t, err)
-	require.Equal(t, int64(0), first.GroupID, "回退返回的必须是个人订阅本体（保留个人额度口径）")
+	// 分组请求：无专属订阅 → NotFound，并落分组槽位负哨兵。
+	_, err := svc.GetActiveSubscription(context.Background(), 10, 20)
+	require.ErrorIs(t, err, ErrSubscriptionNotFound)
 	svc.subCacheL1.Wait()
-	require.Equal(t, 1, repo.activeCalls)
 
-	second, err := svc.GetActiveSubscription(context.Background(), 10, 20)
+	// 个人槽位：仍能拿到个人订阅（中间件就是靠这一步给普通分组计费）。
+	personal, err := svc.GetActiveSubscription(context.Background(), 10, 0)
 	require.NoError(t, err)
-	require.Equal(t, int64(0), second.GroupID)
-	require.Equal(t, 1, repo.activeCalls, "分组槽位负哨兵 + 个人槽位应命中缓存，不再回源")
+	require.Equal(t, int64(0), personal.GroupID)
+	// L1 的 Set 是异步的，不等就会多一次回源（不是逻辑错误，但会让下面的「不再回源」断言假失败）。
+	svc.subCacheL1.Wait()
+	before := repo.activeCalls
+	// 两侧二次请求均命中缓存，不再回源。
+	_, err = svc.GetActiveSubscription(context.Background(), 10, 20)
+	require.ErrorIs(t, err, ErrSubscriptionNotFound)
+	_, err = svc.GetActiveSubscription(context.Background(), 10, 0)
+	require.NoError(t, err)
+	require.Equal(t, before, repo.activeCalls, "两槽位均应命中缓存，不再回源")
 }
 
-// 无任何订阅时：分组槽位回源后按未命中处理，且不做分组槽位负缓存
-// （避免新建个人订阅后最长 30s 才生效）。
+// 无任何订阅时：两个槽位都回源 NotFound 并各自落负哨兵（避免无订阅用户每请求多一次 DB 往返）。
 func TestGetActiveSubscription_NoSubscriptionAtAll(t *testing.T) {
 	repo := &personalSlotRepoStub{}
 	svc := newPersonalSlotSvc(t, repo)
@@ -172,7 +178,34 @@ func TestGetActiveSubscription_NoSubscriptionAtAll(t *testing.T) {
 	require.ErrorIs(t, err, ErrSubscriptionNotFound)
 	svc.subCacheL1.Wait()
 	_, ok := svc.subCacheL1.Get(subCacheKey(10, 20))
-	require.False(t, ok, "分组槽位不得被负缓存")
+	require.True(t, ok, "分组槽位应被负缓存（热路径避免 DB 往返）")
+
+	before := repo.activeCalls
+	_, err = svc.GetActiveSubscription(context.Background(), 10, 20)
+	require.ErrorIs(t, err, ErrSubscriptionNotFound)
+	require.Equal(t, before, repo.activeCalls, "负哨兵命中不得再回源")
+}
+
+// 新建个人订阅不得被分组槽位的负哨兵影响：中间件探测的是 (user,0) 槽位，
+// 分配时按 sub.GroupID=0 失效，因此新额度立即生效（不依赖分组槽位）。
+func TestGetActiveSubscription_GroupNegativeSlotDoesNotBlockNewPersonalSubscription(t *testing.T) {
+	repo := &personalSlotRepoStub{}
+	svc := newPersonalSlotSvc(t, repo)
+
+	// 先确认无订阅 → 分组槽位与个人槽位均落负哨兵。
+	_, err := svc.GetActiveSubscription(context.Background(), 10, 20)
+	require.ErrorIs(t, err, ErrSubscriptionNotFound)
+	_, err = svc.GetActiveSubscription(context.Background(), 10, 0)
+	require.ErrorIs(t, err, ErrSubscriptionNotFound)
+	svc.subCacheL1.Wait()
+
+	// 管理员新建个人订阅（AssignSubscription 路径：失效 (user, sub.GroupID)=(user,0)）。
+	repo.subs = append(repo.subs, activeSub(1, 10, 0))
+	svc.InvalidateSubCacheSync(10, 0)
+
+	personal, err := svc.GetActiveSubscription(context.Background(), 10, 0)
+	require.NoError(t, err, "新建个人订阅必须立即生效，不被旧负哨兵挡住")
+	require.Equal(t, int64(0), personal.GroupID)
 }
 
 // P0-5：额度必须按字段增量写入。只填每日额度却把周/月静默清空 = 提权（闸门消失）。
@@ -246,24 +279,3 @@ func TestGetUserSubscriptionsWithProgress_IncludesPersonalSubscription(t *testin
 	require.Equal(t, 10.0, progresses[0].Daily.LimitUSD)
 }
 
-// 分组槽位负哨兵仍在 TTL 内存活、但个人槽位刚被失效时（改额度/新建个人订阅），
-// 必须回源而不是直接报 NotFound；否则新个人订阅最长 30s 不生效。
-func TestGetActiveSubscription_GroupNegativeSlotWithEvictedPersonalSlotRefetches(t *testing.T) {
-	repo := &personalSlotRepoStub{subs: []UserSubscription{activeSub(1, 10, 0)}}
-	svc := newPersonalSlotSvc(t, repo)
-
-	// 第一次：分组无专属订阅 → 回退个人订阅，分组槽位落负哨兵。
-	first, err := svc.GetActiveSubscription(context.Background(), 10, 20)
-	require.NoError(t, err)
-	require.Equal(t, int64(0), first.GroupID)
-	svc.subCacheL1.Wait()
-	require.Equal(t, 1, repo.activeCalls)
-
-	// 失效个人槽位（模拟 applyAssignedLimits / 新建个人订阅），分组负哨兵不动。
-	svc.InvalidateSubCacheSync(10, 0)
-
-	second, err := svc.GetActiveSubscription(context.Background(), 10, 20)
-	require.NoError(t, err, "个人槽位已失效时必须回源，不得因分组负哨兵直接报无订阅")
-	require.Equal(t, int64(0), second.GroupID)
-	require.Equal(t, 2, repo.activeCalls, "应回源一次拿到最新个人订阅")
-}

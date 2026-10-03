@@ -61,24 +61,7 @@ func effectiveGroupMiddleware(gatewayService *service.GatewayService, subscripti
 			)
 		}
 
-		// 个人订阅准入探针：仅在决议层遇到未授权标准分组时惰性查一次（走订阅 L1 缓存）。
-		var personalGrant func() bool
-		if subscriptionService != nil && apiKey.UserID > 0 {
-			reqCtx := c.Request.Context()
-			userID := apiKey.UserID
-			resolved := false
-			var granted bool
-			personalGrant = func() bool {
-				if !resolved {
-					sub, err := subscriptionService.GetActiveSubscription(reqCtx, userID, 0)
-					granted = err == nil && sub != nil
-					resolved = true
-				}
-				return granted
-			}
-		}
-
-		decision := service.ResolveEffectiveGroup(apiKey, model, probe, personalGrant)
+		decision := service.ResolveEffectiveGroup(apiKey, model, probe)
 		if decision == nil || decision.Group == nil {
 			c.Next()
 			return

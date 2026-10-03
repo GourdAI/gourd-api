@@ -1779,6 +1779,20 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if req.RequirePrivacySet && !account.IsPrivacySet() {
 		return false, "privacy_not_set"
 	}
+	// 模型级限流（per-model 冷却 / 生图家族冷却）必须在候选过滤阶段就排除：
+	// 此前只有后置的 fresh/DB recheck 兜得住，结果是 TopK 候选池被冷却号占满
+	// （健康号落在池外选不到），且 filterStats 不统计 model_rate_limited，
+	// 全池冷却时 handler 拿不到 rate_limited=N 语义，对外退化成误导的 404/503。
+	// 必须与 legacy 引擎 (openaiCompatibleAccountEligibilityFailureReasonBeforeProfit)
+	// 同源同口径：走同一个 IsSchedulableForModelWithContext，否则 Antigravity
+	// 的 “overages 启用且积分未耗尽 → 照样放行” 语义会在这里丢失；
+	// reason 同名也保证 handler 的 selectionModelRateLimitedPattern 能命中并返回 429。
+	if req.RequestedModel != "" && !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
+		if account.IsSchedulable() {
+			return false, "model_rate_limited"
+		}
+		return false, "not_schedulable"
+	}
 	if s != nil && s.service != nil && s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel) {
 		return false, "runtime_blocked"
 	}

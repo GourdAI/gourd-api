@@ -1874,9 +1874,12 @@ func (h *GatewayHandler) usageQuotaLimited(c *gin.Context, ctx context.Context, 
 
 // usageUnrestricted 处理 unrestricted 模式的响应（向后兼容）
 func (h *GatewayHandler) usageUnrestricted(c *gin.Context, ctx context.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, usageData gin.H, dailyUsage any, modelStats any) {
-	// 订阅模式：订阅型分组，或上下文中存在「个人订阅」（group_id=0，全分组通用）。
+	// 订阅模式：订阅型分组，或上下文存在「至少有一项额度」的个人订阅（group_id=0）。
+	// 必须与计费层三处 isSubscription* 判定同口径：无额度的个人订阅在计费层已退回
+	// 余额模式，这里再报「unrestricted + 个人订阅」就是展示与扣费分叉。
 	contextSubscription, hasSubscription := middleware2.GetSubscriptionFromContext(c)
-	isPersonalSub := hasSubscription && contextSubscription != nil && contextSubscription.GroupID == 0
+	isPersonalSub := hasSubscription && contextSubscription != nil &&
+		contextSubscription.GroupID == 0 && contextSubscription.HasEffectiveLimit(apiKey.Group)
 	if (apiKey.Group != nil && apiKey.Group.IsSubscriptionType()) || isPersonalSub {
 		planName := ""
 		if apiKey.Group != nil {

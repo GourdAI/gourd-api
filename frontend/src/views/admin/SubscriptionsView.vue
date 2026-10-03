@@ -1159,7 +1159,7 @@ const restoringSubscription = ref<UserSubscription | null>(null)
 
 const assignForm = reactive({
   user_id: null as number | null,
-  // null = 未选择；0 = 个人订阅（不绑分组，全模型通用）
+  // null = 未选择；0 = 个人订阅（不绑分组，仅管理额度，不授予分组权限）
   group_id: 0 as number | null,
   validity_days: 30,
   daily_limit_usd: null as number | null,

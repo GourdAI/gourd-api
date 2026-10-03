@@ -830,9 +830,11 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 
 	// 判断计费方式：订阅模式 vs 余额模式
-	// 个人订阅（GroupID=0）不依赖分组类型，普通分组下同样走订阅扣费。
+	// 个人订阅（GroupID=0）不依赖分组类型，普通分组下同样走订阅扣费；
+	// 但必须至少有一项额度才接管，否则退回余额计费（避开「空额度 = 全平台免费」的资损）。
 	isSubscriptionBilling := subscription != nil &&
-		(subscription.GroupID == 0 || (apiKey.Group != nil && apiKey.Group.IsSubscriptionType()))
+		((apiKey.Group != nil && apiKey.Group.IsSubscriptionType()) ||
+			(subscription.GroupID == 0 && subscription.HasEffectiveLimit(apiKey.Group)))
 	billingType := BillingTypeBalance
 	if isSubscriptionBilling {
 		billingType = BillingTypeSubscription

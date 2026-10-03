@@ -327,9 +327,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	// Determine billing type
-	// 个人订阅（GroupID=0）不依赖分组类型：普通分组下同样走订阅扣费。
+	// 个人订阅（GroupID=0）不依赖分组类型：普通分组下同样走订阅扣费；
+	// 但必须至少有一项额度才接管，否则计入余额模式（与计费前置校验同源，避免日志口径分叉）。
 	isSubscriptionBilling := subscription != nil &&
-		(subscription.GroupID == 0 || (apiKey.Group != nil && apiKey.Group.IsSubscriptionType()))
+		((apiKey.Group != nil && apiKey.Group.IsSubscriptionType()) ||
+			(subscription.GroupID == 0 && subscription.HasEffectiveLimit(apiKey.Group)))
 	billingType := BillingTypeBalance
 	if isSubscriptionBilling {
 		billingType = BillingTypeSubscription
