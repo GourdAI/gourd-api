@@ -149,6 +149,9 @@ func (userSubRepoNoop) ExistsByUserIDAndGroupID(context.Context, int64, int64) (
 func (userSubRepoNoop) ExistsActiveByUserIDAndGroupID(context.Context, int64, int64) (bool, error) {
 	panic("unexpected ExistsActiveByUserIDAndGroupID call")
 }
+func (userSubRepoNoop) UpdateAssignedLimits(context.Context, int64, *float64, *float64, *float64) error {
+	panic("unexpected UpdateAssignedLimits call")
+}
 func (userSubRepoNoop) ExtendExpiry(context.Context, int64, time.Time) error {
 	panic("unexpected ExtendExpiry call")
 }

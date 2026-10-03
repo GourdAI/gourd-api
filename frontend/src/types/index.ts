@@ -2061,12 +2061,17 @@ export interface ChangePasswordRequest {
 export interface UserSubscription {
   id: number
   user_id: number
+  /** 0 = 个人订阅（不绑定分组，全部模型通用） */
   group_id: number
   status: 'active' | 'expired' | 'revoked' | 'suspended'
   starts_at: string
   daily_usage_usd: number
   weekly_usage_usd: number
   monthly_usage_usd: number
+  /** 订阅自有额度：优先于分组额度；null/0/undefined = 该窗口不限额 */
+  daily_limit_usd?: number | null
+  weekly_limit_usd?: number | null
+  monthly_limit_usd?: number | null
   daily_window_start: string | null
   weekly_window_start: string | null
   monthly_window_start: string | null
@@ -2104,14 +2109,24 @@ export interface SubscriptionProgress {
 
 export interface AssignSubscriptionRequest {
   user_id: number
-  group_id: number
+  /** 省略或传 0 = 个人订阅（不绑定分组，全部模型通用） */
+  group_id?: number
   validity_days?: number
+  notes?: string
+  daily_limit_usd?: number | null
+  weekly_limit_usd?: number | null
+  monthly_limit_usd?: number | null
 }
 
 export interface BulkAssignSubscriptionRequest {
   user_ids: number[]
-  group_id: number
+  /** 省略或传 0 = 个人订阅（不绑定分组，全部模型通用） */
+  group_id?: number
   validity_days?: number
+  notes?: string
+  daily_limit_usd?: number | null
+  weekly_limit_usd?: number | null
+  monthly_limit_usd?: number | null
 }
 
 export interface ExtendSubscriptionRequest {

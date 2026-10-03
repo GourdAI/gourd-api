@@ -56,7 +56,9 @@ func TestRevokeSubscription_InvalidatesL1CacheSynchronously(t *testing.T) {
 	}
 	svc := NewSubscriptionService(groupRepoNoop{}, repo, nil, nil, &config.Config{
 		SubscriptionCache: config.SubscriptionCacheConfig{
-			L1Size:       16,
+			// L1Size 必须给足：ristretto 在极小容量（旧值 16）下会丢弃全部 Set，
+			// 本测试会退化成「从未写入过缓存」的假通过，测不到撤销后的失效路径。
+			L1Size:       10000,
 			L1TTLSeconds: 60,
 		},
 	})

@@ -57,12 +57,12 @@ const (
 //
 // model 为空或候选唯一或模型无法判定时回退主分组语义；本函数不改动 apiKey，
 // 由调用方（服务方法 / 中间件）使用 cloneAPIKeyWithGroup 同款手法覆写。
-func ResolveEffectiveGroup(apiKey *APIKey, model string, groupModelAvailability func(groupID int64) (bool, int)) *EffectiveGroupDecision {
+func ResolveEffectiveGroup(apiKey *APIKey, model string, groupModelAvailability func(groupID int64) (bool, int), personalGrant ...func() bool) *EffectiveGroupDecision {
 	if apiKey == nil {
 		return &EffectiveGroupDecision{Reason: EffectiveGroupReasonNoCandidates}
 	}
 
-	candidates := availableAPIKeyGroups(apiKey)
+	candidates := availableAPIKeyGroups(apiKey, personalGrant...)
 	if len(candidates) == 0 {
 		return &EffectiveGroupDecision{Reason: EffectiveGroupReasonNoCandidates}
 	}
@@ -160,19 +160,34 @@ func ResolveEffectiveGroup(apiKey *APIKey, model string, groupModelAvailability 
 //  2. 用户对该分组仍有绑定权限——标准分组复查 user.CanBindGroup（堵住「授权被撤销后
 //     决议层仍选用该分组」的越权，P1①）；订阅型分组的有效性由运行期订阅校验负责
 //     （与鉴权层 validateAPIKeyGroupAllowed 对订阅型候选无条件放行的口径一致）。
+//  3. grant 为可选的「个人订阅准入」探针（惰性求值且只算一次）：返回 true 时
+//     标准分组不再受 CanBindGroup 限制，与鉴权层 hasPersonal 同口径。
 //
 // 注意：apiKey.User 为 nil 时跳过授权复查（fail-open），以保留单分组 key 与测试替身的既有行为；
 // 鉴权层已在此之前用同一 CanBindGroup 校验过候选集合，此处是请求期决议的第二道闸。
-func availableAPIKeyGroups(apiKey *APIKey) []*Group {
+func availableAPIKeyGroups(apiKey *APIKey, grant ...func() bool) []*Group {
 	if apiKey == nil {
 		return nil
+	}
+	// 惰性求值：只在遇到首个未授权标准分组时才查一次，并缓存结果。
+	var granted bool
+	var grantResolved bool
+	hasPersonalGrant := func() bool {
+		if grantResolved {
+			return granted
+		}
+		grantResolved = true
+		if len(grant) > 0 && grant[0] != nil {
+			granted = grant[0]()
+		}
+		return granted
 	}
 	usable := func(group *Group) bool {
 		if !IsGroupUsableForResolution(group) {
 			return false
 		}
 		if apiKey.User != nil && !group.IsSubscriptionType() {
-			if !apiKey.User.CanBindGroup(group.ID, group.IsExclusive) {
+			if !apiKey.User.CanBindGroup(group.ID, group.IsExclusive) && !hasPersonalGrant() {
 				return false
 			}
 		}
@@ -287,8 +302,22 @@ func IsGroupUsableForResolution(group *Group) bool {
 //
 // 本方法只做决议，不修改 apiKey；调用方（routes 中间件）用 EffectiveAPIKeyWithGroup
 // 就地覆写 gin context 里的 APIKey，使下游计费/限流/日志代码零改动。
-func (s *APIKeyService) ResolveEffectiveGroupForRequest(apiKey *APIKey, model string, groupModelPriority func(groupID int64) (bool, int)) *EffectiveGroupDecision {
-	return ResolveEffectiveGroup(apiKey, model, groupModelPriority)
+func (s *APIKeyService) ResolveEffectiveGroupForRequest(ctx context.Context, apiKey *APIKey, model string, groupModelPriority func(groupID int64) (bool, int)) *EffectiveGroupDecision {
+	return ResolveEffectiveGroup(apiKey, model, groupModelPriority, s.PersonalSubscriptionGrant(ctx, apiKey))
+}
+
+// PersonalSubscriptionGrant 暴露「用户是否持有个人订阅」的惰性探针（决议中间件用，最多查一次）。
+// ctx 由调用方传入并闭包持有：探针在请求处理链内执行，必须继承请求的取消信号与超时，
+// 不得用 context.Background() 脱离（否则请求已断开仍会发起 DB 查询）。
+func (s *APIKeyService) PersonalSubscriptionGrant(ctx context.Context, apiKey *APIKey) func() bool {
+	if s == nil || s.userSubRepo == nil || apiKey == nil || apiKey.UserID <= 0 {
+		return nil
+	}
+	userID := apiKey.UserID
+	return func() bool {
+		ok, err := s.userSubRepo.ExistsActiveByUserIDAndGroupID(ctx, userID, 0)
+		return err == nil && ok
+	}
 }
 
 // HasMultipleCandidateGroups 报告该 key 是否绑定了多个候选分组（>1）。

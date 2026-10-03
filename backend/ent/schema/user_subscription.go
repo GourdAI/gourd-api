@@ -69,6 +69,22 @@ func (UserSubscription) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}).
 			Default(0),
 
+		// 订阅自有额度（added by migration 244）：不为 NULL 时优先于分组额度，
+		// 使「同一分组下不同人不同额度」无需建多个分组；
+		// 个人订阅（group_id=0）依赖这三个字段定义日/周/月额度。
+		field.Float("daily_limit_usd").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("weekly_limit_usd").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("monthly_limit_usd").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+
 		field.Int64("assigned_by").
 			Optional().
 			Nillable(),

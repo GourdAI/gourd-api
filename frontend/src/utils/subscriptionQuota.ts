@@ -1,6 +1,46 @@
-import type { UserSubscription } from '@/types'
+import type { Group, UserSubscription } from '@/types'
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * 订阅的生效额度（与后端 UserSubscription.EffectiveDailyLimit 同构）：
+ * 1. 订阅自有额度（daily_limit_usd）优先，null/<=0 视为不限额；
+ * 2. 仅当订阅确实归属该分组（group_id === group.id，且非个人订阅 0）时，才继承分组额度；
+ * 3. 都不满足返回 null = 不限额。
+ *
+ * 注意：不可写成 `sub.daily_limit_usd ?? sub.group?.daily_limit_usd`，
+ * 那会在「个人订阅挂在某个展示分组上」时错误继承分组额度。
+ */
+function effectiveSubLimit(
+  sub: Pick<UserSubscription, 'group_id' | 'daily_limit_usd' | 'weekly_limit_usd' | 'monthly_limit_usd'>,
+  group: Pick<Group, 'id' | 'daily_limit_usd' | 'weekly_limit_usd' | 'monthly_limit_usd'> | undefined | null,
+  field: 'daily_limit_usd' | 'weekly_limit_usd' | 'monthly_limit_usd'
+): number | null {
+  const own = sub?.[field]
+  if (own != null && own > 0) return own
+  // 个人订阅（group_id=0）不继承任何分组额度
+  if (!group || sub.group_id === 0 || sub.group_id !== group.id) return null
+  const inherited = group[field]
+  return inherited != null && inherited > 0 ? inherited : null
+}
+
+export const effectiveDailyLimit = (sub: UserSubscription, group?: Group | null) =>
+  effectiveSubLimit(sub, group, 'daily_limit_usd')
+
+export const effectiveWeeklyLimit = (sub: UserSubscription, group?: Group | null) =>
+  effectiveSubLimit(sub, group, 'weekly_limit_usd')
+
+export const effectiveMonthlyLimit = (sub: UserSubscription, group?: Group | null) =>
+  effectiveSubLimit(sub, group, 'monthly_limit_usd')
+
+/** 订阅是否不限额（三个窗口都没有生效额度） */
+export function subscriptionHasNoLimit(sub: UserSubscription, group?: Group | null): boolean {
+  return (
+    effectiveDailyLimit(sub, group) == null &&
+    effectiveWeeklyLimit(sub, group) == null &&
+    effectiveMonthlyLimit(sub, group) == null
+  )
+}
 
 export type ExpirationDateRelation = 'expired' | 'today' | 'tomorrow' | 'later'
 

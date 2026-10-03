@@ -46,6 +46,10 @@ type subscriptionCacheData struct {
 	WeeklyUsage  float64
 	MonthlyUsage float64
 	Version      int64
+	// GroupID 为数据所属订阅的真实 group_id（个人订阅=0）：
+	// 请求分组不存在专属订阅时会回退到个人订阅，此时必须写入 (user,0) 槽位，
+	// 否则与用量增量（也按 sub.GroupID 写）分叉，导致额度校验基于陈旧用量而超支放行。
+	GroupID int64
 }
 
 // 缓存写入任务类型
@@ -429,11 +433,11 @@ func (s *BillingCacheService) GetSubscriptionStatus(ctx context.Context, userID,
 		return nil, err
 	}
 
-	// 异步建立缓存
+	// 异步建立缓存：按订阅真实 GroupID 写入（回退命中个人订阅时 != 请求 groupID）
 	_ = s.enqueueCacheWrite(cacheWriteTask{
 		kind:             cacheWriteSetSubscription,
 		userID:           userID,
-		groupID:          groupID,
+		groupID:          data.GroupID,
 		subscriptionData: data,
 	})
 
@@ -448,6 +452,9 @@ func (s *BillingCacheService) convertFromPortsData(data *SubscriptionCacheData) 
 		WeeklyUsage:  data.WeeklyUsage,
 		MonthlyUsage: data.MonthlyUsage,
 		Version:      data.Version,
+		// GroupID 由仓储层从缓存 key 回填（见 billingCache.GetSubscriptionCache）。
+		// 不搬运就会让缓存命中路径的 GroupID 恒为 0（与个人订阅哨兵值撞车）。
+		GroupID: data.GroupID,
 	}
 }
 
@@ -459,6 +466,7 @@ func (s *BillingCacheService) convertToPortsData(data *subscriptionCacheData) *S
 		WeeklyUsage:  data.WeeklyUsage,
 		MonthlyUsage: data.MonthlyUsage,
 		Version:      data.Version,
+		GroupID:      data.GroupID,
 	}
 }
 
@@ -476,6 +484,7 @@ func (s *BillingCacheService) getSubscriptionFromDB(ctx context.Context, userID,
 		WeeklyUsage:  sub.WeeklyUsageUSD,
 		MonthlyUsage: sub.MonthlyUsageUSD,
 		Version:      sub.UpdatedAt.Unix(),
+		GroupID:      sub.GroupID,
 	}, nil
 }
 
@@ -741,8 +750,9 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 		return ErrBillingServiceUnavailable
 	}
 
-	// 判断计费模式
-	isSubscriptionMode := group != nil && group.IsSubscriptionType() && subscription != nil
+	// 判断计费模式：分组订阅（分组为订阅型）或个人订阅（GroupID=0，全分组通用）
+	isSubscriptionMode := subscription != nil &&
+		(subscription.GroupID == 0 || (group != nil && group.IsSubscriptionType()))
 
 	if isSubscriptionMode {
 		if err := s.checkSubscriptionEligibility(ctx, user.ID, group, subscription); err != nil {
@@ -897,14 +907,28 @@ func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userI
 }
 
 // checkSubscriptionEligibility 检查订阅模式资格
+// 槽位契约：缓存槽位一律以**订阅自身**的 GroupID 为准（个人订阅=0），与扣减侧
+// subscriptionUsageSlot 同源；否则会出现「往 (user,0) 记量、从 (user,group) 读量」
+// 的分叉，额度永远追不上实际消费。下面 subscription==nil 的分支仅为防 nil 解引用
+// 的兵开守卫：调用方 CheckBillingEligibility 的 isSubscriptionMode 已要求
+// subscription != nil，因此正常链路不会走到这里。
 func (s *BillingCacheService) checkSubscriptionEligibility(ctx context.Context, userID int64, group *Group, subscription *UserSubscription) error {
+	// 缓存槽位以订阅自身的 group_id 为准：个人订阅统一落在 (user, 0)，
+	// 与管理侧失效/扣减量刷新使用的键保持一致。
+	slotGroupID := int64(0)
+	if subscription != nil {
+		slotGroupID = subscription.GroupID
+	} else if group != nil {
+		slotGroupID = group.ID
+	}
+
 	// 获取订阅缓存数据
-	subData, err := s.GetSubscriptionStatus(ctx, userID, group.ID)
+	subData, err := s.GetSubscriptionStatus(ctx, userID, slotGroupID)
 	if err != nil {
 		if s.circuitBreaker != nil {
 			s.circuitBreaker.OnFailure(err)
 		}
-		logger.LegacyPrintf("service.billing_cache", "ALERT: billing subscription check failed for user %d group %d: %v", userID, group.ID, err)
+		logger.LegacyPrintf("service.billing_cache", "ALERT: billing subscription check failed for user %d group %d: %v", userID, slotGroupID, err)
 		return ErrBillingServiceUnavailable.WithCause(err)
 	}
 	if s.circuitBreaker != nil {
@@ -921,16 +945,17 @@ func (s *BillingCacheService) checkSubscriptionEligibility(ctx context.Context, 
 		return ErrSubscriptionInvalid
 	}
 
-	// 检查限额（使用传入的Group限额配置）
-	if group.HasDailyLimit() && subData.DailyUsage >= *group.DailyLimitUSD {
+	// 检查限额：订阅自有额度优先，其次归属分组额度（个人订阅不受分组额度约束）
+	if subscription == nil {
+		subscription = &UserSubscription{GroupID: slotGroupID}
+	}
+	if limit := subscription.EffectiveDailyLimit(group); limit != nil && subData.DailyUsage >= *limit {
 		return ErrDailyLimitExceeded
 	}
-
-	if group.HasWeeklyLimit() && subData.WeeklyUsage >= *group.WeeklyLimitUSD {
+	if limit := subscription.EffectiveWeeklyLimit(group); limit != nil && subData.WeeklyUsage >= *limit {
 		return ErrWeeklyLimitExceeded
 	}
-
-	if group.HasMonthlyLimit() && subData.MonthlyUsage >= *group.MonthlyLimitUSD {
+	if limit := subscription.EffectiveMonthlyLimit(group); limit != nil && subData.MonthlyUsage >= *limit {
 		return ErrMonthlyLimitExceeded
 	}
 

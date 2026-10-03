@@ -767,6 +767,13 @@ type UserSubscription struct {
 	WeeklyUsageUSD  float64 `json:"weekly_usage_usd"`
 	MonthlyUsageUSD float64 `json:"monthly_usage_usd"`
 
+	// 订阅自有额度（nil/0 = 该窗口不限额）：优先于分组额度生效。
+	// 不加 omitempty：前端编辑弹窗需要区分「字段不存在」与「不限额」，
+	// 并据此回填既有额度（只填日额度却把周/月静默清空 = 提权）。
+	DailyLimitUSD   *float64 `json:"daily_limit_usd"`
+	WeeklyLimitUSD  *float64 `json:"weekly_limit_usd"`
+	MonthlyLimitUSD *float64 `json:"monthly_limit_usd"`
+
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`

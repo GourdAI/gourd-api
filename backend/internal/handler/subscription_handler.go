@@ -149,17 +149,17 @@ func (h *SubscriptionHandler) GetSummary(c *gin.Context) {
 		}
 
 		// Add group info if preloaded
-		if sub.Group != nil {
-			item.GroupName = sub.Group.Name
-			if sub.Group.DailyLimitUSD != nil {
-				item.DailyLimitUSD = *sub.Group.DailyLimitUSD
-			}
-			if sub.Group.WeeklyLimitUSD != nil {
-				item.WeeklyLimitUSD = *sub.Group.WeeklyLimitUSD
-			}
-			if sub.Group.MonthlyLimitUSD != nil {
-				item.MonthlyLimitUSD = *sub.Group.MonthlyLimitUSD
-			}
+		item.GroupName = sub.DisplayName()
+
+		// 展示生效额度：订阅自有额度优先，其次归属分组额度（个人订阅无分组）。
+		if limit := sub.EffectiveDailyLimit(sub.Group); limit != nil {
+			item.DailyLimitUSD = *limit
+		}
+		if limit := sub.EffectiveWeeklyLimit(sub.Group); limit != nil {
+			item.WeeklyLimitUSD = *limit
+		}
+		if limit := sub.EffectiveMonthlyLimit(sub.Group); limit != nil {
+			item.MonthlyLimitUSD = *limit
 		}
 
 		// Format expiration time

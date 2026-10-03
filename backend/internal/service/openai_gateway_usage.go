@@ -327,7 +327,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	// Determine billing type
-	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
+	// 个人订阅（GroupID=0）不依赖分组类型：普通分组下同样走订阅扣费。
+	isSubscriptionBilling := subscription != nil &&
+		(subscription.GroupID == 0 || (apiKey.Group != nil && apiKey.Group.IsSubscriptionType()))
 	billingType := BillingTypeBalance
 	if isSubscriptionBilling {
 		billingType = BillingTypeSubscription

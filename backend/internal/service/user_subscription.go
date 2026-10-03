@@ -25,6 +25,12 @@ type UserSubscription struct {
 	WeeklyUsageUSD  float64
 	MonthlyUsageUSD float64
 
+	// 订阅自有额度：不为 nil 时优先于分组额度。
+	// 个人订阅（GroupID==0）仅依赖这三个字段。
+	DailyLimitUSD   *float64
+	WeeklyLimitUSD  *float64
+	MonthlyLimitUSD *float64
+
 	AssignedBy *int64
 	AssignedAt time.Time
 	Notes      string
@@ -204,25 +210,94 @@ func (s *UserSubscription) MonthlyResetTime() *time.Time {
 	return &t
 }
 
-func (s *UserSubscription) CheckDailyLimit(group *Group, additionalCost float64) bool {
-	if !group.HasDailyLimit() {
+// normalizeSubLimit 订阅额度语义：nil / <=0 均视为不限额（与分组 HasDailyLimit 行为一致）。
+func normalizeSubLimit(v *float64) *float64 {
+	if v == nil || *v <= 0 {
+		return nil
+	}
+	return v
+}
+
+// limitFallbackGroup 返回可用于额度回退的分组：仅当订阅归属该分组时，
+// 才继承分组额度；个人订阅（GroupID=0）不受任何分组额度约束。
+func (s *UserSubscription) limitFallbackGroup(group *Group) *Group {
+	if group == nil || s.GroupID != group.ID {
+		return nil
+	}
+	return group
+}
+
+// EffectiveDailyLimit 返回生效的日额度：订阅自有额度优先，其次归属分组额度，均未设置返回 nil（不限）。
+func (s *UserSubscription) EffectiveDailyLimit(group *Group) *float64 {
+	if s.DailyLimitUSD != nil {
+		return normalizeSubLimit(s.DailyLimitUSD)
+	}
+	g := s.limitFallbackGroup(group)
+	if g != nil {
+		return normalizeSubLimit(g.DailyLimitUSD)
+	}
+	return nil
+}
+
+func (s *UserSubscription) EffectiveWeeklyLimit(group *Group) *float64 {
+	if s.WeeklyLimitUSD != nil {
+		return normalizeSubLimit(s.WeeklyLimitUSD)
+	}
+	g := s.limitFallbackGroup(group)
+	if g != nil {
+		return normalizeSubLimit(g.WeeklyLimitUSD)
+	}
+	return nil
+}
+
+func (s *UserSubscription) EffectiveMonthlyLimit(group *Group) *float64 {
+	if s.MonthlyLimitUSD != nil {
+		return normalizeSubLimit(s.MonthlyLimitUSD)
+	}
+	g := s.limitFallbackGroup(group)
+	if g != nil {
+		return normalizeSubLimit(g.MonthlyLimitUSD)
+	}
+	return nil
+}
+
+// IsPersonal 标记该订阅不绑定分组（全模型通用额度订阅）。
+func (s *UserSubscription) IsPersonal() bool {
+	return s.GroupID == 0
+}
+
+// DisplayName 返回订阅展示名：分组订阅取分组名，
+// 个人订阅（Group 边为 nil）回退为「个人订阅」，避免调用方 nil 解引用。
+func (s *UserSubscription) DisplayName() string {
+	if s == nil {
+		return ""
+	}
+	if s.Group != nil && s.Group.Name != "" {
+		return s.Group.Name
+	}
+	if s.IsPersonal() {
+		return "个人订阅"
+	}
+	return ""
+}
+
+func checkLimit(usage float64, limit *float64, additionalCost float64) bool {
+	if limit == nil || *limit <= 0 {
 		return true
 	}
-	return s.DailyUsageUSD+additionalCost <= *group.DailyLimitUSD
+	return usage+additionalCost <= *limit
+}
+
+func (s *UserSubscription) CheckDailyLimit(group *Group, additionalCost float64) bool {
+	return checkLimit(s.DailyUsageUSD, s.EffectiveDailyLimit(group), additionalCost)
 }
 
 func (s *UserSubscription) CheckWeeklyLimit(group *Group, additionalCost float64) bool {
-	if !group.HasWeeklyLimit() {
-		return true
-	}
-	return s.WeeklyUsageUSD+additionalCost <= *group.WeeklyLimitUSD
+	return checkLimit(s.WeeklyUsageUSD, s.EffectiveWeeklyLimit(group), additionalCost)
 }
 
 func (s *UserSubscription) CheckMonthlyLimit(group *Group, additionalCost float64) bool {
-	if !group.HasMonthlyLimit() {
-		return true
-	}
-	return s.MonthlyUsageUSD+additionalCost <= *group.MonthlyLimitUSD
+	return checkLimit(s.MonthlyUsageUSD, s.EffectiveMonthlyLimit(group), additionalCost)
 }
 
 func (s *UserSubscription) CheckAllLimits(group *Group, additionalCost float64) (daily, weekly, monthly bool) {

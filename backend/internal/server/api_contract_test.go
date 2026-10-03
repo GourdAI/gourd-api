@@ -447,6 +447,9 @@ func TestAPIContracts(t *testing.T) {
 						"daily_usage_usd": 1.23,
 						"weekly_usage_usd": 2.34,
 						"monthly_usage_usd": 3.45,
+						"daily_limit_usd": null,
+						"weekly_limit_usd": null,
+						"monthly_limit_usd": null,
 						"created_at": "2025-01-02T03:04:05Z",
 						"updated_at": "2025-01-02T03:04:05Z"
 					}
@@ -2274,6 +2277,9 @@ func (stubUserSubscriptionRepo) ExistsByUserIDAndGroupID(ctx context.Context, us
 }
 func (stubUserSubscriptionRepo) ExistsActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (bool, error) {
 	return false, errors.New("not implemented")
+}
+func (stubUserSubscriptionRepo) UpdateAssignedLimits(ctx context.Context, id int64, daily, weekly, monthly *float64) error {
+	return errors.New("not implemented")
 }
 func (stubUserSubscriptionRepo) ExtendExpiry(ctx context.Context, subscriptionID int64, newExpiresAt time.Time) error {
 	return errors.New("not implemented")

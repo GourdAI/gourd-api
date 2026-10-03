@@ -18,7 +18,12 @@
               {{ subscription.email || `#${subscription.id}` }}
             </div>
             <div class="break-words text-xs text-gray-500 dark:text-gray-400">
-              {{ subscription.group || t('admin.subscriptions.bulk.groupFallback', { id: subscription.groupId }) }}
+              {{
+                subscription.group ||
+                (subscription.groupId === 0
+                  ? t('admin.subscriptions.personalSubscription')
+                  : t('admin.subscriptions.bulk.groupFallback', { id: subscription.groupId }))
+              }}
               <span v-if="subscription.email" class="ml-2">#{{ subscription.id }}</span>
             </div>
           </li>

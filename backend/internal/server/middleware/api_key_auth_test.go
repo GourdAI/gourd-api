@@ -1738,6 +1738,10 @@ func (r *stubUserSubscriptionRepo) ExistsActiveByUserIDAndGroupID(ctx context.Co
 	return false, errors.New("not implemented")
 }
 
+func (r *stubUserSubscriptionRepo) UpdateAssignedLimits(ctx context.Context, id int64, daily, weekly, monthly *float64) error {
+	return errors.New("not implemented")
+}
+
 func (r *stubUserSubscriptionRepo) ExtendExpiry(ctx context.Context, subscriptionID int64, newExpiresAt time.Time) error {
 	return errors.New("not implemented")
 }

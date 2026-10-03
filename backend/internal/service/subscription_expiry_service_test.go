@@ -77,6 +77,10 @@ func (r *subscriptionExpiryRepoStub) ExistsActiveByUserIDAndGroupID(context.Cont
 	return false, nil
 }
 
+func (r *subscriptionExpiryRepoStub) UpdateAssignedLimits(context.Context, int64, *float64, *float64, *float64) error {
+	return nil
+}
+
 func (r *subscriptionExpiryRepoStub) ExtendExpiry(context.Context, int64, time.Time) error {
 	return nil
 }

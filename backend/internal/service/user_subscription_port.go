@@ -25,6 +25,9 @@ type UserSubscriptionRepository interface {
 
 	ExistsByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (bool, error)
 	ExistsActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (bool, error)
+	// UpdateAssignedLimits 仅更新订阅自有额度（nil = 该字段保持原样），
+	// 避免整行覆盖吞掉并发 IncrementUsage 写入的用量。
+	UpdateAssignedLimits(ctx context.Context, id int64, daily, weekly, monthly *float64) error
 	ExtendExpiry(ctx context.Context, subscriptionID int64, newExpiresAt time.Time) error
 	UpdateStatus(ctx context.Context, subscriptionID int64, status string) error
 	UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error

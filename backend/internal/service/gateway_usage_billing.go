@@ -365,14 +365,33 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	return true, nil
 }
 
+// subscriptionUsageSlot 返回用量缓存应写入的 group_id 槽位：
+// 以订阅自身的 GroupID 为准（个人订阅=0），回退到 Key 的分组。
+// ok=false 表示无法确定槽位（调用方应跳过用量写入）。
+func subscriptionUsageSlot(p *postUsageBillingParams) (int64, bool) {
+	if p == nil {
+		return 0, false
+	}
+	if p.Subscription != nil {
+		return p.Subscription.GroupID, true
+	}
+	if p.APIKey != nil && p.APIKey.GroupID != nil {
+		return *p.APIKey.GroupID, true
+	}
+	return 0, false
+}
+
 func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
 	if p == nil || p.Cost == nil || deps == nil {
 		return
 	}
 
-	if p.IsSubscriptionBill {
-		if p.Cost.ActualCost > 0 && p.User != nil && p.APIKey != nil && p.APIKey.GroupID != nil {
-			deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, *p.APIKey.GroupID, p.Cost.ActualCost)
+	if p.IsSubscriptionBill && p.Cost.ActualCost > 0 && p.User != nil {
+		// 用量写入的缓存槽位必须与资格检查读取的一致：个人订阅（GroupID=0）不落在请求分组上。
+		// 以订阅为优先，不依赖 Key 是否绑定了分组（未绑分组的 Key 同样不能漏记）。
+		usageSlotGroupID, ok := subscriptionUsageSlot(p)
+		if ok {
+			deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, usageSlotGroupID, p.Cost.ActualCost)
 		}
 	} else if p.Cost.ActualCost > 0 && p.User != nil {
 		syncBalanceCacheAfterDeduction(ctx, p, deps, result)
@@ -811,7 +830,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 
 	// 判断计费方式：订阅模式 vs 余额模式
-	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
+	// 个人订阅（GroupID=0）不依赖分组类型，普通分组下同样走订阅扣费。
+	isSubscriptionBilling := subscription != nil &&
+		(subscription.GroupID == 0 || (apiKey.Group != nil && apiKey.Group.IsSubscriptionType()))
 	billingType := BillingTypeBalance
 	if isSubscriptionBilling {
 		billingType = BillingTypeSubscription

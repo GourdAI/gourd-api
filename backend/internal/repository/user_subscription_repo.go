@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -38,6 +39,9 @@ func (r *userSubscriptionRepository) Create(ctx context.Context, sub *service.Us
 		SetDailyUsageUsd(sub.DailyUsageUSD).
 		SetWeeklyUsageUsd(sub.WeeklyUsageUSD).
 		SetMonthlyUsageUsd(sub.MonthlyUsageUSD).
+		SetNillableDailyLimitUsd(sub.DailyLimitUSD).
+		SetNillableWeeklyLimitUsd(sub.WeeklyLimitUSD).
+		SetNillableMonthlyLimitUsd(sub.MonthlyLimitUSD).
 		SetNillableAssignedBy(sub.AssignedBy)
 
 	if sub.StartsAt.IsZero() {
@@ -114,7 +118,21 @@ func (r *userSubscriptionRepository) GetByUserIDAndGroupID(ctx context.Context, 
 	return userSubscriptionEntityToService(m), nil
 }
 
+// GetActiveByUserIDAndGroupID 获取用户在指定分组下的活跃订阅。
+// groupID 无专属订阅时回退到「个人订阅」（group_id=0）：不绑定分组、
+// 全分组通用额度，用户自选模型，仅按日/周/月额度扣费。
 func (r *userSubscriptionRepository) GetActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
+	sub, err := r.queryActiveByUserGroup(ctx, userID, groupID)
+	if err == nil {
+		return sub, nil
+	}
+	if groupID != 0 && errors.Is(err, service.ErrSubscriptionNotFound) {
+		return r.queryActiveByUserGroup(ctx, userID, 0)
+	}
+	return nil, err
+}
+
+func (r *userSubscriptionRepository) queryActiveByUserGroup(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
 	client := clientFromContext(ctx, r.client)
 	m, err := client.UserSubscription.Query().
 		Where(
@@ -136,6 +154,9 @@ func (r *userSubscriptionRepository) Update(ctx context.Context, sub *service.Us
 		return service.ErrSubscriptionNilInput
 	}
 
+	// 使用约束：本方法绝对写入日/周/月用量列（见下方 Set*UsageUsd），调用方必须
+	// 在同一事务内先 GetByIDForUpdate 取行锁，否则会与计费侧的原子累加竞争、
+	// 把期间产生的用量写回旧值（等于变相提权）。仅适用于「整行换周期」的续期场景。
 	client := clientFromContext(ctx, r.client)
 	builder := client.UserSubscription.UpdateOneID(sub.ID).
 		SetUserID(sub.UserID).
@@ -153,6 +174,11 @@ func (r *userSubscriptionRepository) Update(ctx context.Context, sub *service.Us
 		SetAssignedAt(sub.AssignedAt).
 		SetNotes(sub.Notes)
 
+	// 额度列故意不在这里写：唯一的生产调用方是「过期订阅续期」（见
+	// SubscriptionService.updateExistingSubscriptionTerm），续期不应改变额度；
+	// 而它拿到的 sub 是事务开始时的快照，整行写回会吞掉期间已提交的
+	// UpdateAssignedLimits 变更（管理员改额度被旧值覆盖）。
+	// 额度的唯一写入口是 UpdateAssignedLimits（以及 Create）。
 	updated, err := builder.Save(ctx)
 	if err == nil {
 		applyUserSubscriptionEntityToService(sub, updated)
@@ -250,7 +276,12 @@ func (r *userSubscriptionRepository) List(ctx context.Context, params pagination
 		if includeSoftDeleted {
 			groupPredicates = append(groupPredicates, group.DeletedAtIsNil())
 		}
-		q = q.Where(usersubscription.HasGroupWith(groupPredicates...))
+		// 个人订阅（group_id=0）不归属任何分组，不受平台筛选排除，
+		// 否则管理端按平台筛选时它们会整体消失。
+		q = q.Where(usersubscription.Or(
+			usersubscription.GroupIDEQ(0),
+			usersubscription.HasGroupWith(groupPredicates...),
+		))
 	}
 
 	// Status filtering with real-time expiration check
@@ -340,8 +371,56 @@ func (r *userSubscriptionRepository) ExistsByUserIDAndGroupID(ctx context.Contex
 		Exist(ctx)
 }
 
+// ExistsActiveByUserIDAndGroupID 报告用户在指定槽位是否持有**生效**订阅。
+// 「生效」口径与 GetActiveByUserIDAndGroupID 完全一致：status=active 且未过期。
+// 软删除行由 SoftDeleteMixin 拦截器自动排除。
+// 注意：这里不能退化成裸 Exists——该方法被个人订阅准入探针使用，
+// 过期/已撤销的订阅若仍算命中，会让用户在被清除分组权限后继续访问全部分组。
 func (r *userSubscriptionRepository) ExistsActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (bool, error) {
-	return r.ExistsByUserIDAndGroupID(ctx, userID, groupID)
+	client := clientFromContext(ctx, r.client)
+	return client.UserSubscription.Query().
+		Where(
+			usersubscription.UserIDEQ(userID),
+			usersubscription.GroupIDEQ(groupID),
+			usersubscription.StatusEQ(service.SubscriptionStatusActive),
+			usersubscription.ExpiresAtGT(time.Now()),
+		).
+		Exist(ctx)
+}
+
+// UpdateAssignedLimits 仅更新订阅自有额度三列，不触碰用量/窗口/状态列。
+// 逐字段语义：nil = 保持原值不变；非 nil 且 >0 = 设为该值；非 nil 且 <=0 = 改为不限额。
+// 之所以不用「读整行-改-写整行」：Update 会整行覆盖，与并发 IncrementUsage 竞争时
+// 会把期间累加上去的日/周/月用量静默写回旧值（用户额度显示虚低 = 变相提权）。
+func (r *userSubscriptionRepository) UpdateAssignedLimits(ctx context.Context, id int64, daily, weekly, monthly *float64) error {
+	if daily == nil && weekly == nil && monthly == nil {
+		return nil
+	}
+	client := clientFromContext(ctx, r.client)
+	builder := client.UserSubscription.UpdateOneID(id)
+	if daily != nil {
+		if *daily > 0 {
+			builder = builder.SetDailyLimitUsd(*daily)
+		} else {
+			builder = builder.ClearDailyLimitUsd()
+		}
+	}
+	if weekly != nil {
+		if *weekly > 0 {
+			builder = builder.SetWeeklyLimitUsd(*weekly)
+		} else {
+			builder = builder.ClearWeeklyLimitUsd()
+		}
+	}
+	if monthly != nil {
+		if *monthly > 0 {
+			builder = builder.SetMonthlyLimitUsd(*monthly)
+		} else {
+			builder = builder.ClearMonthlyLimitUsd()
+		}
+	}
+	_, err := builder.Save(ctx)
+	return translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
 }
 
 func (r *userSubscriptionRepository) ExtendExpiry(ctx context.Context, subscriptionID int64, newExpiresAt time.Time) error {
@@ -470,17 +549,18 @@ func (r *userSubscriptionRepository) translateConditionalWindowReset(ctx context
 // 此处仅负责记录实际消费，确保消费数据的完整性。
 func (r *userSubscriptionRepository) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {
 	const updateSQL = `
-		UPDATE user_subscriptions us
+		UPDATE user_subscriptions
 		SET
-			daily_usage_usd = us.daily_usage_usd + $1,
-			weekly_usage_usd = us.weekly_usage_usd + $1,
-			monthly_usage_usd = us.monthly_usage_usd + $1,
+			daily_usage_usd = daily_usage_usd + $1,
+			weekly_usage_usd = weekly_usage_usd + $1,
+			monthly_usage_usd = monthly_usage_usd + $1,
 			updated_at = NOW()
-		FROM groups g
-		WHERE us.id = $2
-			AND us.deleted_at IS NULL
-			AND us.group_id = g.id
-			AND g.deleted_at IS NULL
+		WHERE id = $2
+			AND deleted_at IS NULL
+			AND (
+				group_id = 0
+				OR group_id IN (SELECT id FROM groups WHERE deleted_at IS NULL)
+			)
 	`
 
 	client := clientFromContext(ctx, r.client)
@@ -530,13 +610,22 @@ func (r *userSubscriptionRepository) ListExpired(ctx context.Context) ([]service
 	return userSubscriptionEntitiesToService(subs), nil
 }
 
+// CountByGroupID 统计归属该分组的订阅数。
+// groupID<=0 直接返回 0：group_id=0 是「个人订阅」规范槽位，全平台共用，
+// 不加守卫会把个人订阅计入任意分组（例如删除分组前的「是否仍有订阅」判定）。
 func (r *userSubscriptionRepository) CountByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	if groupID <= 0 {
+		return 0, nil
+	}
 	client := clientFromContext(ctx, r.client)
 	count, err := client.UserSubscription.Query().Where(usersubscription.GroupIDEQ(groupID)).Count(ctx)
 	return int64(count), err
 }
 
 func (r *userSubscriptionRepository) CountActiveByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	if groupID <= 0 {
+		return 0, nil
+	}
 	client := clientFromContext(ctx, r.client)
 	count, err := client.UserSubscription.Query().
 		Where(
@@ -549,6 +638,10 @@ func (r *userSubscriptionRepository) CountActiveByGroupID(ctx context.Context, g
 }
 
 func (r *userSubscriptionRepository) DeleteByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	if groupID <= 0 {
+		// group_id=0 是全平台「个人订阅」槽位，绝不能随任意分组删除。
+		return 0, nil
+	}
 	client := clientFromContext(ctx, r.client)
 	n, err := client.UserSubscription.Delete().Where(usersubscription.GroupIDEQ(groupID)).Exec(ctx)
 	return int64(n), err
@@ -653,6 +746,9 @@ func userSubscriptionEntityToServiceWithStatusMapping(m *dbent.UserSubscription,
 		DailyUsageUSD:      m.DailyUsageUsd,
 		WeeklyUsageUSD:     m.WeeklyUsageUsd,
 		MonthlyUsageUSD:    m.MonthlyUsageUsd,
+		DailyLimitUSD:      m.DailyLimitUsd,
+		WeeklyLimitUSD:     m.WeeklyLimitUsd,
+		MonthlyLimitUSD:    m.MonthlyLimitUsd,
 		AssignedBy:         m.AssignedBy,
 		AssignedAt:         m.AssignedAt,
 		Notes:              derefString(m.Notes),

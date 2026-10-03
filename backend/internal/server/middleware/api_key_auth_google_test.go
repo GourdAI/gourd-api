@@ -219,6 +219,9 @@ func (f fakeGoogleSubscriptionRepo) ExistsByUserIDAndGroupID(ctx context.Context
 func (f fakeGoogleSubscriptionRepo) ExistsActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (bool, error) {
 	return false, errors.New("not implemented")
 }
+func (f fakeGoogleSubscriptionRepo) UpdateAssignedLimits(ctx context.Context, id int64, daily, weekly, monthly *float64) error {
+	return errors.New("not implemented")
+}
 func (f fakeGoogleSubscriptionRepo) ExtendExpiry(ctx context.Context, subscriptionID int64, newExpiresAt time.Time) error {
 	return errors.New("not implemented")
 }

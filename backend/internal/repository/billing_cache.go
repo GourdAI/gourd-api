@@ -182,7 +182,16 @@ func (c *billingCache) GetSubscriptionCache(ctx context.Context, userID, groupID
 	if len(result) == 0 {
 		return nil, redis.Nil
 	}
-	return c.parseSubscriptionCache(result)
+	data, err := c.parseSubscriptionCache(result)
+	if err != nil {
+		return nil, err
+	}
+	// 槽位即订阅归属：写入侧 SetSubscriptionCache 用的 key 就是订阅自身的 GroupID
+	// （见 BillingCacheService.GetSubscriptionStatus 的 enqueueCacheWrite），
+	// 因此从 key 回填比另存一个 hash 字段更可靠：无需迁移旧条目，也不会出现
+	// 「key 在 (user,5)、数据里写 group_id=0」的双源漂移。
+	data.GroupID = groupID
+	return data, nil
 }
 
 func (c *billingCache) parseSubscriptionCache(data map[string]string) (*service.SubscriptionCacheData, error) {

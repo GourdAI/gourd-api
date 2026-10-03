@@ -124,7 +124,9 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			return
 		}
 		// 专属分组授权校验：用户对该专属分组的授权被撤销后应拒绝（与主中间件一致，防止越权）。
-		if !validateAPIKeyGroupAllowed(apiKey) {
+		// 个人订阅探测必须与主中间件同源（validateAPIKeyGroupAllowedWithPersonal），
+		// 否则持有个人订阅的用户在主端点可用、在 Gemini 端点被 403。
+		if !validateAPIKeyGroupAllowedWithPersonal(c, apiKey, subscriptionService) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
 			MarkIngressRejected(c, IngressRejectGroupNotAllowed)
 			abortWithGoogleError(c, 403, "API Key 所属专属分组不再允许当前用户使用")
@@ -165,18 +167,28 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			return
 		}
 
-		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
-		if isSubscriptionType && subscriptionService != nil {
-			subscription, err := subscriptionService.GetActiveSubscription(
-				c.Request.Context(),
-				apiKey.User.ID,
-				apiKey.Group.ID,
-			)
-			if err != nil {
-				abortWithGoogleError(c, 403, "No active subscription found for this group")
-				return
+		isSubscriptionGroup := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
+		var subscription *service.UserSubscription
+		if subscriptionService != nil {
+			// 与主中间件一致：订阅型分组取专属订阅（无则 403），
+			// 其他情形探测个人订阅（group_id=0），避免同一 Key 在不同端点计费方式分叉。
+			if isSubscriptionGroup {
+				sub, err := subscriptionService.GetActiveSubscription(
+					c.Request.Context(),
+					apiKey.User.ID,
+					apiKey.Group.ID,
+				)
+				if err != nil {
+					abortWithGoogleError(c, 403, "No active subscription found for this group")
+					return
+				}
+				subscription = sub
+			} else if personal, err := subscriptionService.GetActiveSubscription(c.Request.Context(), apiKey.User.ID, 0); err == nil && personal != nil {
+				subscription = personal
 			}
+		}
 
+		if subscription != nil {
 			needsMaintenance, err := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
 			if needsMaintenance {
 				refreshed, maintenanceErr := subscriptionService.EnsureWindowMaintenance(c.Request.Context(), subscription)

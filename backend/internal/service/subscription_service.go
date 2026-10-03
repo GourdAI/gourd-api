@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -123,6 +124,22 @@ func subCacheKey(userID, groupID int64) string {
 	return "sub:" + strconv.FormatInt(userID, 10) + ":" + strconv.FormatInt(groupID, 10)
 }
 
+// subCacheNegative 是「无订阅」的空哨兵：避免未持有订阅的用户每次网关请求都回源 DB。
+// 分配/导入订阅时会按同一 key 失效，因此不会长时间遮蔽新建的订阅。
+type subCacheNegative struct{}
+
+// subNegativeTTL 负缓存上限：取 L1 TTL 与 30s 的较小值。
+func (s *SubscriptionService) subNegativeTTL() time.Duration {
+	const negativeMaxTTL = 30 * time.Second
+	if s.subCacheTTL <= 0 {
+		return negativeMaxTTL
+	}
+	if s.subCacheTTL < negativeMaxTTL {
+		return s.subCacheTTL
+	}
+	return negativeMaxTTL
+}
+
 // jitteredTTL 为 TTL 添加抖动，避免集中过期
 func (s *SubscriptionService) jitteredTTL(ttl time.Duration) time.Duration {
 	if ttl <= 0 || s.subCacheJitter <= 0 {
@@ -192,11 +209,18 @@ func (s *SubscriptionService) invalidateSubscriptionCaches(userID, groupID int64
 
 // AssignSubscriptionInput 分配订阅输入
 type AssignSubscriptionInput struct {
-	UserID       int64
+	UserID int64
+	// GroupID=0 表示「个人订阅」：不绑定分组、全部分组/模型通用。
 	GroupID      int64
 	ValidityDays int
 	AssignedBy   int64
 	Notes        string
+
+	// 订阅自有额度（USD）。三者全为 nil 时不改动已有额度（兑换码/支付续费场景）；
+	// 任一非 nil 则整组覆盖，nil 表示该窗口不限额。
+	DailyLimitUSD   *float64
+	WeeklyLimitUSD  *float64
+	MonthlyLimitUSD *float64
 }
 
 // AssignSubscription 分配订阅给用户（不允许重复分配）
@@ -219,13 +243,16 @@ func (s *SubscriptionService) AssignOrExtendSubscription(ctx context.Context, in
 }
 
 func (s *SubscriptionService) assignOrExtendSubscription(ctx context.Context, input *AssignSubscriptionInput, deferCacheInvalidation bool) (*UserSubscription, bool, error) {
-	// 检查分组是否存在且为订阅类型
-	group, err := s.groupRepo.GetByID(ctx, input.GroupID)
-	if err != nil {
-		return nil, false, fmt.Errorf("group not found: %w", err)
-	}
-	if !group.IsSubscriptionType() {
-		return nil, false, ErrGroupNotSubscriptionType
+	// GroupID=0：个人订阅，不需要绑定分组（跳过分组存废/类型校验）。
+	if input.GroupID != 0 {
+		// 检查分组是否存在且为订阅类型
+		group, err := s.groupRepo.GetByID(ctx, input.GroupID)
+		if err != nil {
+			return nil, false, fmt.Errorf("group not found: %w", err)
+		}
+		if !group.IsSubscriptionType() {
+			return nil, false, ErrGroupNotSubscriptionType
+		}
 	}
 
 	// 查询是否已有订阅
@@ -248,6 +275,9 @@ func (s *SubscriptionService) assignOrExtendSubscription(ctx context.Context, in
 		if err := s.updateExistingSubscriptionTerm(ctx, existingSub.ID, validityDays, input.Notes, false); err != nil {
 			return nil, false, err
 		}
+		if err := s.applyAssignedLimits(ctx, existingSub, input); err != nil {
+			return nil, false, err
+		}
 
 		// 失效订阅缓存
 		s.maybeInvalidateAssignmentCaches(input.UserID, input.GroupID, deferCacheInvalidation)
@@ -267,6 +297,23 @@ func (s *SubscriptionService) assignOrExtendSubscription(ctx context.Context, in
 	s.maybeInvalidateAssignmentCaches(input.UserID, input.GroupID, deferCacheInvalidation)
 
 	return sub, false, nil // false 表示是新建
+}
+
+// applyAssignedLimits 将分配入参中的额度写到订阅上。
+// 逐字段语义：nil = 保持原值不变（兼容兑换码/支付续期不传额度的场景）；
+// 非 nil 且 >0 = 设为该额度；非 nil 且 <=0 = 该窗口回到不限额。
+// 必须是「逐字段」而非「整组覆盖」：只填每日额度却把周/月静默清空，
+// 等于给用户提权（周/月闸门消失）。
+// 必须走 UpdateAssignedLimits（只写额度列）：整行 Update 与并发 IncrementUsage
+// 竞争时，会把期间累加的日/周/月用量写回旧值，用量虚低 = 同样变相提权。
+func (s *SubscriptionService) applyAssignedLimits(ctx context.Context, sub *UserSubscription, input *AssignSubscriptionInput) error {
+	if input.DailyLimitUSD == nil && input.WeeklyLimitUSD == nil && input.MonthlyLimitUSD == nil {
+		return nil
+	}
+	if err := s.userSubRepo.UpdateAssignedLimits(ctx, sub.ID, input.DailyLimitUSD, input.WeeklyLimitUSD, input.MonthlyLimitUSD); err != nil {
+		return err
+	}
+	return s.invalidateSubscriptionCaches(sub.UserID, sub.GroupID)
 }
 
 func (s *SubscriptionService) maybeInvalidateAssignmentCaches(userID, groupID int64, deferred bool) {
@@ -433,6 +480,10 @@ func (s *SubscriptionService) createSubscription(ctx context.Context, input *Ass
 		Notes:      input.Notes,
 		CreatedAt:  now,
 		UpdatedAt:  now,
+		// 额度归一化：<=0 与 nil 同义（不限额），避免库里落 0 后管理端展示“$0”误导。
+		DailyLimitUSD:   normalizeSubLimit(input.DailyLimitUSD),
+		WeeklyLimitUSD:  normalizeSubLimit(input.WeeklyLimitUSD),
+		MonthlyLimitUSD: normalizeSubLimit(input.MonthlyLimitUSD),
 	}
 	// 只有当 AssignedBy > 0 时才设置（0 表示系统分配，如兑换码）
 	if input.AssignedBy > 0 {
@@ -454,6 +505,12 @@ type BulkAssignSubscriptionInput struct {
 	ValidityDays int
 	AssignedBy   int64
 	Notes        string
+
+	// 订阅自有额度：语义同 AssignSubscriptionInput（逐字段增量：
+	// nil = 保持原值；>0 = 设为该额度；<=0 = 该窗口回到不限额）。
+	DailyLimitUSD   *float64
+	WeeklyLimitUSD  *float64
+	MonthlyLimitUSD *float64
 }
 
 // BulkAssignResult 批量分配结果
@@ -477,11 +534,14 @@ func (s *SubscriptionService) BulkAssignSubscription(ctx context.Context, input 
 
 	for _, userID := range input.UserIDs {
 		sub, reused, err := s.assignSubscriptionWithReuse(ctx, &AssignSubscriptionInput{
-			UserID:       userID,
-			GroupID:      input.GroupID,
-			ValidityDays: input.ValidityDays,
-			AssignedBy:   input.AssignedBy,
-			Notes:        input.Notes,
+			UserID:          userID,
+			GroupID:         input.GroupID,
+			ValidityDays:    input.ValidityDays,
+			AssignedBy:      input.AssignedBy,
+			Notes:           input.Notes,
+			DailyLimitUSD:   input.DailyLimitUSD,
+			WeeklyLimitUSD:  input.WeeklyLimitUSD,
+			MonthlyLimitUSD: input.MonthlyLimitUSD,
 		})
 		if err != nil {
 			result.FailedCount++
@@ -504,13 +564,16 @@ func (s *SubscriptionService) BulkAssignSubscription(ctx context.Context, input 
 }
 
 func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, input *AssignSubscriptionInput) (*UserSubscription, bool, error) {
-	// 检查分组是否存在且为订阅类型
-	group, err := s.groupRepo.GetByID(ctx, input.GroupID)
-	if err != nil {
-		return nil, false, fmt.Errorf("group not found: %w", err)
-	}
-	if !group.IsSubscriptionType() {
-		return nil, false, ErrGroupNotSubscriptionType
+	// GroupID=0：个人订阅，无需分组校验。
+	if input.GroupID != 0 {
+		// 检查分组是否存在且为订阅类型
+		group, err := s.groupRepo.GetByID(ctx, input.GroupID)
+		if err != nil {
+			return nil, false, fmt.Errorf("group not found: %w", err)
+		}
+		if !group.IsSubscriptionType() {
+			return nil, false, ErrGroupNotSubscriptionType
+		}
 	}
 
 	// 检查是否已存在订阅；若已存在，则按幂等成功返回现有订阅
@@ -530,6 +593,10 @@ func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, i
 			if err := s.updateExistingSubscriptionTerm(ctx, sub.ID, validityDays, input.Notes, true); err != nil {
 				return nil, false, err
 			}
+			// 续期同时带上额度：一并写回（否则“调额度+续期”会默默只续期）。
+			if err := s.applyAssignedLimits(ctx, sub, input); err != nil {
+				return nil, false, err
+			}
 			s.maybeInvalidateAssignmentCaches(input.UserID, input.GroupID, false)
 			renewed, getErr := s.userSubRepo.GetByID(ctx, sub.ID)
 			return renewed, true, getErr
@@ -538,6 +605,10 @@ func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, i
 			return nil, false, ErrSubscriptionAssignConflict.WithMetadata(map[string]string{
 				"conflict_reason": conflictReason,
 			})
+		}
+		// 已存在且仍有效：若本次带了额度则更新额度（“改额度”无需重建订阅）。
+		if err := s.applyAssignedLimits(ctx, sub, input); err != nil {
+			return nil, false, err
 		}
 		return sub, true, nil
 	}
@@ -561,8 +632,23 @@ func (s *SubscriptionService) assignSubscriptionWithReuse(ctx context.Context, i
 	return sub, false, nil
 }
 
+// hasAssignedLimits 本次请求是否携带额度（即管理员的「调额度」意图）。
+func hasAssignedLimits(input *AssignSubscriptionInput) bool {
+	return input != nil &&
+		(input.DailyLimitUSD != nil || input.WeeklyLimitUSD != nil || input.MonthlyLimitUSD != nil)
+}
+
 func detectAssignSemanticConflict(existing *UserSubscription, input *AssignSubscriptionInput) (string, bool) {
 	if existing == nil || input == nil {
+		return "", false
+	}
+
+	// 带额度的请求视为「调额度」：下方有效订阅分支既不续期也不写备注，
+	// 却拿 validity_days / notes 做幂等冲突判定，会直接挡死常规运维：
+	//   - 任何被续期过的订阅（ExpiresAt != StartsAt+N）改不动额度；
+	//   - 任何带备注的订阅（兑换码/支付订单都会写备注）同样改不动。
+	// 不带额度的请求（纯幂等重复分配）仍保留严格判定。
+	if hasAssignedLimits(input) {
 		return "", false
 	}
 
@@ -742,13 +828,30 @@ func (s *SubscriptionService) GetByID(ctx context.Context, id int64) (*UserSubsc
 // GetActiveSubscription 获取用户对特定分组的有效订阅
 // 使用 L1 缓存 + singleflight 加速中间件热路径。
 // 返回缓存对象的浅拷贝，调用方可安全修改字段而不会污染缓存或触发 data race。
+//
+// 槽位语义（关键，勿改）：//   - (user, group) 槽位只承载两种值：该分组的**专属**订阅，或「该分组确无专属订阅」的负哨兵；
+//   - (user, 0) 槽位只承载**个人订阅**（全分组通用额度）；
+//   - 分组槽位 miss 时**不得**直接回退读个人订阅：那会让刚分配的分组专属订阅被个人订阅
+//     遮蔽（扣错订阅、额度显示与归属全错）。兜底只在负哨兵已确认「无专属订阅」时进行。
 func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID, groupID int64) (*UserSubscription, error) {
 	key := subCacheKey(userID, groupID)
 
-	// L1 缓存命中：返回浅拷贝
 	if s.subCacheL1 != nil {
 		if v, ok := s.subCacheL1.Get(key); ok {
-			if sub, ok := v.(*UserSubscription); ok {
+			if _, neg := v.(*subCacheNegative); neg {
+				// 负哨兵：该分组无专属订阅。优先从个人订阅规范槽位取（避开 DB）；
+				// 但**不得**在个人槽位 miss 时直接报 NotFound：分配新个人订阅会失效 (user,0)
+				// 而分组负哨兵仍在 TTL 内存活，直接报错会让新订阅最长 30s 不生效。
+				// 此时继续往下走 singleflight 回源（repo 会正确回退到个人订阅）。
+				if groupID != 0 {
+					if personal, hit := s.personalFromL1(userID); hit {
+						return personal, nil
+					}
+				} else {
+					// 个人槽位自身的负哨兵：确认无任何订阅。
+					return nil, ErrSubscriptionNotFound
+				}
+			} else if sub, ok := v.(*UserSubscription); ok {
 				cp := *sub
 				return &cp, nil
 			}
@@ -759,11 +862,22 @@ func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID,
 	value, err, _ := s.subCacheGroup.Do(key, func() (any, error) {
 		sub, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, userID, groupID)
 		if err != nil {
+			// 仅对「个人订阅」探测槽位 (user,0) 做短 TTL 负缓存：
+			// 该路径在每个普通分组请求上都会触发，不缓存会让无订阅用户每请求多一次 DB 往返。
+			if groupID == 0 && s.subCacheL1 != nil && errors.Is(err, ErrSubscriptionNotFound) {
+				_ = s.subCacheL1.SetWithTTL(key, &subCacheNegative{}, 1, s.subNegativeTTL())
+			}
 			return nil, err // 直接透传 repo 已翻译的错误（NotFound → ErrSubscriptionNotFound，其他错误原样返回）
 		}
-		// 写入 L1 缓存
+		// 写入 L1 缓存：以订阅自身的 group_id 为规范槽位，使失效精确（改个人额度只清 (user,0)）。
+		// 分组请求回退命中个人订阅时，额外给分组槽位打负哨兵：
+		// 它只表达「本分组无专属订阅」（不携带额度），因此个人额度变更仍由 (user,0) 槽位失效保证。
 		if s.subCacheL1 != nil {
-			_ = s.subCacheL1.SetWithTTL(key, sub, 1, s.jitteredTTL(s.subCacheTTL))
+			ttl := s.jitteredTTL(s.subCacheTTL)
+			_ = s.subCacheL1.SetWithTTL(subCacheKey(userID, sub.GroupID), sub, 1, ttl)
+			if groupID != 0 && sub.GroupID == 0 {
+				_ = s.subCacheL1.SetWithTTL(key, &subCacheNegative{}, 1, s.subNegativeTTL())
+			}
 		}
 		return sub, nil
 	})
@@ -777,6 +891,24 @@ func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID,
 	}
 	cp := *sub
 	return &cp, nil
+}
+
+// personalFromL1 读取个人订阅规范槽位 (user,0) 的缓存值（浅拷贝）。
+// 负哨兵/缺失均返回 ok=false，由调用方回源 DB。
+func (s *SubscriptionService) personalFromL1(userID int64) (*UserSubscription, bool) {
+	v, ok := s.subCacheL1.Get(subCacheKey(userID, 0))
+	if !ok {
+		return nil, false
+	}
+	if _, neg := v.(*subCacheNegative); neg {
+		return nil, false
+	}
+	sub, ok := v.(*UserSubscription)
+	if !ok || sub == nil || sub.GroupID != 0 {
+		return nil, false
+	}
+	cp := *sub
+	return &cp, true
 }
 
 // ListUserSubscriptions 获取用户的所有订阅
@@ -1124,104 +1256,86 @@ func (s *SubscriptionService) GetSubscriptionProgress(ctx context.Context, subsc
 	}
 
 	group := sub.Group
-	if group == nil {
+	if group == nil && sub.GroupID != 0 {
 		group, err = s.groupRepo.GetByID(ctx, sub.GroupID)
 		if err != nil {
 			return nil, err
 		}
 	}
+	// 个人订阅（GroupID=0）无分组，calculateProgress 兼容 nil group。
 
 	return s.calculateProgress(sub, group), nil
 }
 
-// calculateProgress 根据已加载的订阅和分组数据计算使用进度（纯内存计算，无 DB 查询）
+// progressWindowLimit 取某窗口的展示额度：订阅自有优先，否则用传入分组额度。
+// 与 Effective*Limit 不同，这里不做 GroupID 归属校验：调用方传入的 group
+// 本来就是从这条订阅解析出来的（sub.Group 或 GetByID(sub.GroupID)），
+// 个人订阅（GroupID=0）则 group 为 nil，自然落到自有额度/不限额。
+func progressWindowLimit(own *float64, group *Group, groupLimit func(*Group) *float64) *float64 {
+	if own != nil {
+		return normalizeSubLimit(own)
+	}
+	if group == nil {
+		return nil
+	}
+	return normalizeSubLimit(groupLimit(group))
+}
+
+// buildWindowProgress 组装单个周期的用量进度（纯内存），调用方保证 limit > 0。
+func buildWindowProgress(limit, used float64, windowStart time.Time, resetAt *time.Time, fallbackPeriod time.Duration) *UsageWindowProgress {
+	resetsAt := windowStart.Add(fallbackPeriod)
+	if resetAt != nil {
+		resetsAt = *resetAt
+	}
+	progress := &UsageWindowProgress{
+		LimitUSD:        limit,
+		UsedUSD:         used,
+		RemainingUSD:    limit - used,
+		Percentage:      (used / limit) * 100,
+		WindowStart:     windowStart,
+		ResetsAt:        resetsAt,
+		ResetsInSeconds: int64(time.Until(resetsAt).Seconds()),
+	}
+	if progress.RemainingUSD < 0 {
+		progress.RemainingUSD = 0
+	}
+	if progress.Percentage > 100 {
+		progress.Percentage = 100
+	}
+	if progress.ResetsInSeconds < 0 {
+		progress.ResetsInSeconds = 0
+	}
+	return progress
+}
+
+// calculateProgress 根据已加载的订阅和分组数据计算使用进度（纯内存计算，无 DB 查询）。
+// group 可以为 nil（个人订阅）；额度取生效值：订阅自有优先，其次归属分组。
 func (s *SubscriptionService) calculateProgress(sub *UserSubscription, group *Group) *SubscriptionProgress {
 	progress := &SubscriptionProgress{
 		ID:            sub.ID,
-		GroupName:     group.Name,
 		ExpiresAt:     sub.ExpiresAt,
 		ExpiresInDays: sub.DaysRemaining(),
 	}
+	// 展示名：优先用分组边/传入分组；都没有时回退订阅自有名称（个人订阅）。
+	if group != nil && group.Name != "" {
+		progress.GroupName = group.Name
+	} else {
+		progress.GroupName = sub.DisplayName()
+	}
 
 	// 日进度
-	if group.HasDailyLimit() && sub.DailyWindowStart != nil {
-		limit := *group.DailyLimitUSD
-		resetsAt := sub.DailyWindowStart.Add(24 * time.Hour)
-		if dailyResetTime := sub.DailyResetTime(); dailyResetTime != nil {
-			resetsAt = *dailyResetTime
-		}
-		progress.Daily = &UsageWindowProgress{
-			LimitUSD:        limit,
-			UsedUSD:         sub.DailyUsageUSD,
-			RemainingUSD:    limit - sub.DailyUsageUSD,
-			Percentage:      (sub.DailyUsageUSD / limit) * 100,
-			WindowStart:     *sub.DailyWindowStart,
-			ResetsAt:        resetsAt,
-			ResetsInSeconds: int64(time.Until(resetsAt).Seconds()),
-		}
-		if progress.Daily.RemainingUSD < 0 {
-			progress.Daily.RemainingUSD = 0
-		}
-		if progress.Daily.Percentage > 100 {
-			progress.Daily.Percentage = 100
-		}
-		if progress.Daily.ResetsInSeconds < 0 {
-			progress.Daily.ResetsInSeconds = 0
-		}
+	if limit := progressWindowLimit(sub.DailyLimitUSD, group, func(g *Group) *float64 { return g.DailyLimitUSD }); limit != nil && sub.DailyWindowStart != nil {
+		progress.Daily = buildWindowProgress(*limit, sub.DailyUsageUSD, *sub.DailyWindowStart, sub.DailyResetTime(), 24*time.Hour)
 	}
 
 	// 周进度
-	if group.HasWeeklyLimit() && sub.WeeklyWindowStart != nil {
-		limit := *group.WeeklyLimitUSD
-		resetsAt := sub.WeeklyWindowStart.Add(7 * 24 * time.Hour)
-		if weeklyResetTime := sub.WeeklyResetTime(); weeklyResetTime != nil {
-			resetsAt = *weeklyResetTime
-		}
-		progress.Weekly = &UsageWindowProgress{
-			LimitUSD:        limit,
-			UsedUSD:         sub.WeeklyUsageUSD,
-			RemainingUSD:    limit - sub.WeeklyUsageUSD,
-			Percentage:      (sub.WeeklyUsageUSD / limit) * 100,
-			WindowStart:     *sub.WeeklyWindowStart,
-			ResetsAt:        resetsAt,
-			ResetsInSeconds: int64(time.Until(resetsAt).Seconds()),
-		}
-		if progress.Weekly.RemainingUSD < 0 {
-			progress.Weekly.RemainingUSD = 0
-		}
-		if progress.Weekly.Percentage > 100 {
-			progress.Weekly.Percentage = 100
-		}
-		if progress.Weekly.ResetsInSeconds < 0 {
-			progress.Weekly.ResetsInSeconds = 0
-		}
+	if limit := progressWindowLimit(sub.WeeklyLimitUSD, group, func(g *Group) *float64 { return g.WeeklyLimitUSD }); limit != nil && sub.WeeklyWindowStart != nil {
+		progress.Weekly = buildWindowProgress(*limit, sub.WeeklyUsageUSD, *sub.WeeklyWindowStart, sub.WeeklyResetTime(), 7*24*time.Hour)
 	}
 
 	// 月进度
-	if group.HasMonthlyLimit() && sub.MonthlyWindowStart != nil {
-		limit := *group.MonthlyLimitUSD
-		resetsAt := sub.MonthlyWindowStart.Add(30 * 24 * time.Hour)
-		if monthlyResetTime := sub.MonthlyResetTime(); monthlyResetTime != nil {
-			resetsAt = *monthlyResetTime
-		}
-		progress.Monthly = &UsageWindowProgress{
-			LimitUSD:        limit,
-			UsedUSD:         sub.MonthlyUsageUSD,
-			RemainingUSD:    limit - sub.MonthlyUsageUSD,
-			Percentage:      (sub.MonthlyUsageUSD / limit) * 100,
-			WindowStart:     *sub.MonthlyWindowStart,
-			ResetsAt:        resetsAt,
-			ResetsInSeconds: int64(time.Until(resetsAt).Seconds()),
-		}
-		if progress.Monthly.RemainingUSD < 0 {
-			progress.Monthly.RemainingUSD = 0
-		}
-		if progress.Monthly.Percentage > 100 {
-			progress.Monthly.Percentage = 100
-		}
-		if progress.Monthly.ResetsInSeconds < 0 {
-			progress.Monthly.ResetsInSeconds = 0
-		}
+	if limit := progressWindowLimit(sub.MonthlyLimitUSD, group, func(g *Group) *float64 { return g.MonthlyLimitUSD }); limit != nil && sub.MonthlyWindowStart != nil {
+		progress.Monthly = buildWindowProgress(*limit, sub.MonthlyUsageUSD, *sub.MonthlyWindowStart, sub.MonthlyResetTime(), 30*24*time.Hour)
 	}
 
 	return progress
@@ -1239,7 +1353,9 @@ func (s *SubscriptionService) GetUserSubscriptionsWithProgress(ctx context.Conte
 	for i := range subs {
 		sub := &subs[i]
 		group := sub.Group
-		if group == nil {
+		// 分组边缺失：分组订阅无法解析额度口径，跳过（保持原有保守行为）；
+		// 个人订阅（GroupID=0）本来就没有分组，不得因此被丢弃——否则用户看不到自己的额度与用量。
+		if group == nil && sub.GroupID != 0 {
 			continue
 		}
 		progresses = append(progresses, *s.calculateProgress(sub, group))

@@ -415,7 +415,7 @@
               <GroupBadge
                 v-for="sub in row.subscriptions"
                 :key="sub.id"
-                :name="sub.group?.name || ''"
+                :name="sub.group?.name || (sub.group_id === 0 ? t('admin.subscriptions.personalSubscription') : '')"
                 :platform="sub.group?.platform"
                 :subscription-type="sub.group?.subscription_type"
                 :rate-multiplier="sub.group?.rate_multiplier"

@@ -40,19 +40,29 @@ func NewSubscriptionHandler(subscriptionService *service.SubscriptionService) *S
 }
 
 // AssignSubscriptionRequest represents assign subscription request
+// GroupID 传 0（或缺省）表示「个人订阅」：不绑定分组、全部模型通用，
+// 额度由下面的 daily/weekly/monthly_limit_usd 定义。
 type AssignSubscriptionRequest struct {
 	UserID       int64  `json:"user_id" binding:"required"`
-	GroupID      int64  `json:"group_id" binding:"required"`
+	GroupID      int64  `json:"group_id" binding:"omitempty,gte=0"`
 	ValidityDays int    `json:"validity_days" binding:"omitempty,max=36500"` // max 100 years
 	Notes        string `json:"notes"`
+
+	DailyLimitUSD   *float64 `json:"daily_limit_usd" binding:"omitempty,gte=0"`
+	WeeklyLimitUSD  *float64 `json:"weekly_limit_usd" binding:"omitempty,gte=0"`
+	MonthlyLimitUSD *float64 `json:"monthly_limit_usd" binding:"omitempty,gte=0"`
 }
 
 // BulkAssignSubscriptionRequest represents bulk assign subscription request
 type BulkAssignSubscriptionRequest struct {
 	UserIDs      []int64 `json:"user_ids" binding:"required,min=1,max=100,dive,gt=0"`
-	GroupID      int64   `json:"group_id" binding:"required"`
+	GroupID      int64   `json:"group_id" binding:"omitempty,gte=0"`
 	ValidityDays int     `json:"validity_days" binding:"omitempty,max=36500"` // max 100 years
 	Notes        string  `json:"notes"`
+
+	DailyLimitUSD   *float64 `json:"daily_limit_usd" binding:"omitempty,gte=0"`
+	WeeklyLimitUSD  *float64 `json:"weekly_limit_usd" binding:"omitempty,gte=0"`
+	MonthlyLimitUSD *float64 `json:"monthly_limit_usd" binding:"omitempty,gte=0"`
 }
 
 // AdjustSubscriptionRequest represents adjust subscription request (extend or shorten)
@@ -146,11 +156,14 @@ func (h *SubscriptionHandler) Assign(c *gin.Context) {
 	adminID := getAdminIDFromContext(c)
 
 	subscription, err := h.subscriptionService.AssignSubscription(c.Request.Context(), &service.AssignSubscriptionInput{
-		UserID:       req.UserID,
-		GroupID:      req.GroupID,
-		ValidityDays: req.ValidityDays,
-		AssignedBy:   adminID,
-		Notes:        req.Notes,
+		UserID:          req.UserID,
+		GroupID:         req.GroupID,
+		ValidityDays:    req.ValidityDays,
+		AssignedBy:      adminID,
+		Notes:           req.Notes,
+		DailyLimitUSD:   req.DailyLimitUSD,
+		WeeklyLimitUSD:  req.WeeklyLimitUSD,
+		MonthlyLimitUSD: req.MonthlyLimitUSD,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -173,11 +186,14 @@ func (h *SubscriptionHandler) BulkAssign(c *gin.Context) {
 	adminID := getAdminIDFromContext(c)
 
 	result, err := h.subscriptionService.BulkAssignSubscription(c.Request.Context(), &service.BulkAssignSubscriptionInput{
-		UserIDs:      req.UserIDs,
-		GroupID:      req.GroupID,
-		ValidityDays: req.ValidityDays,
-		AssignedBy:   adminID,
-		Notes:        req.Notes,
+		UserIDs:         req.UserIDs,
+		GroupID:         req.GroupID,
+		ValidityDays:    req.ValidityDays,
+		AssignedBy:      adminID,
+		Notes:           req.Notes,
+		DailyLimitUSD:   req.DailyLimitUSD,
+		WeeklyLimitUSD:  req.WeeklyLimitUSD,
+		MonthlyLimitUSD: req.MonthlyLimitUSD,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -308,7 +324,9 @@ func (h *SubscriptionHandler) Restore(c *gin.Context) {
 // GET /api/v1/admin/groups/:id/subscriptions
 func (h *SubscriptionHandler) ListByGroup(c *gin.Context) {
 	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
+	if err != nil || groupID <= 0 {
+		// groupID<=0 必须拒绝：group_id=0 是全平台「个人订阅」槽位，
+		// 不拦住会把所有用户的个人订阅当成某分组的成员返回。
 		response.BadRequest(c, "Invalid group ID")
 		return
 	}
