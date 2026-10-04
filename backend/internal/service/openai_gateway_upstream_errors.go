@@ -510,6 +510,65 @@ func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, re
 	return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody)
 }
 
+// openAIModelNotFoundFailover 在「管理员自定义错误码表不含本状态码」的分支里
+// 仍然处理确定性的模型不可用信号，并把它换算成换号信号。
+//
+// 为何需要单另一条口：ShouldHandleErrorCode 的语义是「哪些状态码可以改动这个
+// **账号整体**的可调度状态」（account.go:1255），而 (账号, 单模型) 级冷却只下线
+// 一个模型，账号对其他模型照常可用，不在管理员的排除意图之内。此前两道早退
+// （本函数的调用点与 HandleUpstreamModelNotFound 首行）都把它一并拦掉，结果是
+// 管理员勾了自定义错误码但没列 404 时，上游明确回了「这个模型我没有」却不写
+// 冷却、不换号 → 该号被反复选中，每个请求再撞一遍同一个 404。
+//
+// 仅处理两种确定性形态（其余一律不拦）：上游 404 model-not-found，以及 OpenAI
+// OAuth 账号上的 Codex plan-gated 400。base_url 配错回应的 `404 page not found`
+// 不含 "model" 关键词，不会被误判为模型不可用。
+//
+// 模型名只在上述形态判定通过后才解析：本旁路跑在「自定义错误码未命中」这个
+// 高频早退分支里，无条件调用 extractOpenAIRequestMetaFromBody 会给每个这类
+// 响应多付一次请求体 JSON 解析。
+func (s *OpenAIGatewayService) openAIModelNotFoundFailover(ctx context.Context, c *gin.Context, account *Account, resp *http.Response, body []byte, requestedModel []string, requestBody []byte) error {
+	if s == nil || s.rateLimitService == nil || account == nil || resp == nil {
+		return nil
+	}
+	statusCode := resp.StatusCode
+	if statusCode != http.StatusNotFound && statusCode != http.StatusBadRequest {
+		return nil
+	}
+	if !isUpstreamModelNotFoundError(statusCode, body) && !isOpenAICodexPlanGatedModelError(statusCode, body) {
+		return nil
+	}
+	// 与 handleErrorResponse 正常路径同口径：优先用调用方传入的请求模型，缺失时
+	// 从 body 兜底解析并换算为账号的调度模型名。
+	model := firstRequestedModel(requestedModel)
+	if model == "" {
+		model, _, _ = extractOpenAIRequestMetaFromBody(requestBody)
+		model = canonicalOpenAIAccountSchedulingModel(account, model)
+	}
+	stateCtx, cancel := openAIAccountStateContext(ctx)
+	defer cancel()
+	if !s.rateLimitService.HandleUpstreamModelNotFound(stateCtx, account, model, statusCode, body) {
+		return nil
+	}
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: statusCode,
+		UpstreamRequestID:  resp.Header.Get("x-request-id"),
+		Kind:               "failover",
+		Stage:              "model_not_found_bypass_custom_error_codes",
+		Message:            "model unavailable on this account; per-model cooldown recorded",
+	})
+	return &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           body,
+		RetryableOnSameAccount: false,
+	}
+}
+
 func (s *OpenAIGatewayService) handleErrorResponse(
 	ctx context.Context,
 	resp *http.Response,
@@ -643,6 +702,12 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 
 	// Check custom error codes
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
+		// 例外：上游确定性告知「本账号没有这个模型」时，(账号, 模型) 级冷却不属于
+		// 管理员排除的「账号整体状态变更」，必须照写，否则同一个号会在每个请求里
+		// 被反复选中并再撞一遍 404。
+		if failoverErr := s.openAIModelNotFoundFailover(ctx, c, account, resp, body, requestedModel, requestBody); failoverErr != nil {
+			return nil, failoverErr
+		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			ProxyID:            opsUpstreamProxyID(account),
 			ProxyName:          opsUpstreamProxyName(account),
@@ -849,6 +914,13 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	// Check custom error codes — if the account does not handle this status,
 	// return a generic error without exposing upstream details.
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
+		// 例外：(账号, 单模型) 级冷却不属于管理员排除的「账号整体状态变更」，
+		// 上游确定性告知模型不可用时必须照写并换号，否则同一个号会在每个请求里
+		// 被反复选中再撞一遍 404。本路径没有 requestBody 可兜底解析，只能依赖
+		// 调用方传入的 requestedModel（传不进来就不写冷却，不会误伤）。
+		if failoverErr := s.openAIModelNotFoundFailover(c.Request.Context(), c, account, resp, body, requestedModel, nil); failoverErr != nil {
+			return nil, failoverErr
+		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			ProxyID:            opsUpstreamProxyID(account),
 			ProxyName:          opsUpstreamProxyName(account),

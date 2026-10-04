@@ -48,6 +48,9 @@ export type AccountSchedulingThresholdsMap = Record<SchedulingThresholdPlatformT
 
 // 与后端 AllowedSchedulingThresholdPlatforms 保持一致（deepseek 为余额型，
 // 走余额检测而非用量阈值；minimax Coding/Token Plan 与 OpenCode GO 有滚动窗口）。
+// 注意：本列表里的 workbuddy / qoder 只支持「积分耗尽自动停调」，不支持百分比阈值
+// （见 SCHEDULING_THRESHOLD_PERCENT_UNSUPPORTED_PLATFORMS），设置页会把它们的
+// 输入框置灰；保留在列表内是为了与后端返回的 map 结构完全对齐。
 export const SCHEDULING_THRESHOLD_PLATFORMS: SchedulingThresholdPlatformType[] = [
   "openai",
   "anthropic",
@@ -60,6 +63,24 @@ export const SCHEDULING_THRESHOLD_PLATFORMS: SchedulingThresholdPlatformType[] =
   "qoder",
   "trae",
 ]
+
+// 百分比阈值**不可评估**的平台：它们的「用量占比」读数不可比，拿它停号会误杀健康号。
+//   - WorkBuddy：size 会被上游历史累计剂量 TotalDosage 抬升，used 再由 size-remain 反推
+//     ⇒ 占比系统性虚高且越用越虚（实测包内 5500/余 1500 的号算出 85%，真实约 73%）。
+//   - Qoder：total/remain 只累加 userQuota + addOnQuota，漏算 dedicatedResourcePackages
+//     ⇒ 占比失真。
+// 两平台的「积分耗尽」仍由后端硬闸门（读未抬升的 pack_size_sum / 上游 isQuotaExceeded）
+// 自动停调，次日 0 点复通；这里只是把「可配但静默无效」的百分比输入框关掉。
+export const SCHEDULING_THRESHOLD_PERCENT_UNSUPPORTED_PLATFORMS: SchedulingThresholdPlatformType[] = [
+  "workbuddy",
+  "qoder",
+]
+
+export function supportsSchedulingThresholdPercent(
+  platform: SchedulingThresholdPlatformType,
+): boolean {
+  return !SCHEDULING_THRESHOLD_PERCENT_UNSUPPORTED_PLATFORMS.includes(platform)
+}
 
 export function normalizeAccountSchedulingThresholdsMap(
   input?: Partial<Record<SchedulingThresholdPlatformType, number>> | null,

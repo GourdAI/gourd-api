@@ -431,6 +431,22 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			return "quota_auto_pause"
 		}
 	}
+	// Trae / Qoder / WorkBuddy 积分耗尽门：此前这三个平台的积分快照只被管理面板
+	// 读取，调度链上零消费 —— 号子积分用完仍会被选中并真打到上游，直到撞出流内
+	// 错误帧才被事后冷却，而那段空窗里的请求全部被记为成功并按 0 token 出账。
+	// 判定只看新鲜（24h 内）且有正向额度证据的快照，宁可漏判不误杀。
+	if paused, reason := shouldAutoPauseAccountByCredits(account, time.Now()); paused {
+		slog.Debug("account_auto_paused_by_credits",
+			"account_id", account.ID,
+			"platform", account.Platform,
+			"window", reason.window,
+			"utilization", reason.utilization,
+		)
+		if reason.window != "" {
+			return "quota_auto_pause_" + reason.window
+		}
+		return "quota_auto_pause"
+	}
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 		return "model_not_supported"
 	}

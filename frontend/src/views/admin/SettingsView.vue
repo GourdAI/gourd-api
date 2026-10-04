@@ -4981,11 +4981,18 @@
                         >
                           {{ platform }}
                         </label>
-                        <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        <p
+                          class="mt-0.5 text-xs text-gray-500 dark:text-gray-400"
+                          :data-testid="`account-scheduling-threshold-hint-${platform}`"
+                        >
                           {{
-                            t(
-                              "admin.settings.scheduling.accountSchedulingThresholdsRangeHint",
-                            )
+                            supportsSchedulingThresholdPercent(platform)
+                              ? t(
+                                  "admin.settings.scheduling.accountSchedulingThresholdsRangeHint",
+                                )
+                              : t(
+                                  "admin.settings.scheduling.accountSchedulingThresholdsPercentUnsupportedHint",
+                                )
                           }}
                         </p>
                       </div>
@@ -5002,6 +5009,17 @@
                       max="100"
                       step="1"
                       class="input mt-3"
+                      :class="{
+                        'cursor-not-allowed opacity-60': !supportsSchedulingThresholdPercent(platform),
+                      }"
+                      :disabled="!supportsSchedulingThresholdPercent(platform)"
+                      :title="
+                        supportsSchedulingThresholdPercent(platform)
+                          ? undefined
+                          : t(
+                              'admin.settings.scheduling.accountSchedulingThresholdsPercentUnsupportedHint',
+                            )
+                      "
                       :data-testid="`account-scheduling-threshold-${platform}`"
                       placeholder="100"
                     />
@@ -8829,6 +8847,7 @@ import {
   sanitizeAccountSchedulingThresholdsMap,
   sanitizePlatformQuotasMap,
   SCHEDULING_THRESHOLD_PLATFORMS,
+  supportsSchedulingThresholdPercent,
   defaultWeChatConnectScopesForMode,
   deriveWeChatConnectStoredMode,
   normalizeDefaultSubscriptionSettings,

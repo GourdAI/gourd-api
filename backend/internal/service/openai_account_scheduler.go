@@ -1813,6 +1813,40 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 		}
 		return false, reason
 	}
+	// Grok 额度暂停闸门：与 legacy 引擎 (openai_gateway_scheduling.go 的
+	// shouldAutoPauseGrokAccountByQuota 分支) 同源同口径。
+	//
+	// 生效阶段（与 legacy 完全一致）：候选池过滤（本函数在 listSchedulableAccounts
+	// 循环里被调）拿的是 Redis meta 投影，而 grok_usage_snapshot **刻意不在投影
+	// 白名单里**（它带完整上游响应头，且被 grok_quota_fetcher / grok_gateway_cache
+	// 当作完整观测快照读取，裁字段会造成判定分叉），因此本闸门在候选阶段读到
+	// nil 快照而放行；它在抢槽后的 fresh / DB recheck 路径（传入 getSchedulableAccount
+	// 取回的全量账号）真正生效。
+	//
+	// 本改动的价值是「两引擎口径一致」：此前高级调度器连 fresh/recheck 这一段都
+	// 没有 Grok 闸门，开关高级调度器会让耗尽号在这条路上无人能拦（legacy 有）。
+	// 候选阶段的覆盖要靠投影纳入该键，属单独的架构改造（见下方回退说明）。
+	if paused, decision := shouldAutoPauseGrokAccountByQuota(account); paused {
+		reason := "quota_auto_pause"
+		if decision.window != "" {
+			reason += "_" + decision.window
+		}
+		return false, reason
+	}
+	// Trae / Qoder / WorkBuddy 积分耗尽门：与 legacy 引擎同口径，否则两个调度
+	// 引擎对「积分用完的号能不能接流量」给出相反答案（表现为开关高级调度器后
+	// 同样请求时好时坏）。reason 字符串与 legacy 严格一致，保证 filterStats 与
+	// handler 的错误分类不困引擎分叉。
+	//
+	// 与上方 Grok 闸门不同，本闸门**在候选过滤阶段就能生效**：三个积分快照键已
+	// 纳入 filterSchedulerExtra 白名单（按字段裁剪后进 meta 投影）。
+	if paused, decision := shouldAutoPauseAccountByCredits(account, time.Now()); paused {
+		reason := "quota_auto_pause"
+		if decision.window != "" {
+			reason += "_" + decision.window
+		}
+		return false, reason
+	}
 	// 母账号健康联动：影子账号的凭据来自母账号，母账号不可调度时影子也不应被选中。
 	// Parent-health gate: shadow borrows the parent's credentials; an unschedulable
 	// parent must block the shadow across all scheduler paths.

@@ -58,8 +58,24 @@ func EvaluateAccountSchedulingThreshold(account *Account, thresholds map[string]
 		winner = pickLatestResetSchedulingCandidate(anthropicThresholdCandidates(account), threshold, now)
 	case PlatformGrok:
 		winner = pickLatestResetSchedulingCandidate(grokThresholdCandidates(account), threshold, now)
-	case PlatformKimi, PlatformZhipu, PlatformMiniMax, PlatformOpenCodeGo, PlatformWorkbuddy, PlatformQoder, PlatformTrae:
+	case PlatformKimi, PlatformZhipu, PlatformMiniMax, PlatformOpenCodeGo:
 		winner = pickLatestResetSchedulingCandidate(cnProviderThresholdCandidates(account, decision.Platform), threshold, now)
+	case PlatformWorkbuddy, PlatformQoder, PlatformTrae:
+		// 此前这三个平台被归到 cnProviderThresholdCandidates 同一分支，但那个候选
+		// 读的是 <provider>_5h_used_percent / _weekly_used_percent 这类键，写入方
+		// CNProviderQuotaService 的 provider 白名单只有 kimi/zhipu/minimax/opencode_go
+		// （cn_provider_quota_service.go:134），全仓 grep 这三个平台的键零命中
+		// → 候选永远为空，管理员在「账号调度阈值」里给它们设的值 100% 静默无效。
+		//
+		// 【只有 Trae 真正能命中百分比阈值】改用积分快照后，候选仅在该平台的
+		// used/size 同源可比时才产出（见 creditSnapshotUtilizationIsReliable）：
+		//  - Trae：traeAggregatePacks 对未过期包同时求和 used/size，比值可信。
+		//  - WorkBuddy：size 会被 TotalDosage（历史累计剂量）抬升、used 由
+		//    size-remain 反推 ⇒ 占比系统性虚高，拿它停号就是误杀健康号。
+		//  - Qoder：applyQoderQuota 的 total 漏了 dedicatedResourcePackages ⇒ 失真。
+		// 后两者退回「不设百分比阈值」，它们的耗尽由调度资格里的
+		// shouldAutoPauseAccountByCredits（硬闸门）负责。
+		winner = pickLatestResetSchedulingCandidate(creditSnapshotThresholdCandidates(account, now), threshold, now)
 	default:
 		return decision
 	}

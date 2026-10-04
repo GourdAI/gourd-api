@@ -357,6 +357,18 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// apikey 类型账号：检查自定义错误码配置
 	// 如果启用且错误码不在列表中，则不处理（不停止调度、不标记限流/过载）
 	if !account.ShouldHandleErrorCode(statusCode) {
+		// 【例外】(账号, 单模型) 级冷却不属于本开关拦的「账号整体状态变更」。
+		// ShouldHandleErrorCode 的语义是「哪些状态码可以把这个账号整体打下线」
+		// （account.go:1255），而模型不可用只下线一个模型，账号对其他模型照常可用。
+		// 不补这一道时，管理员勾了自定义错误码但未列 404，同一个号会在每个请求里
+		// 被反复选中、再撞一遍 404（即用户可见的「限流了还被调、反复报 404」）。
+		// 返回 true 与「未启用自定义错误码的账号在下方自然走到 model-not-found 分支」
+		// 的行为完全对齐，不引入新的返回值语义。
+		// 上方 IsPoolMode() 早退（:349）故意不动：池模式的既定语义是「不标记账号状态、
+		// 改为同账号重试」，而 OpenAI/Grok 池模式账号已由 fastpath:154（无闸门）覆盖。
+		if len(requestedModel) > 0 && s.HandleUpstreamModelNotFound(ctx, account, requestedModel[0], statusCode, responseBody) {
+			return true
+		}
 		slog.Info("account_error_code_skipped", "account_id", account.ID, "status_code", statusCode)
 		return false
 	}
@@ -2508,9 +2520,27 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	if s == nil || account == nil || s.accountRepo == nil {
 		return false
 	}
-	if !account.ShouldHandleErrorCode(statusCode) {
-		return false
-	}
+	// 注意：本函数**不**检查 account.ShouldHandleErrorCode(statusCode)，闸门由调用方
+	// 自己决定。该开关的语义是「哪些状态码可以把这个账号整体打下线」（account.go）：
+	// 仅在「启用自定义错误码 + 列表非空 + 本码不在列表」时才返回 false。
+	// 而本函数只写 (账号, 单模型) 级冷却：账号对其他模型照常可用，不在管理员的
+	// 排除意图之内。
+	//
+	// 影响面（已逐个调用点实测，共 3 个入口）：
+	//  1. handleOpenAIAccountUpstreamError（openai_account_runtime_block_fastpath.go:95）
+	//     → :154 直接调本函数，**不经过任何 ShouldHandleErrorCode 闸门**（共 19 处调用：
+	//     WS / embeddings / images / passthrough / cc_pipeline / codex_models）。
+	//  2. HandleUpstreamError（本文件 :340）→ :373 调用点，已在其 :359 的自定义码
+	//     早退分支里补上同一道 model-not-found 旁路，否则 Anthropic / generic 网关
+	//     （gateway_upstream_response、anthropic_passthrough、forward_as_chat_completions
+	//     /responses、count_tokens、antigravity_retry）仍会反复撞 404。
+	//  3. 两处 OpenAI handler（handleErrorResponse / handleCompatErrorResponse）的外层
+	//     ShouldHandleErrorCode 闸门会在进入本函数前就早退，已由
+	//     openAIModelNotFoundFailover 为它们补上旁路。
+	//
+	// 故意不动：HandleUpstreamError:349 的池模式早退。池模式的既定语义是「上游错误
+	// 不标记本地账号状态，而是在同账号重试」（account.go IsPoolMode 注释），per-model
+	// 冷却与这个语义相冲；且 OpenAI/Grok 池模式账号已被入口 1（无闸门）覆盖。
 	var cooldown time.Duration
 	var reason string
 	switch {

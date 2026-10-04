@@ -450,10 +450,11 @@ export default {
         allowUngroupedKey: 'Allow Ungrouped Key Scheduling',
         allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.',
         accountSchedulingThresholdsTitle: 'Platform Account Auto-Pause Thresholds',
-        accountSchedulingThresholdsDescription: 'When an account\'s current native usage window (OpenAI Codex/Anthropic session, or Grok request/token utilization) reaches this percent, Sub2API temporarily removes it from scheduling until the window resets. Use 100 to disable.',
+        accountSchedulingThresholdsDescription: 'When an account\'s current native usage window reaches this percent, Sub2API temporarily removes it from scheduling until the window resets. Use 100 to disable. Evaluated on: OpenAI Codex 5h/7d, Anthropic session/7d_oi, Grok request and token windows, the Kimi/Zhipu/MiniMax/OpenCode GO coding-plan rolling windows, and Trae credit usage (skipped when never probed or older than 24 hours).',
         accountSchedulingThresholdsGlobalHint: 'System-wide default for every account on that platform. Individual accounts can still override this in the account editor.',
         accountSchedulingThresholdsDisabledHint: '100 disables platform auto-pause. Values 1–99 pause scheduling once utilization reaches that percent.',
-        accountSchedulingThresholdsRangeHint: 'Integer 1–100 (percent). OpenAI/Anthropic/Grok only.'
+        accountSchedulingThresholdsRangeHint: 'Integer 1–100 (percent). Scheduling pauses once utilization reaches this percent, until the window resets.',
+        accountSchedulingThresholdsPercentUnsupportedHint: 'This platform does not support percent thresholds (its utilization readings are not comparable); it still auto-pauses once credits are confirmed exhausted and recovers at midnight.'
       },
       upstreamBillingProbe: {
         title: 'Upstream Rate Auto Detection',

@@ -2792,7 +2792,14 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesAccountPriorityWith
 
 func TestOpenAIAccountScheduler_SkipsAccountBlockedForRequestedModel(t *testing.T) {
 	now := time.Now()
-	account := &Account{ID: 21633, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	// 必须显式补齐 Status=active 与 Schedulable=true：候选过滤里的模型级限流闸门
+	// 会先走 IsSchedulableForModelWithContext，而它的第一步就是 IsSchedulable()
+	//（校 IsActive && Schedulable）。两个字段都靠零值 false 会让该闸门以
+	// not_schedulable 否决**全部**模型，本用例想验的「只屏蔽被瞬时熔断的那一个
+	// 模型」就被掩盖。生产上能进入候选池的账号恒为 active+schedulable
+	//（repo 的 ListSchedulable* 与调度投影都先按此过滤），因此这里补齐夹具使其
+	// 贴合现实，而不是绕过闸门。
+	account := &Account{ID: 21633, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
 	svc := &OpenAIGatewayService{openaiModelTransient: newOpenAIAccountModelTransientState(128)}
 	svc.openaiModelTransient.recordFailure(account.ID, "gpt-5.5", now)
 	svc.openaiModelTransient.recordFailure(account.ID, "gpt-5.5", now.Add(time.Millisecond))

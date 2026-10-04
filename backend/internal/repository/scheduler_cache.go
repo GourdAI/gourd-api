@@ -1033,6 +1033,25 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		service.UpstreamBillingProbeExtraKey,
 		service.GrokMediaEligibleExtraKey,
 		"grok_billing_snapshot",
+		// 额度/积分快照：候选过滤阶段（listSchedulableAccounts）读的是本投影，而两个
+		// 调度引擎的额度暂停判定与阈值评估都从 account.Extra 取数。不在白名单里，
+		// 这些判定在选号阶段就等于「从未探测」而全部放行，只在抢槽后的 fresh/DB
+		// recheck 才生效 —— TopK 候选池仍被耗尽号占满，健康号落在池外选不到（与历史上
+		// model_rate_limits、OpenAI 透传开关被裁掉同一类 bug，见 #4936 守护用例）。
+		//
+		// 这四个键都走下面的 schedulerQuotaSnapshotFields 裁剪，**不得整坨透传**：
+		// trae_credits / qoder_credits / workbuddy_credits 带逐个权益包明细（Packages），
+		// 整块进 Redis 会把每个候选账号的 meta 载荷撑大。
+		//
+		// 刻意**不纳入** grok_usage_snapshot：它带完整上游响应头（Headers map），且被
+		// grok_quota_fetcher / openai_gateway_grok_cache 等多处当作**完整观测快照**读取；
+		// 进投影并裁字段会让那些拿到投影账号的调用点读到残缺数据（与历史上
+		// model_rate_limits 、透传开关被裁是同类分叉风险）。因此 Grok 额度暂停与
+		// 本层积分闸门一样，在两个引擎里都只在抢槽后的 fresh/DB recheck 生效；
+		// 两引擎口径已一致，不致开关高级调度器就变好或变坏。
+		"trae_credits",
+		"qoder_credits",
+		"workbuddy_credits",
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {
@@ -1044,7 +1063,56 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 				}
 				value = filteredProbe
 			}
+			if allowed, ok := schedulerQuotaSnapshotFields[key]; ok {
+				trimmed := filterSchedulerQuotaSnapshot(value, allowed)
+				if trimmed == nil {
+					continue
+				}
+				value = trimmed
+			}
 			filtered[key] = value
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+// schedulerQuotaSnapshotFields 列出积分快照进调度投影时必须保留的字段。
+//
+// 必须与 service 层实际取用的 json 字段名逐个对齐：投影没带上的字段会被读侧
+// 归一为零值，漏一个就可能把「耗尽」读成「未配置」（不拦）或反过来（误杀健康号），
+// 由 scheduler_cache_credit_snapshot_test.go 钉住。
+var schedulerQuotaSnapshotFields = map[string][]string{
+	"trae_credits":      {"remain", "used", "size", "credits", "packs", "fetched_at"},
+	"qoder_credits":     {"remain", "used", "total", "packs", "quota_exceeded", "fetched_at"},
+	"workbuddy_credits": {"remain", "used", "size", "pack_size_sum", "packs", "not_applicable", "enterprise", "fetched_at"},
+}
+
+// filterSchedulerQuotaSnapshot 只保留 allowed 列出的顶层字段。
+// 非对象形态或无允许字段命中时返回 nil，调用侧跳过该键。
+//
+// 兼容两种内存形态：经 DB JSONB / 上一轮投影回读的是 map[string]any，而本进程
+// 刚写入的可能仍是结构体。结构体走一次 marshal→unmarshal 再裁（投影构造每账号
+// 一次，不在请求热路径）；否则 `value.(map[string]any)` 失败会把整个键丢掉，
+// 使候选过滤阶段误读为「从未探测」。
+func filterSchedulerQuotaSnapshot(value any, allowed []string) map[string]any {
+	source, ok := value.(map[string]any)
+	if !ok {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil
+		}
+		source = map[string]any{}
+		if err := json.Unmarshal(data, &source); err != nil {
+			return nil
+		}
+	}
+	filtered := make(map[string]any, len(allowed))
+	for _, field := range allowed {
+		if nested, exists := source[field]; exists && nested != nil {
+			filtered[field] = nested
 		}
 	}
 	if len(filtered) == 0 {

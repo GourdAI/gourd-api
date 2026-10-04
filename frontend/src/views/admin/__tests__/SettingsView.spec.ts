@@ -1978,4 +1978,43 @@ describe("admin SettingsView platform quota matrix", () => {
     // 不管输入是什么，提交值应为 null（而非 "" 或 NaN）
     expect(quotas["anthropic"]?.["daily"]).toBe(null);
   });
+
+  // 【百分比阈值不支持平台的前端防线】
+  // 后端对 workbuddy / qoder 的百分比通道恒返回空候选（used/size 读数不可比，
+  // 拿它停号会误杀健康号），因此这两个平台的输入框必须置灰；而它们的「积分耗尽」
+  // 仍由后端硬闸门自动停调。阈值区块在 v-show="activeTab === 'gateway'" 容器内
+  // （v-show 只隐藏不卸载），无需切 tab 即可断言。
+  it("disables percent threshold inputs on platforms whose utilization is not comparable", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+
+    // 置灰面：两个读数不可比的平台
+    for (const platform of ["workbuddy", "qoder"]) {
+      const input = wrapper.get(`[data-testid="account-scheduling-threshold-${platform}"]`);
+      expect(
+        input.attributes("disabled"),
+        `${platform} 的百分比阈值输入框必须禁用`,
+      ).toBeDefined();
+      expect(input.classes()).toContain("cursor-not-allowed");
+      // title 给出原因，否则管理员只会认为输入框坏了
+      expect(input.attributes("title")).toContain(
+        "admin.settings.scheduling.accountSchedulingThresholdsPercentUnsupportedHint",
+      );
+    }
+
+    // 反向面：其余平台（含 Trae）必须仍可配，否则本次改动会误伤既有能力。
+    for (const platform of ["openai", "anthropic", "grok", "trae", "kimi"]) {
+      const input = wrapper.get(`[data-testid="account-scheduling-threshold-${platform}"]`);
+      expect(input.attributes("disabled"), `${platform} 不应被置灰`).toBeUndefined();
+      expect(input.classes()).not.toContain("cursor-not-allowed");
+    }
+
+    // hint 文案按平台切换（两个 testid 都在模板里）
+    expect(
+      wrapper.get('[data-testid="account-scheduling-threshold-hint-workbuddy"]').text(),
+    ).toContain("admin.settings.scheduling.accountSchedulingThresholdsPercentUnsupportedHint");
+    expect(
+      wrapper.get('[data-testid="account-scheduling-threshold-hint-trae"]').text(),
+    ).toContain("admin.settings.scheduling.accountSchedulingThresholdsRangeHint");
+  });
 });

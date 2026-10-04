@@ -224,6 +224,10 @@ func normalizeSubLimit(v *float64) *float64 {
 // 全平台不限额免费——管理员只建了有效期、忘填额度就会发生。因此无额度的个人订阅
 // 不应接管计费（退回余额扣费），见三处 isSubscriptionMode 判定。
 // 分组订阅不受此限制：其「不限额」由分组自身配置决定，属基线语义。
+//
+// 产品定案（2026-10-03 已拍板）：无额度时**静默退回余额计费**，不在分配接口报 400、
+// 也不加前端提示。原因：兑换码/支付订单等存量路径会写备注与有效期但不写额度，
+// 强校验会直接打断这些入口。请勿将其当作「缺校验」而补上 400。
 func (s *UserSubscription) HasEffectiveLimit(group *Group) bool {
 	return s.EffectiveDailyLimit(group) != nil ||
 		s.EffectiveWeeklyLimit(group) != nil ||

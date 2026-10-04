@@ -80,11 +80,17 @@ type WorkBuddyCreditsPackage struct {
 
 // WorkBuddyCreditsResult 积分查询结果（管理端 + 前端单元格消费）。
 type WorkBuddyCreditsResult struct {
-	Success            bool                      `json:"success"`
-	Realm              string                    `json:"realm"`
-	Remain             int64                     `json:"remain"`
-	Used               int64                     `json:"used"`
-	Size               int64                     `json:"size"`
+	Success bool   `json:"success"`
+	Realm   string `json:"realm"`
+	Remain  int64  `json:"remain"`
+	Used    int64  `json:"used"`
+	Size    int64  `json:"size"`
+	// PackSizeSum 各套餐容量字段之和（**未经 TotalDosage 抬升**）。
+	// 这是「上游真的读到了额度池容量」的唯一正向证据：Size 会被
+	// workbuddyAggregateResource 抬到 TotalDosage（历史累计剂量）并反推 Used，
+	// 所以降级读数（Accounts 非空但容量字段全缺省）在 TotalDosage>0 时会伪造出
+	// remain=0 / used>0 / size>0 的「假耗尽」形态。调度层靠本字段区分两者。
+	PackSizeSum        int64                     `json:"pack_size_sum,omitempty"`
 	Packs              int                       `json:"packs"`
 	Packages           []WorkBuddyCreditsPackage `json:"packages,omitempty"`
 	FetchedAt          int64                     `json:"fetched_at"`
@@ -109,13 +115,16 @@ type WorkBuddyCheckinResult struct {
 
 // WorkBuddyCreditsSnapshot 写入 account.Extra 的积分快照（供列表免探测渲染）。
 type WorkBuddyCreditsSnapshot struct {
-	Remain    int64                     `json:"remain"`
-	Used      int64                     `json:"used"`
-	Size      int64                     `json:"size"`
-	Packs     int                       `json:"packs"`
-	Packages  []WorkBuddyCreditsPackage `json:"packages,omitempty"`
-	FetchedAt int64                     `json:"fetched_at"`
-	Realm     string                    `json:"realm"`
+	Remain int64 `json:"remain"`
+	Used   int64 `json:"used"`
+	Size   int64 `json:"size"`
+	// PackSizeSum 与 WorkBuddyCreditsResult 同义：未经 TotalDosage 抬升的池内容量之和，
+	// 供调度层判定「额度池确实被读到」（旧快照缺本字段时读侧一律放行）。
+	PackSizeSum int64                     `json:"pack_size_sum,omitempty"`
+	Packs       int                       `json:"packs"`
+	Packages    []WorkBuddyCreditsPackage `json:"packages,omitempty"`
+	FetchedAt   int64                     `json:"fetched_at"`
+	Realm       string                    `json:"realm"`
 	// NotApplicable / Enterprise 与 WorkBuddyCreditsResult 同义（列表免探测渲染需要）。
 	NotApplicable bool `json:"not_applicable,omitempty"`
 	Enterprise    bool `json:"enterprise,omitempty"`
@@ -324,6 +333,9 @@ func (s *WorkBuddyCreditsService) queryCreditsForAccount(ctx context.Context, ac
 	result.Remain = remain
 	result.Used = used
 	result.Size = size
+	// 池内容量之和（取每个包的未抬升 size，不是被 TotalDosage 改写后的 size）：
+	// 调度层用它区分「额度池真的读到了但已用光」与「容量字段没解析出来」。
+	result.PackSizeSum = workbuddyPackSizeSum(packages)
 	result.Packs = packs
 	result.Packages = packages
 	result.FetchedAt = time.Now().Unix()
@@ -653,6 +665,7 @@ func (s *WorkBuddyCreditsService) persistWorkbuddyCreditsSnapshot(ctx context.Co
 		Remain:        result.Remain,
 		Used:          result.Used,
 		Size:          result.Size,
+		PackSizeSum:   result.PackSizeSum,
 		Packs:         result.Packs,
 		Packages:      result.Packages,
 		FetchedAt:     result.FetchedAt,
@@ -787,6 +800,20 @@ type workbuddyUserResourceResp struct {
 			Accounts    []workbuddyResourcePackage `json:"Accounts"`
 		} `json:"Data"`
 	} `json:"Response"`
+}
+
+// workbuddyPackSizeSum 汇总各套餐**未被 TotalDosage 抬升**的容量（packages[].Size 在
+// 抬升之前就已逐包算定，因此不会带上历史累计剂量）。
+//
+//	全部为 0 表示上游没回任何容量字段（降级读数），调度层据此不得判耗尽。
+func workbuddyPackSizeSum(packages []WorkBuddyCreditsPackage) int64 {
+	var sum int64
+	for _, pkg := range packages {
+		if pkg.Size > 0 {
+			sum += pkg.Size
+		}
+	}
+	return sum
 }
 
 // workbuddyAggregateResource 聚合套餐列表为 remain/used/size/packs（对齐参考实现

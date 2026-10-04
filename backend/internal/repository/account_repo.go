@@ -67,7 +67,10 @@ var schedulerNeutralExtraKeys = map[string]struct{}{
 	"codex_usage_updated_at":     {},
 	"grok_billing_snapshot":      {},
 	"session_window_utilization": {},
-	// WorkBuddy 积分/签到快照：观测型数据，不参与调度决策，不触发 bucket 重建。
+	// WorkBuddy 积分/签到快照：**不参与 bucket 整桶重建**，但仍同步单账号快照
+	// （见 UpdateExtra 的 else 分支），因此候选池 meta 投影能读到最新读数。
+	// 注意：workbuddy_credits 如今**已参与调度决策**（积分耗尽停调），只是它的
+	// 变更不需要重建分组候选集，保持 neutral 可同时满足正确性与重建成本。
 	"workbuddy_credits": {},
 	"workbuddy_checkin": {},
 	// WorkBuddy 任务三件套快照（活跃上报/猫猫旅行）：同为观测型数据，不参与调度决策。
