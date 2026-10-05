@@ -224,6 +224,29 @@ func (s *AnnouncementService) List(ctx context.Context, params pagination.Pagina
 	return s.announcementRepo.List(ctx, params, filters)
 }
 
+// activeSubscriptionWalletSet 把「用户是否持有生效订阅钱包」映射为公告定向匹配
+// 所需的分组键集合。
+//
+// 背景（2026-10-03 契约）：订阅不再绑定分组，订阅行已无 GroupID；而公告的
+// subscription 条件仍按分组 ID 与 domain.AnnouncementTargeting.Matches 的集合入参比对。
+// 为不改动 domain 契约、也不引入新字段，这里把语义退化为「持有任一生效钱包即命中」：
+// 命中时返回规则里引用的全部分组 ID（使任意 subscription 条件可命中），
+// 未持有时返回空集合（Matches 对空集合的 subscription 条件恒不命中）。
+func activeSubscriptionWalletSet(targeting AnnouncementTargeting, hasActiveWallet bool) map[int64]struct{} {
+	if !hasActiveWallet {
+		return nil
+	}
+	ids := make(map[int64]struct{})
+	for _, group := range targeting.AnyOf {
+		for _, cond := range group.AllOf {
+			for _, gid := range cond.GroupIDs {
+				ids[gid] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
 func (s *AnnouncementService) ListForUser(ctx context.Context, userID int64, unreadOnly bool) ([]UserAnnouncement, error) {
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -234,10 +257,8 @@ func (s *AnnouncementService) ListForUser(ctx context.Context, userID int64, unr
 	if err != nil {
 		return nil, fmt.Errorf("list active subscriptions: %w", err)
 	}
-	activeGroupIDs := make(map[int64]struct{}, len(activeSubs))
-	for i := range activeSubs {
-		activeGroupIDs[activeSubs[i].GroupID] = struct{}{}
-	}
+	// 订阅定向不再按分组寻址：只看该用户是否持有生效钱包（存在性）。
+	hasActiveWallet := len(activeSubs) > 0
 
 	now := time.Now()
 	anns, err := s.announcementRepo.ListActive(ctx, now)
@@ -252,7 +273,7 @@ func (s *AnnouncementService) ListForUser(ctx context.Context, userID int64, unr
 		if !a.IsActiveAt(now) {
 			continue
 		}
-		if !a.Targeting.Matches(user.Balance, activeGroupIDs) {
+		if !a.Targeting.Matches(user.Balance, activeSubscriptionWalletSet(a.Targeting, hasActiveWallet)) {
 			continue
 		}
 		visible = append(visible, a)
@@ -319,12 +340,8 @@ func (s *AnnouncementService) MarkRead(ctx context.Context, userID, announcement
 	if err != nil {
 		return fmt.Errorf("list active subscriptions: %w", err)
 	}
-	activeGroupIDs := make(map[int64]struct{}, len(activeSubs))
-	for i := range activeSubs {
-		activeGroupIDs[activeSubs[i].GroupID] = struct{}{}
-	}
-
-	if !a.Targeting.Matches(user.Balance, activeGroupIDs) {
+	// 可见性口径与 ListForUser 一致：订阅定向只看是否持有生效钱包。
+	if !a.Targeting.Matches(user.Balance, activeSubscriptionWalletSet(a.Targeting, len(activeSubs) > 0)) {
 		return ErrAnnouncementNotFound
 	}
 
@@ -371,10 +388,8 @@ func (s *AnnouncementService) ListUserReadStatus(
 		if err != nil {
 			return nil, nil, fmt.Errorf("list active subscriptions: %w", err)
 		}
-		activeGroupIDs := make(map[int64]struct{}, len(subs))
-		for j := range subs {
-			activeGroupIDs[subs[j].GroupID] = struct{}{}
-		}
+		// 定向命中判定与用户侧同源：订阅只看存在性，不再按分组寻址。
+		activeWalletSet := activeSubscriptionWalletSet(ann.Targeting, len(subs) > 0)
 
 		readAt, ok := readMap[u.ID]
 		var ptr *time.Time
@@ -388,7 +403,7 @@ func (s *AnnouncementService) ListUserReadStatus(
 			Email:    u.Email,
 			Username: u.Username,
 			Balance:  u.Balance,
-			Eligible: domain.AnnouncementTargeting(ann.Targeting).Matches(u.Balance, activeGroupIDs),
+			Eligible: domain.AnnouncementTargeting(ann.Targeting).Matches(u.Balance, activeWalletSet),
 			ReadAt:   ptr,
 		})
 	}

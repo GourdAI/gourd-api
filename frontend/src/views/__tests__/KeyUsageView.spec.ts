@@ -48,6 +48,9 @@ const messages: Record<string, string> = {
   'keyUsage.usedQuota': 'Used Quota',
   'keyUsage.subscriptionType': 'Subscription Type',
   'keyUsage.billingType': 'Billing Type',
+  'keyUsage.subscriptionExpires': 'Subscription Expires',
+  'keyUsage.unlimited': 'Unlimited',
+  'keyUsage.subscriptionCount': 'Active Subscriptions',
   'keyUsage.todayRequests': 'Today Requests',
   'keyUsage.todayInputTokens': 'Today Input',
   'keyUsage.todayOutputTokens': 'Today Output',
@@ -303,6 +306,118 @@ describe('KeyUsageView subscription feature flag', () => {
     expect(wrapper.text()).toContain('Billing Type')
     expect(wrapper.text()).not.toContain('Subscription Type')
     expect(wrapper.text()).toContain('Wallet Balance')
+    wrapper.unmount()
+  })
+})
+
+// 订阅钱包分支在 2026-10-04 之前零覆盖：后端已改为单一总额池（六键），
+// 而前端仍在读 daily/weekly/monthly_* 退役字段，导致额度区整块空白且测试全绿。
+describe('KeyUsageView subscription wallet rendering', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  async function mountWith(payload: Record<string, unknown>) {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn().mockReturnValue({ matches: false }),
+    })
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => payload }))
+
+    const wrapper = mount(KeyUsageView, {
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, LocaleSwitcher: true, Icon: true } },
+    })
+    await wrapper.find('input').setValue('tk-test-key')
+    await wrapper.find('input').trigger('keydown.enter')
+    await flushPromises()
+    await nextTick()
+    return wrapper
+  }
+
+  const base = {
+    mode: 'unrestricted',
+    isValid: true,
+    status: 'active',
+    // 后端 subscriptionWalletPlanName 在钱包模式下恒非空（兜底「个人订阅」），
+    // 这里必须给上，否则前端会回落到「钱包余额」字样，测出来的是假现象。
+    planName: 'Pro Wallet',
+    usage: {
+      today: { requests: 0, input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, total_tokens: 0, actual_cost: 0 },
+      total: { requests: 0, input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, total_tokens: 0, actual_cost: 0 },
+      rpm: 0,
+      tpm: 0,
+    },
+    daily_usage: [],
+  }
+
+  it('renders the aggregated total pool from wallet keys', async () => {
+    const wrapper = await mountWith({
+      ...base,
+      subscription: {
+        subscription_count: 2,
+        total_limit_usd: 10,
+        total_usage_usd: 2.5,
+        remaining_usd: 7.5,
+        has_unlimited: false,
+        expires_at: '2026-12-31T00:00:00Z',
+      },
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('Total Quota')
+    // 可证伪的具体数字：用量/总额直接来自 total_usage_usd / total_limit_usd
+    expect(text).toContain('$2.50 / $10.00')
+    // 多份订阅时给出份数，证明读的是 subscription_count
+    expect(text).toContain('Active Subscriptions')
+    // 退役字段不得再出现在任何判据里
+    expect(text).not.toContain('Daily Limit')
+    expect(text).not.toContain('Weekly Limit')
+    expect(text).not.toContain('Monthly Limit')
+    wrapper.unmount()
+  })
+
+  it('shows Unlimited when the wallet holds an unlimited subscription', async () => {
+    const wrapper = await mountWith({
+      ...base,
+      // 后端 subscriptionWalletRemaining 对不限额钱包返回 -1（无上限，不是欠费）
+      remaining: -1,
+      subscription: {
+        subscription_count: 1,
+        total_limit_usd: 0,
+        total_usage_usd: 3,
+        remaining_usd: -1,
+        has_unlimited: true,
+        expires_at: '2026-12-31T00:00:00Z',
+      },
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('Unlimited')
+    expect(text).not.toContain('Daily Limit')
+    // remaining = -1 不得被当成「已用尽」标红
+    expect(wrapper.html()).not.toContain('text-rose-500')
+    wrapper.unmount()
+  })
+
+  it('does not fall back to the wallet-balance row when a subscription wallet exists', async () => {
+    const wrapper = await mountWith({
+      ...base,
+      balance: 5.5,
+      subscription: {
+        subscription_count: 1,
+        total_limit_usd: 20,
+        total_usage_usd: 4,
+        remaining_usd: 16,
+        has_unlimited: false,
+        expires_at: '2026-12-31T00:00:00Z',
+      },
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('$4.00 / $20.00')
+    // 有订阅钱包时不再另列余额行（两者互斥，避免误读成“还能花”）
+    expect(text).not.toContain('Wallet Balance')
     wrapper.unmount()
   })
 })

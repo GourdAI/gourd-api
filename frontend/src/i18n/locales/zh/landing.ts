@@ -165,6 +165,8 @@
     subscriptionType: '订阅类型',
     billingType: '计费方式',
     subscriptionExpires: '订阅到期',
+    unlimited: '不限制',
+    subscriptionCount: '生效订阅数',
     // Usage stat cells
     todayRequests: '今日请求',
     todayInputTokens: '今日输入',

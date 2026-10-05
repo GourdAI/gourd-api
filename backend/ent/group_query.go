@@ -22,7 +22,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
-	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 )
 
 // GroupQuery is the builder for querying Group entities.
@@ -34,7 +33,6 @@ type GroupQuery struct {
 	predicates            []predicate.Group
 	withAPIKeys           *APIKeyQuery
 	withRedeemCodes       *RedeemCodeQuery
-	withSubscriptions     *UserSubscriptionQuery
 	withUsageLogs         *UsageLogQuery
 	withAccounts          *AccountQuery
 	withAllowedUsers      *UserQuery
@@ -114,28 +112,6 @@ func (_q *GroupQuery) QueryRedeemCodes() *RedeemCodeQuery {
 			sqlgraph.From(group.Table, group.FieldID, selector),
 			sqlgraph.To(redeemcode.Table, redeemcode.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, group.RedeemCodesTable, group.RedeemCodesColumn),
-		)
-		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
-		return fromU, nil
-	}
-	return query
-}
-
-// QuerySubscriptions chains the current query on the "subscriptions" edge.
-func (_q *GroupQuery) QuerySubscriptions() *UserSubscriptionQuery {
-	query := (&UserSubscriptionClient{config: _q.config}).Query()
-	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
-		if err := _q.prepareQuery(ctx); err != nil {
-			return nil, err
-		}
-		selector := _q.sqlQuery(ctx)
-		if err := selector.Err(); err != nil {
-			return nil, err
-		}
-		step := sqlgraph.NewStep(
-			sqlgraph.From(group.Table, group.FieldID, selector),
-			sqlgraph.To(usersubscription.Table, usersubscription.FieldID),
-			sqlgraph.Edge(sqlgraph.O2M, false, group.SubscriptionsTable, group.SubscriptionsColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -447,7 +423,6 @@ func (_q *GroupQuery) Clone() *GroupQuery {
 		predicates:            append([]predicate.Group{}, _q.predicates...),
 		withAPIKeys:           _q.withAPIKeys.Clone(),
 		withRedeemCodes:       _q.withRedeemCodes.Clone(),
-		withSubscriptions:     _q.withSubscriptions.Clone(),
 		withUsageLogs:         _q.withUsageLogs.Clone(),
 		withAccounts:          _q.withAccounts.Clone(),
 		withAllowedUsers:      _q.withAllowedUsers.Clone(),
@@ -478,17 +453,6 @@ func (_q *GroupQuery) WithRedeemCodes(opts ...func(*RedeemCodeQuery)) *GroupQuer
 		opt(query)
 	}
 	_q.withRedeemCodes = query
-	return _q
-}
-
-// WithSubscriptions tells the query-builder to eager-load the nodes that are connected to
-// the "subscriptions" edge. The optional arguments are used to configure the query builder of the edge.
-func (_q *GroupQuery) WithSubscriptions(opts ...func(*UserSubscriptionQuery)) *GroupQuery {
-	query := (&UserSubscriptionClient{config: _q.config}).Query()
-	for _, opt := range opts {
-		opt(query)
-	}
-	_q.withSubscriptions = query
 	return _q
 }
 
@@ -625,10 +589,9 @@ func (_q *GroupQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*Group,
 	var (
 		nodes       = []*Group{}
 		_spec       = _q.querySpec()
-		loadedTypes = [8]bool{
+		loadedTypes = [7]bool{
 			_q.withAPIKeys != nil,
 			_q.withRedeemCodes != nil,
-			_q.withSubscriptions != nil,
 			_q.withUsageLogs != nil,
 			_q.withAccounts != nil,
 			_q.withAllowedUsers != nil,
@@ -668,13 +631,6 @@ func (_q *GroupQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*Group,
 		if err := _q.loadRedeemCodes(ctx, query, nodes,
 			func(n *Group) { n.Edges.RedeemCodes = []*RedeemCode{} },
 			func(n *Group, e *RedeemCode) { n.Edges.RedeemCodes = append(n.Edges.RedeemCodes, e) }); err != nil {
-			return nil, err
-		}
-	}
-	if query := _q.withSubscriptions; query != nil {
-		if err := _q.loadSubscriptions(ctx, query, nodes,
-			func(n *Group) { n.Edges.Subscriptions = []*UserSubscription{} },
-			func(n *Group, e *UserSubscription) { n.Edges.Subscriptions = append(n.Edges.Subscriptions, e) }); err != nil {
 			return nil, err
 		}
 	}
@@ -777,36 +733,6 @@ func (_q *GroupQuery) loadRedeemCodes(ctx context.Context, query *RedeemCodeQuer
 		node, ok := nodeids[*fk]
 		if !ok {
 			return fmt.Errorf(`unexpected referenced foreign-key "group_id" returned %v for node %v`, *fk, n.ID)
-		}
-		assign(node, n)
-	}
-	return nil
-}
-func (_q *GroupQuery) loadSubscriptions(ctx context.Context, query *UserSubscriptionQuery, nodes []*Group, init func(*Group), assign func(*Group, *UserSubscription)) error {
-	fks := make([]driver.Value, 0, len(nodes))
-	nodeids := make(map[int64]*Group)
-	for i := range nodes {
-		fks = append(fks, nodes[i].ID)
-		nodeids[nodes[i].ID] = nodes[i]
-		if init != nil {
-			init(nodes[i])
-		}
-	}
-	if len(query.ctx.Fields) > 0 {
-		query.ctx.AppendFieldOnce(usersubscription.FieldGroupID)
-	}
-	query.Where(predicate.UserSubscription(func(s *sql.Selector) {
-		s.Where(sql.InValues(s.C(group.SubscriptionsColumn), fks...))
-	}))
-	neighbors, err := query.All(ctx)
-	if err != nil {
-		return err
-	}
-	for _, n := range neighbors {
-		fk := n.GroupID
-		node, ok := nodeids[fk]
-		if !ok {
-			return fmt.Errorf(`unexpected referenced foreign-key "group_id" returned %v for node %v`, fk, n.ID)
 		}
 		assign(node, n)
 	}

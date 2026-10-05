@@ -736,8 +736,8 @@ func registerSubscriptionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		subscriptions.DELETE("/:id", h.Admin.Subscription.Revoke)
 	}
 
-	// 分组下的订阅列表
-	admin.GET("/groups/:id/subscriptions", h.Admin.Subscription.ListByGroup)
+	// 注：原「分组下的订阅列表」GET /admin/groups/:id/subscriptions 已随
+	// 「订阅不绑定分组」重构（2026-10-03 拍板）退役；订阅按用户维度查询。
 
 	// 用户下的订阅列表
 	admin.GET("/users/:id/subscriptions", h.Admin.Subscription.ListByUser)

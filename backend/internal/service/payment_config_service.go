@@ -168,6 +168,10 @@ type CreatePlanRequest struct {
 	Description   string   `json:"description"`
 	Price         float64  `json:"price"`
 	OriginalPrice *float64 `json:"original_price"`
+	// TotalLimitUSD 套餐总额度（USD）：购买后快照进 user_subscriptions.total_limit_usd。
+	// nil 或 <=0 表示该套餐不限量。与 Price 完全独立：Price 是卖多少钱，
+	// 本字段是买回去能花多少钱（订阅不绑分组后，额度只能长在套餐上）。
+	TotalLimitUSD *float64 `json:"total_limit_usd"`
 	Currency      string   `json:"currency"`
 	ValidityDays  int      `json:"validity_days"`
 	ValidityUnit  string   `json:"validity_unit"`
@@ -183,6 +187,9 @@ type UpdatePlanRequest struct {
 	Description   *string  `json:"description"`
 	Price         *float64 `json:"price"`
 	OriginalPrice *float64 `json:"original_price"`
+	// TotalLimitUSD 三态：nil = 不修改；>0 = 设为该额度；<=0 = 清空（改为不限量）。
+	// 与 SubscriptionService.UpdateAssignedLimit 保持同一口径。
+	TotalLimitUSD *float64 `json:"total_limit_usd"`
 	Currency      *string  `json:"currency"`
 	ValidityDays  *int     `json:"validity_days"`
 	ValidityUnit  *string  `json:"validity_unit"`

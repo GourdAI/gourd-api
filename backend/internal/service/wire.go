@@ -878,10 +878,13 @@ func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsSer
 	return aggregator
 }
 
-// ProvideSettingService wires SettingService with group reader and proxy repo.
+// ProvideSettingService wires SettingService with proxy repo.
+// groupRepo 保留在签名里但不再注入：原用于「默认发放订阅必须为订阅型分组」的校验，
+// 2026-10-03 订阅重构为个人额度钱包后该校验已废除（见 SetDefaultSubscriptionGroupReader 删除）。
+// 保留参数是为了不动 wire_gen.go（代码生成物）。
 func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
+	_ = groupRepo
 	svc := NewSettingService(settingRepo, cfg)
-	svc.SetDefaultSubscriptionGroupReader(groupRepo)
 	svc.SetProxyRepository(proxyRepo)
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load forwarded client IP settings failed: %v", err)

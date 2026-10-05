@@ -15,7 +15,18 @@ import (
 	"entgo.io/ent/schema/index"
 )
 
-// UserSubscription holds the schema definition for the UserSubscription entity.
+// UserSubscription 是「个人额度钱包」，不绑定任何分组。
+//
+// 产品定案（2026-10-03 拍板）：
+//   - 订阅不授予分组准入，只管理额度；Key 绑在哪个分组就按哪个分组的倍率计费，
+//     消耗的是这份钱包里的钱。
+//   - 额度模型为单一总额池（对齐 new-api 的 amount_total / amount_used）：
+//     一次性总额，花完为止，有效期到期后剩余作废，不随日/周/月滚动重置。
+//   - 一个用户可同时持有多份订阅（同一套餐重复购买 = 新增一份独立订阅），
+//     消耗顺序为「先到期先消耗」，单笔费用可跨订阅拆分。
+//
+// 历史包袱：本表曾有 group_id 槽位（(user,0) 个人 / (user,G) 分组专属）与
+// 日/周/月三套 limit/usage/window 列，随「订阅制分组」机制一并废弃，见迁移 246。
 type UserSubscription struct {
 	ent.Schema
 }
@@ -36,7 +47,13 @@ func (UserSubscription) Mixin() []ent.Mixin {
 func (UserSubscription) Fields() []ent.Field {
 	return []ent.Field{
 		field.Int64("user_id"),
-		field.Int64("group_id"),
+
+		// 来源套餐（可空）：管理员手工发放的订阅没有套餐，因此必须 Optional+Nillable。
+		// 仅用于展示与追溯，额度以本行 total_limit_usd 的快照为准，
+		// 套餐后续改价/改额度不影响已发放的订阅。
+		field.Int64("plan_id").
+			Optional().
+			Nillable(),
 
 		field.Time("starts_at").
 			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
@@ -46,44 +63,15 @@ func (UserSubscription) Fields() []ent.Field {
 			MaxLen(20).
 			Default(domain.SubscriptionStatusActive),
 
-		field.Time("daily_window_start").
-			Optional().
-			Nillable().
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
-		field.Time("weekly_window_start").
-			Optional().
-			Nillable().
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
-		field.Time("monthly_window_start").
-			Optional().
-			Nillable().
-			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
-
-		field.Float("daily_usage_usd").
-			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}).
-			Default(0),
-		field.Float("weekly_usage_usd").
-			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}).
-			Default(0),
-		field.Float("monthly_usage_usd").
-			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}).
-			Default(0),
-
-		// 订阅自有额度（added by migration 244）：不为 NULL 时优先于分组额度，
-		// 使「同一分组下不同人不同额度」无需建多个分组；
-		// 个人订阅（group_id=0）依赖这三个字段定义日/周/月额度。
-		field.Float("daily_limit_usd").
+		// 总额池额度（USD）：NULL 或 <=0 表示不限额。
+		field.Float("total_limit_usd").
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
-		field.Float("weekly_limit_usd").
-			Optional().
-			Nillable().
-			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
-		field.Float("monthly_limit_usd").
-			Optional().
-			Nillable().
-			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		// 已消耗金额（USD）：随请求原子累加，订阅作废/到期不回滚。
+		field.Float("total_usage_usd").
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}).
+			Default(0),
 
 		field.Int64("assigned_by").
 			Optional().
@@ -105,11 +93,10 @@ func (UserSubscription) Edges() []ent.Edge {
 			Field("user_id").
 			Unique().
 			Required(),
-		edge.From("group", Group.Type).
-			Ref("subscriptions").
-			Field("group_id").
-			Unique().
-			Required(),
+		edge.From("plan", SubscriptionPlan.Type).
+			Ref("user_subscriptions").
+			Field("plan_id").
+			Unique(),
 		edge.From("assigned_by_user", User.Type).
 			Ref("assigned_subscriptions").
 			Field("assigned_by").
@@ -121,15 +108,12 @@ func (UserSubscription) Edges() []ent.Edge {
 func (UserSubscription) Indexes() []ent.Index {
 	return []ent.Index{
 		index.Fields("user_id"),
-		index.Fields("group_id"),
+		index.Fields("plan_id"),
 		index.Fields("status"),
 		index.Fields("expires_at"),
-		// 活跃订阅查询复合索引（线上由 SQL 迁移创建部分索引，schema 仅用于模型可读性对齐）
+		// 网关热路径：按用户取活跃钱包（线上由 SQL 迁移创建部分索引）。
 		index.Fields("user_id", "status", "expires_at"),
 		index.Fields("assigned_by"),
-		// 唯一约束通过部分索引实现（WHERE deleted_at IS NULL），支持软删除后重新订阅
-		// 见迁移文件 016_soft_delete_partial_unique_indexes.sql
-		index.Fields("user_id", "group_id"),
 		index.Fields("deleted_at"),
 	}
 }

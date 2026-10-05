@@ -205,6 +205,12 @@ func (m *mockAccountRepoForPlatform) ClearRateLimit(ctx context.Context, id int6
 func (m *mockAccountRepoForPlatform) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error {
 	return nil
 }
+
+// ClearModelRateLimitScopes 补齐接口（本 stub 不断言该行为）。
+func (m *mockAccountRepoForPlatform) ClearModelRateLimitScopes(_ context.Context, _ int64, _ []string) error {
+	return nil
+}
+
 func (m *mockAccountRepoForPlatform) ClearModelRateLimits(ctx context.Context, id int64) error {
 	return nil
 }

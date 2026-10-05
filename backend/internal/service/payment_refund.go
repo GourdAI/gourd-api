@@ -257,9 +257,12 @@ func (s *PaymentService) PrepareRefund(ctx context.Context, oid int64, amt float
 func (s *PaymentService) prepDeduct(ctx context.Context, o *dbent.PaymentOrder, p *RefundPlan, force bool) *RefundResult {
 	if o.OrderType == payment.OrderTypeSubscription {
 		p.DeductionType = payment.DeductionTypeSubscription
-		if o.SubscriptionGroupID != nil && o.SubscriptionDays != nil {
+		if o.SubscriptionDays != nil {
 			p.SubDaysToDeduct = *o.SubscriptionDays
-			sub, err := s.subscriptionSvc.GetActiveSubscription(ctx, o.UserID, *o.SubscriptionGroupID)
+			// 退款只应扣回「本订单发放的那一份钱包」：按订单备注定位，不再按分组寻址
+			//（user_subscriptions.group_id 已删除，GetActiveSubscription 也已从契约中移除）。
+			// 一个用户可持多份订阅（产品定案 5），按分组取「第一条」会错扣到其他订单。
+			sub, err := s.locatePaymentSubscriptionForOrder(ctx, o.UserID, o.ID)
 			if err == nil && sub != nil {
 				p.SubscriptionID = sub.ID
 			} else if !force {

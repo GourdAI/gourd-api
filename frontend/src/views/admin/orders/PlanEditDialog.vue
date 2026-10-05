@@ -48,16 +48,29 @@
         <div><label class="input-label">{{ t('payment.admin.originalPrice') }}</label><input v-model.number="planForm.original_price" type="number" step="0.01" min="0" class="input" /></div>
       </div>
       <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="input-label">{{ t('payment.admin.totalQuota') }}</label>
+          <input
+            v-model.number="planForm.total_limit_usd"
+            type="number"
+            min="0"
+            step="0.01"
+            class="input"
+            data-test="plan-total-limit-usd"
+            :placeholder="t('payment.admin.totalQuotaPlaceholder')"
+          />
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.totalQuotaHint') }}</p>
+        </div>
         <div><label class="input-label">{{ t('payment.admin.validity') }} <span class="text-red-500">*</span></label><input v-model.number="planForm.validity_days" type="number" min="1" class="input" required /></div>
-        <div><label class="input-label">{{ t('payment.admin.validityUnit') }} <span class="text-red-500">*</span></label><Select v-model="planForm.validity_unit" :options="validityUnitOptions" /></div>
       </div>
       <div class="grid grid-cols-2 gap-4">
+        <div><label class="input-label">{{ t('payment.admin.validityUnit') }} <span class="text-red-500">*</span></label><Select v-model="planForm.validity_unit" :options="validityUnitOptions" /></div>
         <div><label class="input-label">{{ t('payment.admin.sortOrder') }}</label><input v-model.number="planForm.sort_order" type="number" min="0" class="input" /></div>
-        <div>
-          <label class="input-label">{{ t('payment.admin.currency') }}</label>
-          <input v-model="planForm.currency" type="text" maxlength="3" class="input uppercase" :placeholder="t('payment.admin.currencyPlaceholder')" />
-          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.currencyHint') }}</p>
-        </div>
+      </div>
+      <div>
+        <label class="input-label">{{ t('payment.admin.currency') }}</label>
+        <input v-model="planForm.currency" type="text" maxlength="3" class="input uppercase" :placeholder="t('payment.admin.currencyPlaceholder')" />
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.currencyHint') }}</p>
       </div>
       <div>
         <label class="input-label">{{ t('payment.admin.features') }}</label>
@@ -122,7 +135,7 @@ const { t } = useI18n()
 const appStore = useAppStore()
 
 const saving = ref(false)
-const planForm = reactive({ name: '', group_id: null as number | null, description: '', price: 0, original_price: 0, currency: '', validity_days: 30, validity_unit: 'days', sort_order: 0, for_sale: true })
+const planForm = reactive({ name: '', group_id: null as number | null, description: '', price: 0, original_price: 0, currency: '', validity_days: 30, validity_unit: 'days', sort_order: 0, for_sale: true, total_limit_usd: null as number | null })
 const planFeaturesText = ref('')
 
 const validityUnitOptions = computed(() => [
@@ -175,17 +188,29 @@ const subscriptionCnyPreview = computed(() => {
 watch(() => props.show, (visible) => {
   if (!visible) return
   if (props.plan) {
-    Object.assign(planForm, { name: props.plan.name, group_id: props.plan.group_id, description: props.plan.description, price: props.plan.price, original_price: props.plan.original_price || 0, currency: props.plan.currency || '', validity_days: props.plan.validity_days, validity_unit: props.plan.validity_unit || 'days', sort_order: props.plan.sort_order || 0, for_sale: props.plan.for_sale })
+    Object.assign(planForm, { name: props.plan.name, group_id: props.plan.group_id, description: props.plan.description, price: props.plan.price, original_price: props.plan.original_price || 0, currency: props.plan.currency || '', validity_days: props.plan.validity_days, validity_unit: props.plan.validity_unit || 'days', sort_order: props.plan.sort_order || 0, for_sale: props.plan.for_sale, total_limit_usd: props.plan.total_limit_usd ?? null })
     planFeaturesText.value = (props.plan.features || []).join('\n')
   } else {
-    Object.assign(planForm, { name: '', group_id: null, description: '', price: 0, original_price: 0, currency: '', validity_days: 30, validity_unit: 'days', sort_order: 0, for_sale: true })
+    Object.assign(planForm, { name: '', group_id: null, description: '', price: 0, original_price: 0, currency: '', validity_days: 30, validity_unit: 'days', sort_order: 0, for_sale: true, total_limit_usd: null })
     planFeaturesText.value = ''
   }
 })
 
 /** Build request payload with snake_case keys matching backend JSON tags */
-function buildPlanPayload() {
+// isUpdate 决定「不限额」的上报形式：后端 UpdatePlanRequest.total_limit_usd 是三态
+// （nil=不修改 / >0=设值 / <=0=清空）。编辑时清空必须发 0，否则被读成「不修改」，
+// 已设额度的套餐永远改不回不限额；新建时发 null 即可。
+function buildPlanPayload(isUpdate: boolean) {
   const features = planFeaturesText.value.split('\n').map(f => f.trim()).filter(Boolean).join('\n')
+  // v-model.number 在输入框清空后得到 ''，直接上报会让 Go 的 *float64 反序列化 400；
+  // 这里统一归一为 null = 不限额。
+  const rawTotal = planForm.total_limit_usd
+  const totalLimitUsd =
+    rawTotal === null || rawTotal === undefined || (rawTotal as unknown) === '' || Number.isNaN(rawTotal)
+      ? null
+      : Number(rawTotal) > 0
+        ? Number(rawTotal)
+        : null
   return {
     name: planForm.name,
     group_id: planForm.group_id,
@@ -197,6 +222,9 @@ function buildPlanPayload() {
     validity_unit: planForm.validity_unit,
     sort_order: planForm.sort_order,
     for_sale: planForm.for_sale,
+    // 套餐额度（USD）：与后端 AdminSubscriptionPlanResult.total_limit_usd 同名；
+    // 留空 = 不限额（新建发 null，编辑发 0 表示清空；两者在后端均归一为不限量）。
+    total_limit_usd: totalLimitUsd ?? (isUpdate ? 0 : null),
     features,
   }
 }
@@ -216,7 +244,7 @@ async function handleSavePlan() {
   }
   saving.value = true
   try {
-    const data = buildPlanPayload()
+    const data = buildPlanPayload(Boolean(props.plan))
     if (props.plan) { await adminPaymentAPI.updatePlan(props.plan.id, data) }
     else { await adminPaymentAPI.createPlan(data) }
     appStore.showSuccess(t('common.saved'))

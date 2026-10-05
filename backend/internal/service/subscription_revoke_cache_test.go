@@ -14,7 +14,8 @@ import (
 type revokeCacheUserSubRepoStub struct {
 	userSubRepoNoop
 
-	sub            *UserSubscription
+	sub *UserSubscription
+	// getActiveCalls 统计回源次数，用于观测 L1 命中 / 未命中。
 	deleted        bool
 	getActiveCalls int
 }
@@ -35,13 +36,16 @@ func (r *revokeCacheUserSubRepoStub) Delete(_ context.Context, id int64) error {
 	return nil
 }
 
-func (r *revokeCacheUserSubRepoStub) GetActiveByUserIDAndGroupID(_ context.Context, userID, groupID int64) (*UserSubscription, error) {
+// ListActiveByUserID 是钱包化后 GetActiveSubscriptions 的唯一回源口径
+// （旧的 GetActiveByUserIDAndGroupID 槽位查询已随分组绑定一起删除）。
+// 仓储契约：查不到返回空切片而不是错误，服务据此写负哨兵。
+func (r *revokeCacheUserSubRepoStub) ListActiveByUserID(_ context.Context, userID int64) ([]UserSubscription, error) {
 	r.getActiveCalls++
-	if r.deleted || r.sub == nil || r.sub.UserID != userID || r.sub.GroupID != groupID {
-		return nil, ErrSubscriptionNotFound
+	if r.deleted || r.sub == nil || r.sub.UserID != userID ||
+		r.sub.Status != SubscriptionStatusActive || !r.sub.ExpiresAt.After(time.Now()) {
+		return nil, nil
 	}
-	cp := *r.sub
-	return &cp, nil
+	return []UserSubscription{*r.sub}, nil
 }
 
 func TestRevokeSubscription_InvalidatesL1CacheSynchronously(t *testing.T) {
@@ -49,7 +53,6 @@ func TestRevokeSubscription_InvalidatesL1CacheSynchronously(t *testing.T) {
 		sub: &UserSubscription{
 			ID:        1,
 			UserID:    10,
-			GroupID:   20,
 			Status:    SubscriptionStatusActive,
 			ExpiresAt: time.Now().Add(time.Hour),
 		},
@@ -64,15 +67,17 @@ func TestRevokeSubscription_InvalidatesL1CacheSynchronously(t *testing.T) {
 	})
 	t.Cleanup(svc.Stop)
 
-	_, err := svc.GetActiveSubscription(context.Background(), 10, 20)
+	subs, err := svc.GetActiveSubscriptions(context.Background(), 10)
 	require.NoError(t, err)
+	require.Len(t, subs, 1, "钱包按用户寻址，应返回该用户的全部生效订阅")
+	require.Equal(t, int64(1), subs[0].ID)
 	svc.subCacheL1.Wait()
 	require.Equal(t, 1, repo.getActiveCalls)
 
 	err = svc.RevokeSubscription(context.Background(), 1)
 	require.NoError(t, err)
 
-	_, err = svc.GetActiveSubscription(context.Background(), 10, 20)
+	_, err = svc.GetActiveSubscriptions(context.Background(), 10)
 	require.ErrorIs(t, err, ErrSubscriptionNotFound)
 	require.Equal(t, 2, repo.getActiveCalls, "撤销后应回源确认订阅已不存在，不能命中旧 L1")
 }
@@ -94,7 +99,9 @@ func (r *restoreUserSubRepoStub) GetByIDIncludeDeleted(_ context.Context, id int
 	return &cp, nil
 }
 
-func (r *restoreUserSubRepoStub) ExistsActiveByUserIDAndGroupID(context.Context, int64, int64) (bool, error) {
+// ExistsActiveByUserID 是钱包化后的复活闸门坐标：只看用户是否已持有任一生效钱包，
+// 不再有 (user, group) 槽位可查（旧 ExistsActiveByUserIDAndGroupID 已删除）。
+func (r *restoreUserSubRepoStub) ExistsActiveByUserID(context.Context, int64) (bool, error) {
 	return r.existsActive, nil
 }
 
@@ -117,7 +124,6 @@ func TestRestoreSubscription_ExpiredActiveRestoresAsExpired(t *testing.T) {
 		sub: &UserSubscription{
 			ID:        1,
 			UserID:    10,
-			GroupID:   20,
 			Status:    SubscriptionStatusActive,
 			ExpiresAt: time.Now().Add(-time.Minute),
 			DeletedAt: &deletedAt,
@@ -139,7 +145,6 @@ func TestRestoreSubscription_NotRevokedReturnsConflict(t *testing.T) {
 		sub: &UserSubscription{
 			ID:        1,
 			UserID:    10,
-			GroupID:   20,
 			Status:    SubscriptionStatusActive,
 			ExpiresAt: time.Now().Add(time.Hour),
 		},
@@ -159,7 +164,6 @@ func TestRestoreSubscription_LiveSubscriptionConflict(t *testing.T) {
 		sub: &UserSubscription{
 			ID:        1,
 			UserID:    10,
-			GroupID:   20,
 			Status:    SubscriptionStatusExpired,
 			ExpiresAt: time.Now().Add(-time.Hour),
 			DeletedAt: &deletedAt,

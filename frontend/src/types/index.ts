@@ -2058,75 +2058,74 @@ export interface ChangePasswordRequest {
 
 // ==================== User Subscription Types ====================
 
+// 订阅 = 「个人额度钱包」：一份一次性总额度 + 一个有效期。
+// 订阅不绑定分组、不授予任何分组准入（Key 用哪个分组就按哪个分组的倍率计价，
+// 只是钱从钱包里扣）。额度只有单一总额池，不随日/周/月滚动重置。
+
+/** 订阅行上的来源套餐最小投影（仅用于展示套餐名） */
+export interface SubscriptionPlanRef {
+  id: number
+  name: string
+}
+
 export interface UserSubscription {
   id: number
   user_id: number
-  /** 0 = 个人订阅（不绑定分组，仅管理额度；不授予任何分组权限） */
-  group_id: number
+  /** 来源套餐 ID；null/undefined = 管理员手工发放 */
+  plan_id?: number | null
   status: 'active' | 'expired' | 'revoked' | 'suspended'
   starts_at: string
-  daily_usage_usd: number
-  weekly_usage_usd: number
-  monthly_usage_usd: number
-  /** 订阅自有额度：优先于分组额度；null/0/undefined = 该窗口不限额 */
-  daily_limit_usd?: number | null
-  weekly_limit_usd?: number | null
-  monthly_limit_usd?: number | null
-  daily_window_start: string | null
-  weekly_window_start: string | null
-  monthly_window_start: string | null
+  expires_at: string | null
+  /** 总额度（USD）：null/0/undefined = 不限额 */
+  total_limit_usd?: number | null
+  /** 已消耗金额（总额池口径） */
+  total_usage_usd: number
+  /** 剩余额度：null = 不限额（无上限） */
+  remaining_usd?: number | null
+  /** 不限额标记（等价于 total_limit_usd 归一化后为空） */
+  unlimited: boolean
   created_at: string
   updated_at: string
   revoked_at?: string | null
-  expires_at: string | null
   user?: User
-  group?: Group
+  /** 来源套餐；无套餐（手工发放）时为空 */
+  plan?: SubscriptionPlanRef
 }
 
+/** 订阅总额池进度（后端 SubscriptionProgress 新结构） */
 export interface SubscriptionProgress {
-  subscription_id: number
-  daily: {
-    used: number
-    limit: number | null
-    percentage: number
-    reset_in_seconds: number | null
-  } | null
-  weekly: {
-    used: number
-    limit: number | null
-    percentage: number
-    reset_in_seconds: number | null
-  } | null
-  monthly: {
-    used: number
-    limit: number | null
-    percentage: number
-    reset_in_seconds: number | null
-  } | null
-  expires_at: string | null
-  days_remaining: number | null
+  id: number
+  /** 展示名：有套餐取套餐名，否则为「个人订阅」 */
+  name: string
+  expires_at: string
+  expires_in_days: number
+  /** nil/null = 不限额 */
+  total_limit_usd: number | null
+  total_usage_usd: number
+  remaining_usd: number | null
+  /** 已用占比 0~100；不限额时为 0 */
+  percentage: number
+  unlimited: boolean
 }
 
 export interface AssignSubscriptionRequest {
   user_id: number
-  /** 省略或传 0 = 个人订阅（不绑定分组，仅管理额度；不授予任何分组权限） */
-  group_id?: number
+  /** 来源套餐 ID；省略 = 手工发放（不绑定分组，不授予任何分组权限） */
+  plan_id?: number | null
   validity_days?: number
   notes?: string
-  daily_limit_usd?: number | null
-  weekly_limit_usd?: number | null
-  monthly_limit_usd?: number | null
+  /** 总额度（USD）：省略/null = 不限额 */
+  total_limit_usd?: number | null
 }
 
 export interface BulkAssignSubscriptionRequest {
   user_ids: number[]
-  /** 省略或传 0 = 个人订阅（不绑定分组，仅管理额度；不授予任何分组权限） */
-  group_id?: number
+  /** 来源套餐 ID；省略 = 手工发放（不绑定分组，不授予任何分组权限） */
+  plan_id?: number | null
   validity_days?: number
   notes?: string
-  daily_limit_usd?: number | null
-  weekly_limit_usd?: number | null
-  monthly_limit_usd?: number | null
+  /** 总额度（USD）：省略/null = 不限额 */
+  total_limit_usd?: number | null
 }
 
 export interface ExtendSubscriptionRequest {

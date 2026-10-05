@@ -7,10 +7,12 @@ function readSource(path: string): string {
 }
 
 describe('admin platform filters', () => {
-  it('uses the group platform catalog on the subscriptions page', () => {
+  it('does not filter subscriptions by group platform (subscriptions are group-free wallets)', () => {
+    // 订阅 = 个人额度钱包，不绑定分组，因此订阅页不再提供分组/平台筛选。
+    // 旧用例断言本页使用 GROUP_PLATFORM_OPTIONS，该断言随「订阅不绑分组」退役。
     const source = readSource('src/views/admin/SubscriptionsView.vue')
-    expect(source).toContain("import { GROUP_PLATFORM_OPTIONS } from '@/constants/platforms'")
-    expect(source).toMatch(/const platformFilterOptions[\s\S]*?\.\.\.GROUP_PLATFORM_OPTIONS/)
+    expect(source).not.toContain('GROUP_PLATFORM_OPTIONS')
+    expect(source).not.toContain('platform')
   })
 
   it('uses the shared catalogs on the groups page', () => {

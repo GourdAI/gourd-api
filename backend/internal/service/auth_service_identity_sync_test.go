@@ -32,7 +32,8 @@ func (s *authIdentityDefaultSubAssignerStub) AssignOrExtendSubscription(
 ) (*service.UserSubscription, bool, error) {
 	cloned := *input
 	s.calls = append(s.calls, &cloned)
-	return &service.UserSubscription{UserID: input.UserID, GroupID: input.GroupID}, true, nil
+	// 钱包化后分配不再携带分组坐标（AssignSubscriptionInput 已无 GroupID）。
+	return &service.UserSubscription{UserID: input.UserID}, true, nil
 }
 
 type flakyAuthIdentityDefaultSubAssignerStub struct {
@@ -50,7 +51,7 @@ func (s *flakyAuthIdentityDefaultSubAssignerStub) AssignOrExtendSubscription(
 		s.failuresRemaining--
 		return nil, false, errors.New("temporary assign failure")
 	}
-	return &service.UserSubscription{UserID: input.UserID, GroupID: input.GroupID}, true, nil
+	return &service.UserSubscription{UserID: input.UserID}, true, nil
 }
 
 type authIdentitySettingRepoStub struct {
@@ -260,12 +261,16 @@ func TestAuthServiceRecordSuccessfulLoginBackfillsEmailIdentity(t *testing.T) {
 }
 
 func TestAuthServiceLogin_DoesNotApplyEmailFirstBindDefaultsWhenBackfillingLegacyEmailIdentity(t *testing.T) {
+	// 注意：上面的 fixture 必须写 total_limit_usd 而不是旧的 group_id——
+	// parseDefaultSubscriptions 会丢弃额度为空的条目（无额度的钱包不会接管扣费），
+	// 那样一来下面的 require.Empty 就变成「什么都没配置所以不会调用」的空转假通过。
+	// 保持额度非零，才能真的测到「回填路径不发放」这个行为。
 	assigner := &authIdentityDefaultSubAssignerStub{}
 	svc, _, client := newAuthServiceWithEnt(t, map[string]string{
 		service.SettingKeyRegistrationEnabled:                    "true",
 		service.SettingKeyAuthSourceDefaultEmailBalance:          "8.5",
 		service.SettingKeyAuthSourceDefaultEmailConcurrency:      "4",
-		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"group_id":11,"validity_days":30}]`,
+		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"total_limit_usd":11,"validity_days":30}]`,
 		service.SettingKeyAuthSourceDefaultEmailGrantOnFirstBind: "true",
 	}, assigner)
 	ctx := context.Background()
@@ -323,7 +328,7 @@ func TestAuthServiceLogin_DoesNotApplyMergedEmailFirstBindDefaultsWhenBackfillin
 	assigner := &authIdentityDefaultSubAssignerStub{}
 	svc, _, client := newAuthServiceWithEnt(t, map[string]string{
 		service.SettingKeyRegistrationEnabled:                    "true",
-		service.SettingKeyDefaultSubscriptions:                   `[{"group_id":21,"validity_days":14}]`,
+		service.SettingKeyDefaultSubscriptions:                   `[{"total_limit_usd":21,"validity_days":14}]`,
 		service.SettingKeyAuthSourceDefaultEmailBalance:          "8.5",
 		service.SettingKeyAuthSourceDefaultEmailConcurrency:      "5",
 		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[]`,
@@ -364,7 +369,7 @@ func TestAuthServiceLogin_DoesNotApplyEmailFirstBindDefaultsWhenIdentityAlreadyE
 		service.SettingKeyRegistrationEnabled:                    "true",
 		service.SettingKeyAuthSourceDefaultEmailBalance:          "8.5",
 		service.SettingKeyAuthSourceDefaultEmailConcurrency:      "4",
-		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"group_id":11,"validity_days":30}]`,
+		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"total_limit_usd":11,"validity_days":30}]`,
 		service.SettingKeyAuthSourceDefaultEmailGrantOnFirstBind: "true",
 	}, assigner)
 	ctx := context.Background()
@@ -411,7 +416,7 @@ func TestAuthServiceLogin_DoesNotRetryEmailFirstBindDefaultsForBackfilledEmailId
 		service.SettingKeyRegistrationEnabled:                    "true",
 		service.SettingKeyAuthSourceDefaultEmailBalance:          "8.5",
 		service.SettingKeyAuthSourceDefaultEmailConcurrency:      "4",
-		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"group_id":11,"validity_days":30}]`,
+		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"total_limit_usd":11,"validity_days":30}]`,
 		service.SettingKeyAuthSourceDefaultEmailGrantOnFirstBind: "true",
 	}, assigner)
 	ctx := context.Background()

@@ -488,9 +488,11 @@ func (s *redeemRepoStub) SumPositiveBalanceByUser(ctx context.Context, userID in
 	panic("unexpected SumPositiveBalanceByUser call")
 }
 
+// subscriptionInvalidateCall 记录一次订阅缓存失效。
+// 钱包化后 InvalidateSubscriptionCache 只有 user 一个坐标（旧 (user, group) 槽位已废除），
+// 所以这里不再记录 groupID：「删了哪个分组」由 groupRepoStub.deleteCalls 单独锁定。
 type subscriptionInvalidateCall struct {
-	userID  int64
-	groupID int64
+	userID int64
 }
 
 type billingCacheStub struct {
@@ -517,20 +519,20 @@ func (s *billingCacheStub) InvalidateUserBalance(ctx context.Context, userID int
 	panic("unexpected InvalidateUserBalance call")
 }
 
-func (s *billingCacheStub) GetSubscriptionCache(ctx context.Context, userID, groupID int64) (*SubscriptionCacheData, error) {
+func (s *billingCacheStub) GetSubscriptionCache(ctx context.Context, userID int64) (*SubscriptionCacheData, error) {
 	panic("unexpected GetSubscriptionCache call")
 }
 
-func (s *billingCacheStub) SetSubscriptionCache(ctx context.Context, userID, groupID int64, data *SubscriptionCacheData) error {
+func (s *billingCacheStub) SetSubscriptionCache(ctx context.Context, userID int64, data *SubscriptionCacheData) error {
 	panic("unexpected SetSubscriptionCache call")
 }
 
-func (s *billingCacheStub) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error {
+func (s *billingCacheStub) UpdateSubscriptionUsage(ctx context.Context, userID int64, cost float64) error {
 	panic("unexpected UpdateSubscriptionUsage call")
 }
 
-func (s *billingCacheStub) InvalidateSubscriptionCache(ctx context.Context, userID, groupID int64) error {
-	s.invalidations <- subscriptionInvalidateCall{userID: userID, groupID: groupID}
+func (s *billingCacheStub) InvalidateSubscriptionCache(ctx context.Context, userID int64) error {
+	s.invalidations <- subscriptionInvalidateCall{userID: userID}
 	return nil
 }
 
@@ -670,8 +672,8 @@ func TestAdminService_DeleteGroup_Success_WithCacheInvalidation(t *testing.T) {
 
 	calls := waitForInvalidations(t, cache.invalidations, 2)
 	require.ElementsMatch(t, []subscriptionInvalidateCall{
-		{userID: 11, groupID: 5},
-		{userID: 12, groupID: 5},
+		{userID: 11},
+		{userID: 12},
 	}, calls)
 }
 

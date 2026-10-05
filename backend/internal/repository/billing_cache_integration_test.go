@@ -139,9 +139,8 @@ func (s *BillingCacheSuite) TestSubscriptionCache() {
 			name: "missing_key_returns_redis_nil",
 			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
 				userID := int64(10)
-				groupID := int64(20)
 
-				_, err := cache.GetSubscriptionCache(ctx, userID, groupID)
+				_, err := cache.GetSubscriptionCache(ctx, userID)
 				require.ErrorIs(s.T(), err, redis.Nil, "expected redis.Nil for missing subscription key")
 			},
 		},
@@ -149,10 +148,9 @@ func (s *BillingCacheSuite) TestSubscriptionCache() {
 			name: "update_usage_on_nonexistent_is_noop",
 			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
 				userID := int64(11)
-				groupID := int64(21)
-				subKey := fmt.Sprintf("%s%d:%d", billingSubKeyPrefix, userID, groupID)
+				subKey := fmt.Sprintf("%s%d", billingSubKeyPrefix, userID)
 
-				require.NoError(s.T(), cache.UpdateSubscriptionUsage(ctx, userID, groupID, 1.0), "UpdateSubscriptionUsage should not error")
+				require.NoError(s.T(), cache.UpdateSubscriptionUsage(ctx, userID, 1.0), "UpdateSubscriptionUsage should not error")
 
 				exists, err := rdb.Exists(ctx, subKey).Result()
 				require.NoError(s.T(), err, "Exists")
@@ -163,24 +161,25 @@ func (s *BillingCacheSuite) TestSubscriptionCache() {
 			name: "set_and_get_with_ttl",
 			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
 				userID := int64(12)
-				groupID := int64(22)
-				subKey := fmt.Sprintf("%s%d:%d", billingSubKeyPrefix, userID, groupID)
+				subKey := fmt.Sprintf("%s%d", billingSubKeyPrefix, userID)
 
 				data := &service.SubscriptionCacheData{
 					Status:       "active",
 					ExpiresAt:    time.Now().Add(1 * time.Hour),
-					DailyUsage:   1.0,
-					WeeklyUsage:  2.0,
-					MonthlyUsage: 3.0,
+					TotalLimit:   100.0,
+					TotalUsage:   3.0,
+					HasUnlimited: false,
 					Version:      7,
 				}
-				require.NoError(s.T(), cache.SetSubscriptionCache(ctx, userID, groupID, data), "SetSubscriptionCache")
+				require.NoError(s.T(), cache.SetSubscriptionCache(ctx, userID, data), "SetSubscriptionCache")
 
-				gotSub, err := cache.GetSubscriptionCache(ctx, userID, groupID)
+				gotSub, err := cache.GetSubscriptionCache(ctx, userID)
 				require.NoError(s.T(), err, "GetSubscriptionCache")
 				require.Equal(s.T(), "active", gotSub.Status)
 				require.Equal(s.T(), int64(7), gotSub.Version)
-				require.Equal(s.T(), 1.0, gotSub.DailyUsage)
+				require.Equal(s.T(), 100.0, gotSub.TotalLimit)
+				require.Equal(s.T(), 3.0, gotSub.TotalUsage)
+				require.False(s.T(), gotSub.HasUnlimited)
 
 				ttl, err := rdb.TTL(ctx, subKey).Result()
 				require.NoError(s.T(), err, "TTL subKey")
@@ -188,58 +187,76 @@ func (s *BillingCacheSuite) TestSubscriptionCache() {
 			},
 		},
 		{
-			name: "update_usage_increments_all_fields",
+			name: "set_and_get_preserves_has_unlimited",
 			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
-				userID := int64(13)
-				groupID := int64(23)
+				userID := int64(14)
 
 				data := &service.SubscriptionCacheData{
 					Status:       "active",
 					ExpiresAt:    time.Now().Add(1 * time.Hour),
-					DailyUsage:   1.0,
-					WeeklyUsage:  2.0,
-					MonthlyUsage: 3.0,
-					Version:      1,
+					TotalLimit:   50.0,
+					TotalUsage:   10.0,
+					HasUnlimited: true,
+					Version:      2,
 				}
-				require.NoError(s.T(), cache.SetSubscriptionCache(ctx, userID, groupID, data), "SetSubscriptionCache")
+				require.NoError(s.T(), cache.SetSubscriptionCache(ctx, userID, data), "SetSubscriptionCache")
 
-				require.NoError(s.T(), cache.UpdateSubscriptionUsage(ctx, userID, groupID, 0.5), "UpdateSubscriptionUsage")
+				gotSub, err := cache.GetSubscriptionCache(ctx, userID)
+				require.NoError(s.T(), err, "GetSubscriptionCache")
+				require.True(s.T(), gotSub.HasUnlimited, "不限额标记应在往返读取后保留")
+				require.Equal(s.T(), 50.0, gotSub.TotalLimit)
+				require.Equal(s.T(), 10.0, gotSub.TotalUsage)
+			},
+		},
+		{
+			name: "update_usage_increments_total_usage",
+			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
+				userID := int64(13)
 
-				gotSub, err := cache.GetSubscriptionCache(ctx, userID, groupID)
+				data := &service.SubscriptionCacheData{
+					Status:     "active",
+					ExpiresAt:  time.Now().Add(1 * time.Hour),
+					TotalLimit: 10.0,
+					TotalUsage: 3.0,
+					Version:    1,
+				}
+				require.NoError(s.T(), cache.SetSubscriptionCache(ctx, userID, data), "SetSubscriptionCache")
+
+				require.NoError(s.T(), cache.UpdateSubscriptionUsage(ctx, userID, 0.5), "UpdateSubscriptionUsage")
+
+				gotSub, err := cache.GetSubscriptionCache(ctx, userID)
 				require.NoError(s.T(), err, "GetSubscriptionCache after update")
-				require.Equal(s.T(), 1.5, gotSub.DailyUsage)
-				require.Equal(s.T(), 2.5, gotSub.WeeklyUsage)
-				require.Equal(s.T(), 3.5, gotSub.MonthlyUsage)
+				// 总额池只有一个累加项：用量累加，额度不变。
+				require.Equal(s.T(), 3.5, gotSub.TotalUsage)
+				require.Equal(s.T(), 10.0, gotSub.TotalLimit)
 			},
 		},
 		{
 			name: "invalidate_removes_key",
 			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
 				userID := int64(101)
-				groupID := int64(10)
-				subKey := fmt.Sprintf("%s%d:%d", billingSubKeyPrefix, userID, groupID)
+				subKey := fmt.Sprintf("%s%d", billingSubKeyPrefix, userID)
 
 				data := &service.SubscriptionCacheData{
-					Status:       "active",
-					ExpiresAt:    time.Now().Add(1 * time.Hour),
-					DailyUsage:   1.0,
-					WeeklyUsage:  2.0,
-					MonthlyUsage: 3.0,
-					Version:      1,
+					Status:     "active",
+					ExpiresAt:  time.Now().Add(1 * time.Hour),
+					TotalLimit: 10.0,
+					TotalUsage: 1.0,
+					Version:    1,
 				}
-				require.NoError(s.T(), cache.SetSubscriptionCache(ctx, userID, groupID, data), "SetSubscriptionCache")
+				require.NoError(s.T(), cache.SetSubscriptionCache(ctx, userID, data), "SetSubscriptionCache")
 
 				exists, err := rdb.Exists(ctx, subKey).Result()
 				require.NoError(s.T(), err, "Exists")
 				require.Equal(s.T(), int64(1), exists, "expected subscription key to exist")
 
-				require.NoError(s.T(), cache.InvalidateSubscriptionCache(ctx, userID, groupID), "InvalidateSubscriptionCache")
+				require.NoError(s.T(), cache.InvalidateSubscriptionCache(ctx, userID), "InvalidateSubscriptionCache")
 
 				exists, err = rdb.Exists(ctx, subKey).Result()
 				require.NoError(s.T(), err, "Exists after invalidate")
 				require.Equal(s.T(), int64(0), exists, "expected subscription key to be removed after invalidate")
 
-				_, err = cache.GetSubscriptionCache(ctx, userID, groupID)
+				_, err = cache.GetSubscriptionCache(ctx, userID)
 				require.ErrorIs(s.T(), err, redis.Nil, "expected redis.Nil after invalidate")
 			},
 		},
@@ -247,19 +264,17 @@ func (s *BillingCacheSuite) TestSubscriptionCache() {
 			name: "missing_status_returns_parsing_error",
 			fn: func(ctx context.Context, rdb *redis.Client, cache service.BillingCache) {
 				userID := int64(102)
-				groupID := int64(11)
-				subKey := fmt.Sprintf("%s%d:%d", billingSubKeyPrefix, userID, groupID)
+				subKey := fmt.Sprintf("%s%d", billingSubKeyPrefix, userID)
 
 				fields := map[string]any{
-					"expires_at":    time.Now().Add(1 * time.Hour).Unix(),
-					"daily_usage":   1.0,
-					"weekly_usage":  2.0,
-					"monthly_usage": 3.0,
-					"version":       1,
+					"expires_at":  time.Now().Add(1 * time.Hour).Unix(),
+					"total_limit": 10.0,
+					"total_usage": 1.0,
+					"version":     1,
 				}
 				require.NoError(s.T(), rdb.HSet(ctx, subKey, fields).Err(), "HSet")
 
-				_, err := cache.GetSubscriptionCache(ctx, userID, groupID)
+				_, err := cache.GetSubscriptionCache(ctx, userID)
 				require.Error(s.T(), err, "expected error for missing status field")
 				require.NotErrorIs(s.T(), err, redis.Nil, "expected parsing error, not redis.Nil")
 				require.Equal(s.T(), "invalid cache: missing status", err.Error())
@@ -338,7 +353,7 @@ func (s *BillingCacheSuite) TestUpdateSubscriptionUsage_ErrorPropagation() {
 		cache := NewBillingCache(rdb)
 		ctx := context.Background()
 
-		err := cache.UpdateSubscriptionUsage(ctx, 88888, 77777, 1.0)
+		err := cache.UpdateSubscriptionUsage(ctx, 88888, 1.0)
 		require.NoError(s.T(), err, "UpdateSubscriptionUsage on non-existent key should return nil")
 	})
 
@@ -348,16 +363,18 @@ func (s *BillingCacheSuite) TestUpdateSubscriptionUsage_ErrorPropagation() {
 		ctx := context.Background()
 
 		data := &service.SubscriptionCacheData{
-			Status:    "active",
-			ExpiresAt: time.Now().Add(1 * time.Hour),
-			Version:   1,
+			Status:     "active",
+			ExpiresAt:  time.Now().Add(1 * time.Hour),
+			TotalLimit: 10.0,
+			TotalUsage: 1.0,
+			Version:    1,
 		}
-		require.NoError(s.T(), cache.SetSubscriptionCache(ctx, 301, 401, data))
+		require.NoError(s.T(), cache.SetSubscriptionCache(ctx, 301, data))
 
 		cancelCtx, cancel := context.WithCancel(ctx)
 		cancel()
 
-		err := cache.UpdateSubscriptionUsage(cancelCtx, 301, 401, 1.0)
+		err := cache.UpdateSubscriptionUsage(cancelCtx, 301, 1.0)
 		require.Error(s.T(), err, "cancelled context should propagate error")
 	})
 }

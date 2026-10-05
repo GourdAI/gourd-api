@@ -157,11 +157,11 @@ func ResolveEffectiveGroup(apiKey *APIKey, model string, groupModelAvailability 
 //
 // 「可用」定义（与鉴权契约一致）：
 //  1. 分组对象存在、状态可用（非 deleted、IsActive）；
-//  2. 用户对该分组仍有绑定权限——标准分组复查 user.CanBindGroup（堵住「授权被撤销后
-//     决议层仍选用该分组」的越权，P1①）；订阅型分组的有效性由运行期订阅校验负责
-//     （与鉴权层 validateAPIKeyGroupAllowed 对订阅型候选无条件放行的口径一致）。
+//  2. 用户对该分组仍有绑定权限：一律复查 user.CanBindGroup（堵住「授权被撤销后
+//     决议层仍选用该分组」的越权，P1①）。订阅型分组不再获得例外：它只是额度
+//     钱包，不授予分组准入（契约第 6 节），与鉴权层 validateAPIKeyGroupAllowed 同强度。
 //
-// 订阅（含个人订阅 group_id=0）在这里**不参与准入判定**：订阅是额度钱包，不是分组权限。
+// 订阅（含个人订阅）在这里完全不参与判定：它不携带任何分组信息。
 //
 // 注意：apiKey.User 为 nil 时跳过授权复查（fail-open），以保留单分组 key 与测试替身的既有行为；
 // 鉴权层已在此之前用同一 CanBindGroup 校验过候选集合，此处是请求期决议的第二道闸。
@@ -173,7 +173,7 @@ func availableAPIKeyGroups(apiKey *APIKey) []*Group {
 		if !IsGroupUsableForResolution(group) {
 			return false
 		}
-		if apiKey.User != nil && !group.IsSubscriptionType() {
+		if apiKey.User != nil {
 			if !apiKey.User.CanBindGroup(group.ID, group.IsExclusive) {
 				return false
 			}

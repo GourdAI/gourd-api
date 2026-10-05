@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -17,14 +18,18 @@ import (
 
 // 错误定义
 // 注：ErrInsufficientBalance在redeem_service.go中定义
-// 注：ErrDailyLimitExceeded/ErrWeeklyLimitExceeded/ErrMonthlyLimitExceeded在subscription_service.go中定义
+// 订阅钱包只有一个限额口径：ErrSubscriptionQuotaExhausted（本文件下方定义）；
+// 旧的日/周/月三档错误与「订阅制分组」错误已随槽位模型一起删除。
 // errBillingCacheUnavailable 内部哨兵：用于 quota 校验路径在 cache==nil 时
 // 与"Redis 故障"走同一条 fail-open + DB 一次性检查的分支。
 var errBillingCacheUnavailable = fmt.Errorf("billing cache unavailable")
 
 var (
-	ErrSubscriptionInvalid       = infraerrors.Forbidden("SUBSCRIPTION_INVALID", "subscription is invalid or expired")
-	ErrBillingServiceUnavailable = infraerrors.ServiceUnavailable("BILLING_SERVICE_ERROR", "Billing service temporarily unavailable. Please retry later.")
+	ErrSubscriptionInvalid = infraerrors.Forbidden("SUBSCRIPTION_INVALID", "subscription is invalid or expired")
+	// ErrSubscriptionQuotaExhausted：订阅钱包额度耗尽。选 429（限额可随续费恢复，
+	// 与 user×platform quota 同一口径，便于 SDK 自动退避）。
+	ErrSubscriptionQuotaExhausted = infraerrors.TooManyRequests("SUBSCRIPTION_QUOTA_EXHAUSTED", "subscription quota exhausted")
+	ErrBillingServiceUnavailable  = infraerrors.ServiceUnavailable("BILLING_SERVICE_ERROR", "Billing service temporarily unavailable. Please retry later.")
 	// RPM 超限错误。gateway_handler 负责映射为 HTTP 429。
 	ErrGroupRPMExceeded = infraerrors.TooManyRequests("GROUP_RPM_EXCEEDED", "group requests-per-minute limit exceeded")
 	ErrUserRPMExceeded  = infraerrors.TooManyRequests("USER_RPM_EXCEEDED", "user requests-per-minute limit exceeded")
@@ -38,18 +43,17 @@ var (
 	ErrUserPlatformMonthlyQuotaExhausted = infraerrors.TooManyRequests("USER_PLATFORM_MONTHLY_QUOTA_EXHAUSTED", "Monthly usage quota exhausted for this platform.")
 )
 
-// subscriptionCacheData 订阅缓存数据结构（内部使用）
+// subscriptionCacheData 订阅钱包缓存结构（内部使用）。
+// 订阅不绑分组后，缓存从 (user, group) 多槽位收敛为按 user 聚合的一份钱包：
+// TotalLimit/TotalUsage 为该用户所有「有限额」活跃订阅的求和，
+// HasUnlimited 标记是否另持有不限额订阅。
 type subscriptionCacheData struct {
 	Status       string
 	ExpiresAt    time.Time
-	DailyUsage   float64
-	WeeklyUsage  float64
-	MonthlyUsage float64
+	TotalLimit   float64
+	TotalUsage   float64
+	HasUnlimited bool
 	Version      int64
-	// GroupID 为数据所属订阅的真实 group_id（个人订阅=0）：
-	// 请求分组不存在专属订阅时会回退到个人订阅，此时必须写入 (user,0) 槽位，
-	// 否则与用量增量（也按 sub.GroupID 写）分叉，导致额度校验基于陈旧用量而超支放行。
-	GroupID int64
 }
 
 // 缓存写入任务类型
@@ -225,11 +229,11 @@ func (s *BillingCacheService) cacheWriteWorker(ch <-chan cacheWriteTask) {
 		case cacheWriteSetBalance:
 			s.setBalanceCache(ctx, task.userID, task.balance)
 		case cacheWriteSetSubscription:
-			s.setSubscriptionCache(ctx, task.userID, task.groupID, task.subscriptionData)
+			s.setSubscriptionCache(ctx, task.userID, task.subscriptionData)
 		case cacheWriteUpdateSubscriptionUsage:
 			if s.cache != nil {
-				if err := s.cache.UpdateSubscriptionUsage(ctx, task.userID, task.groupID, task.amount); err != nil {
-					logger.LegacyPrintf("service.billing_cache", "Warning: update subscription cache failed for user %d group %d: %v", task.userID, task.groupID, err)
+				if err := s.cache.UpdateSubscriptionUsage(ctx, task.userID, task.amount); err != nil {
+					logger.LegacyPrintf("service.billing_cache", "Warning: update subscription cache failed for user %d: %v", task.userID, err)
 				}
 			}
 		case cacheWriteDeductBalance:
@@ -415,29 +419,28 @@ func (s *BillingCacheService) InvalidateUserBalance(ctx context.Context, userID 
 // 订阅缓存方法
 // ============================================
 
-// GetSubscriptionStatus 获取订阅状态（优先从缓存读取）
-func (s *BillingCacheService) GetSubscriptionStatus(ctx context.Context, userID, groupID int64) (*subscriptionCacheData, error) {
+// GetSubscriptionStatus 获取用户订阅钱包状态（优先从缓存读取）。
+// 缓存按 user 单键聚合：一份钱包 = 该用户全部生效订阅的额度求和。
+func (s *BillingCacheService) GetSubscriptionStatus(ctx context.Context, userID int64) (*subscriptionCacheData, error) {
 	if s.cache == nil {
-		return s.getSubscriptionFromDB(ctx, userID, groupID)
+		return s.getSubscriptionFromDB(ctx, userID)
 	}
 
 	// 尝试从缓存读取
-	cacheData, err := s.cache.GetSubscriptionCache(ctx, userID, groupID)
+	cacheData, err := s.cache.GetSubscriptionCache(ctx, userID)
 	if err == nil && cacheData != nil {
 		return s.convertFromPortsData(cacheData), nil
 	}
 
-	// 缓存未命中，从数据库读取
-	data, err := s.getSubscriptionFromDB(ctx, userID, groupID)
+	// 缓存未命中，从数据库聚合
+	data, err := s.getSubscriptionFromDB(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 
-	// 异步建立缓存：按订阅真实 GroupID 写入（回退命中个人订阅时 != 请求 groupID）
 	_ = s.enqueueCacheWrite(cacheWriteTask{
 		kind:             cacheWriteSetSubscription,
 		userID:           userID,
-		groupID:          data.GroupID,
 		subscriptionData: data,
 	})
 
@@ -448,13 +451,10 @@ func (s *BillingCacheService) convertFromPortsData(data *SubscriptionCacheData) 
 	return &subscriptionCacheData{
 		Status:       data.Status,
 		ExpiresAt:    data.ExpiresAt,
-		DailyUsage:   data.DailyUsage,
-		WeeklyUsage:  data.WeeklyUsage,
-		MonthlyUsage: data.MonthlyUsage,
+		TotalLimit:   data.TotalLimit,
+		TotalUsage:   data.TotalUsage,
+		HasUnlimited: data.HasUnlimited,
 		Version:      data.Version,
-		// GroupID 由仓储层从缓存 key 回填（见 billingCache.GetSubscriptionCache）。
-		// 不搬运就会让缓存命中路径的 GroupID 恒为 0（与个人订阅哨兵值撞车）。
-		GroupID: data.GroupID,
 	}
 }
 
@@ -462,78 +462,105 @@ func (s *BillingCacheService) convertToPortsData(data *subscriptionCacheData) *S
 	return &SubscriptionCacheData{
 		Status:       data.Status,
 		ExpiresAt:    data.ExpiresAt,
-		DailyUsage:   data.DailyUsage,
-		WeeklyUsage:  data.WeeklyUsage,
-		MonthlyUsage: data.MonthlyUsage,
+		TotalLimit:   data.TotalLimit,
+		TotalUsage:   data.TotalUsage,
+		HasUnlimited: data.HasUnlimited,
 		Version:      data.Version,
-		GroupID:      data.GroupID,
 	}
 }
 
-// getSubscriptionFromDB 从数据库获取订阅数据
-func (s *BillingCacheService) getSubscriptionFromDB(ctx context.Context, userID, groupID int64) (*subscriptionCacheData, error) {
-	sub, err := s.subRepo.GetActiveByUserIDAndGroupID(ctx, userID, groupID)
+// getSubscriptionFromDB 从数据库聚合该用户的订阅钱包。
+//
+// 聚合为何等价于「先到期先消耗 + 单笔跨订阅拆分」：只要所有有限额订阅都可自由
+// 消耗，则可花总额 = Σ额度 − Σ用量，拆分只影响「记到哪一行」而不影响「够不够」。
+// 记账仍逐订阅执行（见 RecordUsage），聚合仅用于资格判定。
+func (s *BillingCacheService) getSubscriptionFromDB(ctx context.Context, userID int64) (*subscriptionCacheData, error) {
+	subs, err := s.subRepo.ListActiveByUserID(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("get subscription: %w", err)
+		return nil, fmt.Errorf("get subscriptions: %w", err)
 	}
-
-	return &subscriptionCacheData{
-		Status:       sub.Status,
-		ExpiresAt:    sub.ExpiresAt,
-		DailyUsage:   sub.DailyUsageUSD,
-		WeeklyUsage:  sub.WeeklyUsageUSD,
-		MonthlyUsage: sub.MonthlyUsageUSD,
-		Version:      sub.UpdatedAt.Unix(),
-		GroupID:      sub.GroupID,
-	}, nil
+	data, ok := aggregateSubscriptionWallet(subs)
+	if !ok {
+		return nil, ErrSubscriptionNotFound
+	}
+	return data, nil
 }
 
-// setSubscriptionCache 设置订阅缓存
-func (s *BillingCacheService) setSubscriptionCache(ctx context.Context, userID, groupID int64, data *subscriptionCacheData) {
+// aggregateSubscriptionWallet 将多份订阅聚合成一份钱包视图。
+// ok=false 表示用户没有任何生效订阅。
+func aggregateSubscriptionWallet(subs []UserSubscription) (*subscriptionCacheData, bool) {
+	if len(subs) == 0 {
+		return nil, false
+	}
+
+	data := &subscriptionCacheData{Status: SubscriptionStatusActive}
+	var latest time.Time
+	var version int64
+	for i := range subs {
+		sub := &subs[i]
+		if sub.ExpiresAt.After(latest) {
+			latest = sub.ExpiresAt
+		}
+		if v := sub.UpdatedAt.Unix(); v > version {
+			version = v
+		}
+		if limit := sub.EffectiveTotalLimit(); limit != nil {
+			data.TotalLimit += *limit
+			data.TotalUsage += sub.TotalUsageUSD
+		} else {
+			data.HasUnlimited = true
+		}
+	}
+	data.ExpiresAt = latest
+	data.Version = version
+	return data, true
+}
+
+// setSubscriptionCache 设置订阅钱包缓存
+func (s *BillingCacheService) setSubscriptionCache(ctx context.Context, userID int64, data *subscriptionCacheData) {
 	if s.cache == nil || data == nil {
 		return
 	}
-	if err := s.cache.SetSubscriptionCache(ctx, userID, groupID, s.convertToPortsData(data)); err != nil {
-		logger.LegacyPrintf("service.billing_cache", "Warning: set subscription cache failed for user %d group %d: %v", userID, groupID, err)
+	if err := s.cache.SetSubscriptionCache(ctx, userID, s.convertToPortsData(data)); err != nil {
+		logger.LegacyPrintf("service.billing_cache", "Warning: set subscription cache failed for user %d: %v", userID, err)
 	}
 }
 
-// UpdateSubscriptionUsage 更新订阅用量缓存（同步调用）
-func (s *BillingCacheService) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, costUSD float64) error {
+// UpdateSubscriptionUsage 更新订阅钱包用量缓存（同步调用）
+func (s *BillingCacheService) UpdateSubscriptionUsage(ctx context.Context, userID int64, costUSD float64) error {
 	if s.cache == nil {
 		return nil
 	}
-	return s.cache.UpdateSubscriptionUsage(ctx, userID, groupID, costUSD)
+	return s.cache.UpdateSubscriptionUsage(ctx, userID, costUSD)
 }
 
-// QueueUpdateSubscriptionUsage 异步更新订阅用量缓存
-func (s *BillingCacheService) QueueUpdateSubscriptionUsage(userID, groupID int64, costUSD float64) {
+// QueueUpdateSubscriptionUsage 异步更新订阅钱包用量缓存
+func (s *BillingCacheService) QueueUpdateSubscriptionUsage(userID int64, costUSD float64) {
 	if s.cache == nil {
 		return
 	}
 	// 队列满时同步回退，确保订阅用量及时更新。
 	if s.enqueueCacheWrite(cacheWriteTask{
-		kind:    cacheWriteUpdateSubscriptionUsage,
-		userID:  userID,
-		groupID: groupID,
-		amount:  costUSD,
+		kind:   cacheWriteUpdateSubscriptionUsage,
+		userID: userID,
+		amount: costUSD,
 	}) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
 	defer cancel()
-	if err := s.UpdateSubscriptionUsage(ctx, userID, groupID, costUSD); err != nil {
-		logger.LegacyPrintf("service.billing_cache", "Warning: update subscription cache fallback failed for user %d group %d: %v", userID, groupID, err)
+	if err := s.UpdateSubscriptionUsage(ctx, userID, costUSD); err != nil {
+		logger.LegacyPrintf("service.billing_cache", "Warning: update subscription cache fallback failed for user %d: %v", userID, err)
 	}
 }
 
-// InvalidateSubscription 失效指定订阅缓存
-func (s *BillingCacheService) InvalidateSubscription(ctx context.Context, userID, groupID int64) error {
+// InvalidateSubscription 失效用户订阅钱包缓存
+func (s *BillingCacheService) InvalidateSubscription(ctx context.Context, userID int64) error {
 	if s.cache == nil {
 		return nil
 	}
-	if err := s.cache.InvalidateSubscriptionCache(ctx, userID, groupID); err != nil {
-		logger.LegacyPrintf("service.billing_cache", "Warning: invalidate subscription cache failed for user %d group %d: %v", userID, groupID, err)
+	if err := s.cache.InvalidateSubscriptionCache(ctx, userID); err != nil {
+		logger.LegacyPrintf("service.billing_cache", "Warning: invalidate subscription cache failed for user %d: %v", userID, err)
 		return err
 	}
 	return nil
@@ -739,9 +766,11 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
 
 // CheckBillingEligibility 检查用户是否有资格发起请求
 // 余额模式：检查缓存余额 > 0
-// 订阅模式：检查缓存用量未超过限额（Group限额从参数传入）
+// 订阅模式：检查订阅钱包剩余额度
 // platform 为请求的目标平台（如 "anthropic"），传空串 "" 时跳过 user × platform quota 检查。
-func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user *User, apiKey *APIKey, group *Group, subscription *UserSubscription, platform string) error {
+//
+// subscriptions 为用户当前全部生效订阅（先到期先消耗）；空切片表示无钱包。
+func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user *User, apiKey *APIKey, group *Group, subscriptions []*UserSubscription, platform string) error {
 	// 简易模式：跳过所有计费检查
 	if s.cfg.RunMode == config.RunModeSimple {
 		return nil
@@ -750,16 +779,13 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 		return ErrBillingServiceUnavailable
 	}
 
-	// 判断计费模式：分组订阅（分组为订阅型）或个人订阅（GroupID=0，不绑分组）。
-	// 个人订阅额外要求「至少有一项额度」才接管扣费：三列全空 = 不限额，
-	// 若直接走订阅模式会让该用户在全平台免费使用（只设有效期、忘填额度的典型误操作）。
-	// 分组订阅不受此限：它的「不限额」由分组配置决定，是基线语义。
-	isSubscriptionMode := subscription != nil &&
-		((group != nil && group.IsSubscriptionType()) ||
-			(subscription.GroupID == 0 && subscription.HasEffectiveLimit(group)))
+	// 计费模式判定：持有生效订阅、且至少一份设了额度，才走订阅钱包。
+	// 全部不限额的钱包不能接管扣费：否则管理员只建了有效期、忘填额度，
+	// 该用户就在全平台免费使用（资损口子，历史上专门加过这道闸门）。
+	isSubscriptionMode := SubscriptionWalletTakesOver(subscriptions)
 
 	if isSubscriptionMode {
-		if err := s.checkSubscriptionEligibility(ctx, user.ID, group, subscription); err != nil {
+		if err := s.checkSubscriptionEligibility(ctx, user.ID); err != nil {
 			return err
 		}
 	} else {
@@ -788,6 +814,21 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 	}
 
 	return nil
+}
+
+// SubscriptionWalletTakesOver 判定订阅钱包是否应接管本次请求的扣费。
+// 与 SubscriptionUsagePlan / 各展示口径必须同源，否则会出现
+// 「计费已退余额、接口仍报 unrestricted」这类分叉。
+func SubscriptionWalletTakesOver(subscriptions []*UserSubscription) bool {
+	if len(subscriptions) == 0 {
+		return false
+	}
+	for _, sub := range subscriptions {
+		if sub != nil && sub.HasEffectiveLimit() {
+			return true
+		}
+	}
+	return false
 }
 
 // checkRPM 执行并行 RPM 限流，所有适用的限制同时生效，任一超限即拒绝：
@@ -910,29 +951,25 @@ func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userI
 	return nil
 }
 
-// checkSubscriptionEligibility 检查订阅模式资格
-// 槽位契约：缓存槽位一律以**订阅自身**的 GroupID 为准（个人订阅=0），与扣减侧
-// subscriptionUsageSlot 同源；否则会出现「往 (user,0) 记量、从 (user,group) 读量」
-// 的分叉，额度永远追不上实际消费。下面 subscription==nil 的分支仅为防 nil 解引用
-// 的兵开守卫：调用方 CheckBillingEligibility 的 isSubscriptionMode 已要求
-// subscription != nil，因此正常链路不会走到这里。
-func (s *BillingCacheService) checkSubscriptionEligibility(ctx context.Context, userID int64, group *Group, subscription *UserSubscription) error {
-	// 缓存槽位以订阅自身的 group_id 为准：个人订阅统一落在 (user, 0)，
-	// 与管理侧失效/扣减量刷新使用的键保持一致。
-	slotGroupID := int64(0)
-	if subscription != nil {
-		slotGroupID = subscription.GroupID
-	} else if group != nil {
-		slotGroupID = group.ID
-	}
-
-	// 获取订阅缓存数据
-	subData, err := s.GetSubscriptionStatus(ctx, userID, slotGroupID)
+// checkSubscriptionEligibility 检查订阅钱包资格。
+//
+// 判定在「聚合钱包」上做（Σ额度 vs Σ用量），记账则逐订阅执行；两者等价的前提是
+// 所有有限额订阅都可自由消耗（先到期先消耗 + 允许单笔拆分），见
+// aggregateSubscriptionWallet 与 AllocateSubscriptionUsage。
+func (s *BillingCacheService) checkSubscriptionEligibility(ctx context.Context, userID int64) error {
+	subData, err := s.GetSubscriptionStatus(ctx, userID)
 	if err != nil {
+		// 「查无生效订阅」是业务结论、不是计费服务故障，绝不能喂给熔断器：
+		// 熔断器是进程级全局单例，一旦打开，**所有用户**的计费检查都会被拒成 503。
+		// 而订阅到期/耗尽的用户天然会落到这里（预检切片可能已陈旧一个 L1 TTL），
+		// 若不区分，个别用户到期就能把整台实例打成不可用。
+		if errors.Is(err, ErrSubscriptionNotFound) {
+			return ErrSubscriptionInvalid
+		}
 		if s.circuitBreaker != nil {
 			s.circuitBreaker.OnFailure(err)
 		}
-		logger.LegacyPrintf("service.billing_cache", "ALERT: billing subscription check failed for user %d group %d: %v", userID, slotGroupID, err)
+		logger.LegacyPrintf("service.billing_cache", "ALERT: billing subscription check failed for user %d: %v", userID, err)
 		return ErrBillingServiceUnavailable.WithCause(err)
 	}
 	if s.circuitBreaker != nil {
@@ -949,18 +986,12 @@ func (s *BillingCacheService) checkSubscriptionEligibility(ctx context.Context, 
 		return ErrSubscriptionInvalid
 	}
 
-	// 检查限额：订阅自有额度优先，其次归属分组额度（个人订阅不受分组额度约束）
-	if subscription == nil {
-		subscription = &UserSubscription{GroupID: slotGroupID}
+	// 不限额钱包直接放行（仅当用户同时持有有限额钱包时才会走到额度判定）。
+	if subData.HasUnlimited {
+		return nil
 	}
-	if limit := subscription.EffectiveDailyLimit(group); limit != nil && subData.DailyUsage >= *limit {
-		return ErrDailyLimitExceeded
-	}
-	if limit := subscription.EffectiveWeeklyLimit(group); limit != nil && subData.WeeklyUsage >= *limit {
-		return ErrWeeklyLimitExceeded
-	}
-	if limit := subscription.EffectiveMonthlyLimit(group); limit != nil && subData.MonthlyUsage >= *limit {
-		return ErrMonthlyLimitExceeded
+	if subData.TotalUsage >= subData.TotalLimit {
+		return ErrSubscriptionQuotaExhausted
 	}
 
 	return nil

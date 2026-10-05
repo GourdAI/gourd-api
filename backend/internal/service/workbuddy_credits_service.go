@@ -321,6 +321,11 @@ func (s *WorkBuddyCreditsService) queryCreditsForAccount(ctx context.Context, ac
 	data, err := s.workbuddyBillingRequestWithAuthRetry(ctx, account, http.MethodPost, workbuddyBillingMeterPaths(account), body)
 	if err != nil {
 		result.Error = err.Error()
+		// 额度耗尽时 billing 接口返的正是 HTTP 200 + code 110，而下面 persist 在
+		// Success==false 时**故意不覆盖旧快照**（防误杀的正确设计）—— 两个事实叠加后，
+		// 调度层看到的是新鲜且有余额的旧读数，这个号会继续被选中打上游。把这条权威
+		// 读数转成冷却（字典外码不落状态，仅日志）。
+		markWorkbuddyAccountFromBillingError(ctx, s.accountRepo, account, err)
 		return result
 	}
 	var resp workbuddyUserResourceResp

@@ -1,4 +1,4 @@
-﻿//go:build integration
+//go:build integration
 
 package repository
 
@@ -101,8 +101,8 @@ func TestUsageBillingRepositoryApply_DeduplicatesSubscriptionBilling(t *testing.
 		Name:    "billing-sub",
 	})
 	subscription := mustCreateSubscription(t, client, &service.UserSubscription{
-		UserID:  user.ID,
-		GroupID: group.ID,
+		UserID:        user.ID,
+		TotalLimitUSD: func() *float64 { v := 100.0; return &v }(),
 	})
 
 	requestID := uuid.NewString()
@@ -123,9 +123,10 @@ func TestUsageBillingRepositoryApply_DeduplicatesSubscriptionBilling(t *testing.
 	require.NoError(t, err)
 	require.False(t, result2.Applied)
 
-	var dailyUsage float64
-	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT daily_usage_usd FROM user_subscriptions WHERE id = $1", subscription.ID).Scan(&dailyUsage))
-	require.InDelta(t, 2.5, dailyUsage, 0.000001)
+	// 单一总额池：计费只累加 total_usage_usd，不存在日/周/月三档写入。
+	var totalUsage float64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT total_usage_usd FROM user_subscriptions WHERE id = $1", subscription.ID).Scan(&totalUsage))
+	require.InDelta(t, 2.5, totalUsage, 0.000001)
 }
 
 func TestUsageBillingRepositoryApply_RequestFingerprintConflict(t *testing.T) {

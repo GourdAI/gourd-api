@@ -18,12 +18,7 @@
               {{ subscription.email || `#${subscription.id}` }}
             </div>
             <div class="break-words text-xs text-gray-500 dark:text-gray-400">
-              {{
-                subscription.group ||
-                (subscription.groupId === 0
-                  ? t('admin.subscriptions.personalSubscription')
-                  : t('admin.subscriptions.bulk.groupFallback', { id: subscription.groupId }))
-              }}
+              {{ subscription.planName || t('admin.subscriptions.personalSubscription') }}
               <span v-if="subscription.email" class="ml-2">#{{ subscription.id }}</span>
             </div>
           </li>
@@ -53,22 +48,7 @@
         </div>
 
         <template v-else-if="currentAction === 'reset_quota'">
-          <legend class="text-sm font-medium text-gray-700 dark:text-gray-200">
-            {{ t('admin.subscriptions.bulk.resetWindows') }}
-          </legend>
-          <div class="flex flex-wrap gap-5">
-            <label v-for="window in quotaWindows" :key="window" class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-              <input
-                v-model="windows[window]"
-                :name="window"
-                type="checkbox"
-                class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                :disabled="parametersLocked"
-              />
-              {{ t(`admin.subscriptions.${window}`) }}
-            </label>
-          </div>
-          <p class="text-xs text-gray-500 dark:text-gray-400">
+          <p class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
             {{ t('admin.subscriptions.bulk.resetHint') }}
           </p>
         </template>
@@ -120,7 +100,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { SubscriptionBulkAction, SubscriptionBulkActionRequest, SubscriptionBulkActionResult } from '@/api/admin/subscriptions'
@@ -140,14 +120,12 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const quotaWindows = ['daily', 'weekly', 'monthly'] as const
 const days = ref<number | string>(30)
-const windows = reactive({ daily: true, weekly: true, monthly: true })
 const submitting = ref(false)
 const requestError = ref('')
 const result = shallowRef<SubscriptionBulkActionResult | null>(null)
 const pendingOperation = shallowRef<BulkSubscriptionOperation | null>(null)
-const targets = ref<{ id: number; email?: string; group?: string; groupId: number }[]>([])
+const targets = ref<{ id: number; email?: string; planName?: string }[]>([])
 const submittedAction = ref<SubscriptionBulkAction | null>(null)
 
 const currentAction = computed(() => submittedAction.value ?? props.action)
@@ -163,9 +141,6 @@ const validationError = computed(() => {
       return t('admin.subscriptions.bulk.invalidDays')
     }
   }
-  if (currentAction.value === 'reset_quota' && !quotaWindows.some(window => windows[window])) {
-    return t('admin.subscriptions.bulk.selectWindow')
-  }
   return ''
 })
 
@@ -174,8 +149,8 @@ watch(() => props.subscriptions, subscriptions => {
   targets.value = subscriptions.map(subscription => ({
     id: subscription.id,
     email: subscription.user?.email,
-    group: subscription.group?.name,
-    groupId: subscription.group_id
+    // 订阅不绑分组：展示来源套餐名，无套餐（手工发放）时由模板回退「个人订阅」。
+    planName: subscription.plan?.name
   }))
 }, { immediate: true })
 
@@ -197,7 +172,7 @@ async function submit() {
       action: props.action
     }
     if (request.action === 'extend') request.days = Number(days.value)
-    if (request.action === 'reset_quota') Object.assign(request, { ...windows })
+    // reset_quota 无参数：总额池只有一份，就是把已用额度归零（日/周/月三档已退役）。
     pendingOperation.value = prepareBulkSubscriptionOperation(request)
     submittedAction.value = request.action
   }

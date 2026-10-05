@@ -35,7 +35,7 @@ func (h *OpenAIGatewayHandler) GrokRealtime(c *gin.Context) {
 		return
 	}
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscriptionsForEligibility(c), service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
@@ -180,7 +180,7 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 		return
 	}
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscriptionsForEligibility(c), service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
@@ -315,6 +315,8 @@ func (h *OpenAIGatewayHandler) recordGrokVoiceUsage(
 	inboundEndpoint := GetInboundEndpoint(c)
 	upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 	quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+	// 全量钱包必须在提交异步任务前同步取好：闭包运行时请求已结束，c 不可再用。
+	subscriptions := subscriptionsForEligibility(c)
 	model := strings.TrimSpace(result.Model)
 	if model == "" {
 		model = endpoint
@@ -327,6 +329,7 @@ func (h *OpenAIGatewayHandler) recordGrokVoiceUsage(
 			User:               apiKey.User,
 			Account:            account,
 			Subscription:       subscription,
+			Subscriptions:      subscriptions,
 			InboundEndpoint:    inboundEndpoint,
 			UpstreamEndpoint:   upstreamEndpoint,
 			UserAgent:          userAgent,

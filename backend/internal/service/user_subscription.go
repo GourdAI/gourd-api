@@ -2,34 +2,32 @@ package service
 
 import (
 	"time"
-
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
 
 const subscriptionDayDuration = 24 * time.Hour
 
+// UserSubscription 是「个人额度钱包」：一份一次性总额度 + 一个有效期。
+//
+// 它不绑定任何分组，也不授予任何分组准入（2026-10-03 产品定案）。
+// Key 归属哪个分组就按那个分组的倍率计费，只是把钱从这个钱包里扣。
+//
+// 额度模型对齐 new-api：total_limit_usd / total_usage_usd 单一总额池，
+// 花完为止，有效期到期后剩余作废，不随日/周/月滚动重置。
 type UserSubscription struct {
-	ID      int64
-	UserID  int64
-	GroupID int64
+	ID     int64
+	UserID int64
+	// PlanID 来源套餐（可空：管理员手工发放的订阅没有套餐）。
+	// 仅用于展示与追溯；额度以本行 TotalLimitUSD 快照为准，套餐改额度不回溯。
+	PlanID *int64
 
 	StartsAt  time.Time
 	ExpiresAt time.Time
 	Status    string
 
-	DailyWindowStart   *time.Time
-	WeeklyWindowStart  *time.Time
-	MonthlyWindowStart *time.Time
-
-	DailyUsageUSD   float64
-	WeeklyUsageUSD  float64
-	MonthlyUsageUSD float64
-
-	// 订阅自有额度：不为 nil 时优先于分组额度。
-	// 个人订阅（GroupID==0）仅依赖这三个字段。
-	DailyLimitUSD   *float64
-	WeeklyLimitUSD  *float64
-	MonthlyLimitUSD *float64
+	// TotalLimitUSD 总额度（USD）：nil 或 <=0 视为不限额。
+	TotalLimitUSD *float64
+	// TotalUsageUSD 已消耗金额：随请求原子累加，过期/撤销不回滚。
+	TotalUsageUSD float64
 
 	AssignedBy *int64
 	AssignedAt time.Time
@@ -40,8 +38,15 @@ type UserSubscription struct {
 	DeletedAt *time.Time
 
 	User           *User
-	Group          *Group
+	Plan           *SubscriptionPlanInfo
 	AssignedByUser *User
+}
+
+// SubscriptionPlanInfo 是订阅行上需要的套餐最小投影（仅用于展示来源套餐名）。
+// 不直接引用 dbent.SubscriptionPlan：避免领域模型反向依赖生成代码。
+type SubscriptionPlanInfo struct {
+	ID   int64
+	Name string
 }
 
 func (s *UserSubscription) IsActive() bool {
@@ -61,153 +66,11 @@ func (s *UserSubscription) daysRemainingAt(now time.Time) int {
 	if remaining <= 0 {
 		return 0
 	}
-
 	days := int(remaining / subscriptionDayDuration)
 	if remaining%subscriptionDayDuration != 0 {
 		days++
 	}
 	return days
-}
-
-func (s *UserSubscription) IsWindowActivated() bool {
-	return s.DailyWindowStart != nil || s.WeeklyWindowStart != nil || s.MonthlyWindowStart != nil
-}
-
-func (s *UserSubscription) HasOneTimeDailyQuota() bool {
-	if s == nil || s.StartsAt.IsZero() || s.ExpiresAt.IsZero() {
-		return false
-	}
-	return !s.ExpiresAt.After(s.StartsAt.AddDate(0, 0, 1))
-}
-
-func (s *UserSubscription) NeedsDailyReset() bool {
-	return s.NeedsDailyResetAt(time.Now())
-}
-
-func (s *UserSubscription) NeedsDailyResetAt(now time.Time) bool {
-	_, ok := s.automaticDailyWindowStartAt(now)
-	return ok
-}
-
-func (s *UserSubscription) NeedsWeeklyReset() bool {
-	return s.NeedsWeeklyResetAt(time.Now())
-}
-
-func (s *UserSubscription) NeedsWeeklyResetAt(now time.Time) bool {
-	if s.WeeklyWindowStart == nil {
-		return false
-	}
-	return !now.Before(s.WeeklyWindowStart.Add(7 * 24 * time.Hour))
-}
-
-func (s *UserSubscription) NeedsMonthlyReset() bool {
-	return s.NeedsMonthlyResetAt(time.Now())
-}
-
-func (s *UserSubscription) NeedsMonthlyResetAt(now time.Time) bool {
-	if s.MonthlyWindowStart == nil {
-		return false
-	}
-	return !now.Before(s.MonthlyWindowStart.Add(30 * 24 * time.Hour))
-}
-
-func (s *UserSubscription) canAutomaticallyResetDailyAt(now time.Time) bool {
-	_, ok := s.automaticDailyWindowStartAt(now)
-	return ok
-}
-
-// automaticDailyWindowStartAt 计算日窗口按“配置时区日历日”对齐后的当前窗口起点。
-// 日额度固定在每天 0 点刷新（与周/月的期限对齐滚动窗口语义不同），因此只要持久化
-// 的窗口起点落在更早的日历日，就允许推进到今天 0 点。手动重置、激活等写入的任何
-// 非 0 点锚点都会在下一个 0 点被拉回日历日边界，不会永久漂移刷新时刻。
-func (s *UserSubscription) automaticDailyWindowStartAt(now time.Time) (time.Time, bool) {
-	if s.DailyWindowStart == nil {
-		return time.Time{}, false
-	}
-	if s.HasOneTimeDailyQuota() {
-		return time.Time{}, false
-	}
-	today := timezone.StartOfDay(now)
-	if !today.After(timezone.StartOfDay(*s.DailyWindowStart)) {
-		return time.Time{}, false
-	}
-	return today, true
-}
-
-func (s *UserSubscription) canAutomaticallyResetWeeklyAt(now time.Time) bool {
-	_, ok := s.automaticWindowStartAt(s.WeeklyWindowStart, 7*24*time.Hour, now)
-	return ok
-}
-
-func (s *UserSubscription) canAutomaticallyResetMonthlyAt(now time.Time) bool {
-	_, ok := s.automaticWindowStartAt(s.MonthlyWindowStart, 30*24*time.Hour, now)
-	return ok
-}
-
-// windowResetAnchor 返回周/月窗口实际推进所依据的锚点。
-// 早期订阅把首个窗口初始化在开通日零点；只有这个初始值是无歧义的，之后出现的
-// 零点锚点可能来自手动重置，必须保持权威。
-// 自动推进（automaticWindowStartAt）与对外展示的重置时间（WeeklyResetTime/
-// MonthlyResetTime）必须共用这一修正，否则仪表盘显示的重置时间会早于窗口实际
-// 滚动的时间。
-// 日窗口按日历日对齐（automaticDailyWindowStartAt），不走这里。
-func (s *UserSubscription) windowResetAnchor(previous time.Time) time.Time {
-	legacyAnchor := startOfDay(s.StartsAt)
-	if legacyAnchor.Before(s.StartsAt) && previous.Equal(legacyAnchor) {
-		return s.StartsAt
-	}
-	return previous
-}
-
-// automaticWindowStartAt 计算周/月窗口（期限对齐滚动窗口）的当前窗口起点。
-// 窗口从锚点按整数个 period 步进，且不越过订阅到期时间，避免最后一个不完整
-// 周期重复发放额度（issue #5051）。日窗口不走此函数，见 automaticDailyWindowStartAt。
-func (s *UserSubscription) automaticWindowStartAt(previous *time.Time, period time.Duration, now time.Time) (time.Time, bool) {
-	if previous == nil {
-		return time.Time{}, false
-	}
-
-	anchor := s.windowResetAnchor(*previous)
-	next := anchor.Add(period)
-	if now.Before(next) || !next.Before(s.ExpiresAt) {
-		return time.Time{}, false
-	}
-
-	periods := now.Sub(anchor) / period
-	lastPeriodBeforeExpiry := (s.ExpiresAt.Sub(anchor) - 1) / period
-	if periods > lastPeriodBeforeExpiry {
-		periods = lastPeriodBeforeExpiry
-	}
-	return anchor.Add(periods * period), true
-}
-
-func (s *UserSubscription) DailyResetTime() *time.Time {
-	if s.DailyWindowStart == nil {
-		return nil
-	}
-	if s.HasOneTimeDailyQuota() {
-		t := s.ExpiresAt
-		return &t
-	}
-	// 日窗口按日历日对齐：下次刷新固定在窗口起点所在日的次日 0 点。
-	t := timezone.StartOfDay(*s.DailyWindowStart).AddDate(0, 0, 1)
-	return &t
-}
-
-func (s *UserSubscription) WeeklyResetTime() *time.Time {
-	if s.WeeklyWindowStart == nil {
-		return nil
-	}
-	t := s.windowResetAnchor(*s.WeeklyWindowStart).Add(7 * 24 * time.Hour)
-	return &t
-}
-
-func (s *UserSubscription) MonthlyResetTime() *time.Time {
-	if s.MonthlyWindowStart == nil {
-		return nil
-	}
-	t := s.windowResetAnchor(*s.MonthlyWindowStart).Add(30 * 24 * time.Hour)
-	return &t
 }
 
 // normalizeSubLimit 订阅额度语义：nil / <=0 均视为不限额（与分组 HasDailyLimit 行为一致）。
@@ -218,107 +81,207 @@ func normalizeSubLimit(v *float64) *float64 {
 	return v
 }
 
-// HasEffectiveLimit 报告该订阅是否至少有一项生效额度（日/周/月任一）。
+// EffectiveTotalLimit 返回生效总额度，nil 表示不限额。
+func (s *UserSubscription) EffectiveTotalLimit() *float64 {
+	return normalizeSubLimit(s.TotalLimitUSD)
+}
+
+// HasEffectiveLimit 报告该订阅是否设有生效额度。
 //
-// 用于守住一个资损口子：个人订阅（GroupID=0）若三列额度全空，在「订阅模式」下等于
-// 全平台不限额免费——管理员只建了有效期、忘填额度就会发生。因此无额度的个人订阅
-// 不应接管计费（退回余额扣费），见三处 isSubscriptionMode 判定。
-// 分组订阅不受此限制：其「不限额」由分组自身配置决定，属基线语义。
+// 用于守住一个资损口子：订阅若额度为空，在「订阅模式」下等于全平台不限额免费
+// —— 管理员只建了有效期、忘填额度就会发生。因此无额度的订阅不应接管计费
+// （退回余额扣费），见各调用方的 isSubscriptionMode 判定。
 //
-// 产品定案（2026-10-03 已拍板）：无额度时**静默退回余额计费**，不在分配接口报 400、
+// 产品定案（2026-10-03）：无额度时**静默退回余额计费**，不在分配接口报 400、
 // 也不加前端提示。原因：兑换码/支付订单等存量路径会写备注与有效期但不写额度，
 // 强校验会直接打断这些入口。请勿将其当作「缺校验」而补上 400。
-func (s *UserSubscription) HasEffectiveLimit(group *Group) bool {
-	return s.EffectiveDailyLimit(group) != nil ||
-		s.EffectiveWeeklyLimit(group) != nil ||
-		s.EffectiveMonthlyLimit(group) != nil
+func (s *UserSubscription) HasEffectiveLimit() bool {
+	return s.EffectiveTotalLimit() != nil
 }
 
-// limitFallbackGroup 返回可用于额度回退的分组：仅当订阅归属该分组时，
-// 才继承分组额度；个人订阅（GroupID=0）不受任何分组额度约束。
-func (s *UserSubscription) limitFallbackGroup(group *Group) *Group {
-	if group == nil || s.GroupID != group.ID {
+// IsUnlimited 报告该订阅是否为不限额钱包。
+func (s *UserSubscription) IsUnlimited() bool {
+	return !s.HasEffectiveLimit()
+}
+
+// RemainingUSD 返回剩余额度；nil 表示不限额（无上限）。
+func (s *UserSubscription) RemainingUSD() *float64 {
+	limit := s.EffectiveTotalLimit()
+	if limit == nil {
 		return nil
 	}
-	return group
+	remaining := *limit - s.TotalUsageUSD
+	if remaining < 0 {
+		remaining = 0
+	}
+	return &remaining
 }
 
-// EffectiveDailyLimit 返回生效的日额度：订阅自有额度优先，其次归属分组额度，均未设置返回 nil（不限）。
-func (s *UserSubscription) EffectiveDailyLimit(group *Group) *float64 {
-	if s.DailyLimitUSD != nil {
-		return normalizeSubLimit(s.DailyLimitUSD)
+// subscriptionAllocationEpsilon 是额度比较的容差。
+//
+// 钱包余额是 float64 减法的结果（limit - usage），与同样由累加得出的 cost 比较时
+// 会差出 1e-17 量级。不设容差则「刚好花完」这笔合法请求会被判为装不下。
+const subscriptionAllocationEpsilon = 1e-9
+
+// CheckLimit 报告再消耗 additionalCost 后是否仍在额度内。不限额恒为 true。
+func (s *UserSubscription) CheckLimit(additionalCost float64) bool {
+	limit := s.EffectiveTotalLimit()
+	if limit == nil {
+		return true
 	}
-	g := s.limitFallbackGroup(group)
-	if g != nil {
-		return normalizeSubLimit(g.DailyLimitUSD)
-	}
-	return nil
+	return s.TotalUsageUSD+additionalCost <= *limit
 }
 
-func (s *UserSubscription) EffectiveWeeklyLimit(group *Group) *float64 {
-	if s.WeeklyLimitUSD != nil {
-		return normalizeSubLimit(s.WeeklyLimitUSD)
+// ExpiryTime 返回用于「先到期先消耗」排序的到期时刻。
+func (s *UserSubscription) ExpiryTime() time.Time {
+	if s == nil {
+		return time.Time{}
 	}
-	g := s.limitFallbackGroup(group)
-	if g != nil {
-		return normalizeSubLimit(g.WeeklyLimitUSD)
-	}
-	return nil
+	return s.ExpiresAt
 }
 
-func (s *UserSubscription) EffectiveMonthlyLimit(group *Group) *float64 {
-	if s.MonthlyLimitUSD != nil {
-		return normalizeSubLimit(s.MonthlyLimitUSD)
-	}
-	g := s.limitFallbackGroup(group)
-	if g != nil {
-		return normalizeSubLimit(g.MonthlyLimitUSD)
-	}
-	return nil
-}
-
-// IsPersonal 标记该订阅不绑定分组（全模型通用额度订阅）。
-func (s *UserSubscription) IsPersonal() bool {
-	return s.GroupID == 0
-}
-
-// DisplayName 返回订阅展示名：分组订阅取分组名，
-// 个人订阅（Group 边为 nil）回退为「个人订阅」，避免调用方 nil 解引用。
+// DisplayName 返回订阅展示名：有套餐取套餐名，否则回退「个人订阅」。
 func (s *UserSubscription) DisplayName() string {
 	if s == nil {
 		return ""
 	}
-	if s.Group != nil && s.Group.Name != "" {
-		return s.Group.Name
+	if s.Plan != nil && s.Plan.Name != "" {
+		return s.Plan.Name
 	}
-	if s.IsPersonal() {
-		return "个人订阅"
+	return "个人订阅"
+}
+
+// SubscriptionAllocation 描述一次消耗在某份订阅上落多少金额。
+type SubscriptionAllocation struct {
+	SubscriptionID int64
+	Amount         float64
+}
+
+// AllocateSubscriptionUsage 按「先到期先消耗」把一笔费用拆分到多份订阅钱包上。
+//
+// 规则（2026-10-03 产品定案）：
+//   - 有限额的订阅按到期时间升序优先消耗，允许单笔费用跨多份订阅拆分；
+//   - 不限额的订阅排在最后，仅当有限额钱包全部耗尽时才动用，且一次只选一份
+//     （避免把消耗随机记到多个无限钱包、导致用量统计失真）；
+//   - 返回的 ok=false 表示现有钱包装不下这笔费用（调用方应据此拒绝或回落）。
+//
+// 纯函数：不修改入参订阅对象，便于单测与调用方自行决定提交顺序。
+func AllocateSubscriptionUsage(subs []*UserSubscription, cost float64) ([]SubscriptionAllocation, bool) {
+	if cost <= 0 {
+		return nil, true
 	}
-	return ""
-}
 
-func checkLimit(usage float64, limit *float64, additionalCost float64) bool {
-	if limit == nil || *limit <= 0 {
-		return true
+	limited := make([]*UserSubscription, 0, len(subs))
+	unlimited := make([]*UserSubscription, 0, 2)
+	for _, sub := range subs {
+		if sub == nil || !sub.IsActive() {
+			continue
+		}
+		if sub.HasEffectiveLimit() {
+			limited = append(limited, sub)
+		} else {
+			unlimited = append(unlimited, sub)
+		}
 	}
-	return usage+additionalCost <= *limit
+
+	byExpiry := func(list []*UserSubscription) {
+		for i := 1; i < len(list); i++ {
+			for j := i; j > 0 && list[j-1].ExpiresAt.After(list[j].ExpiresAt); j-- {
+				list[j-1], list[j] = list[j], list[j-1]
+			}
+		}
+	}
+	byExpiry(limited)
+	byExpiry(unlimited)
+
+	allocations := make([]SubscriptionAllocation, 0, len(limited)+1)
+	remaining := cost
+
+	for _, sub := range limited {
+		if remaining <= subscriptionAllocationEpsilon {
+			break
+		}
+		capacity := sub.EffectiveTotalLimit()
+		avail := *capacity - sub.TotalUsageUSD
+		if avail <= subscriptionAllocationEpsilon {
+			continue
+		}
+		take := remaining
+		if avail < remaining {
+			take = avail
+		}
+		allocations = append(allocations, SubscriptionAllocation{SubscriptionID: sub.ID, Amount: take})
+		remaining -= take
+	}
+
+	if remaining > subscriptionAllocationEpsilon && len(unlimited) > 0 {
+		allocations = append(allocations, SubscriptionAllocation{
+			SubscriptionID: unlimited[0].ID,
+			Amount:         remaining,
+		})
+		remaining = 0
+	}
+
+	if remaining > subscriptionAllocationEpsilon {
+		return nil, false
+	}
+	return allocations, true
 }
 
-func (s *UserSubscription) CheckDailyLimit(group *Group, additionalCost float64) bool {
-	return checkLimit(s.DailyUsageUSD, s.EffectiveDailyLimit(group), additionalCost)
+// FirstBillableSubscription 返回「先到期先消耗」应首选的那份钱包：
+// 优先设了额度的生效钱包中到期最早的一份；没有则退到任意生效钱包；
+// 连生效的都没有时退到入参中第一个非 nil 行（预检后快照才过期的场景，
+// 归到该行而不是静默丢弃这笔已发生的费用）。
+//
+// 刻意不依赖调用方传入顺序：「先到期先消耗」是产品定案，不能因为某
+// 个调用方忘了 ORDER BY 就把钱记到另一份钱包上。生产取数路径
+// （ListActiveByUserID / 计费仓储锁定读）本身已按 expires_at 升序，
+// 这里只是多一层不依赖顺序的防御。
+func FirstBillableSubscription(subs []*UserSubscription) *UserSubscription {
+	pick := func(wantLimited bool, wantActive bool) *UserSubscription {
+		var best *UserSubscription
+		for _, sub := range subs {
+			if sub == nil {
+				continue
+			}
+			if wantActive && !sub.IsActive() {
+				continue
+			}
+			if wantLimited && !sub.HasEffectiveLimit() {
+				continue
+			}
+			if best == nil || sub.ExpiresAt.Before(best.ExpiresAt) {
+				best = sub
+			}
+		}
+		return best
+	}
+	if sub := pick(true, true); sub != nil {
+		return sub
+	}
+	if sub := pick(false, true); sub != nil {
+		return sub
+	}
+	return pick(false, false)
 }
 
-func (s *UserSubscription) CheckWeeklyLimit(group *Group, additionalCost float64) bool {
-	return checkLimit(s.WeeklyUsageUSD, s.EffectiveWeeklyLimit(group), additionalCost)
-}
-
-func (s *UserSubscription) CheckMonthlyLimit(group *Group, additionalCost float64) bool {
-	return checkLimit(s.MonthlyUsageUSD, s.EffectiveMonthlyLimit(group), additionalCost)
-}
-
-func (s *UserSubscription) CheckAllLimits(group *Group, additionalCost float64) (daily, weekly, monthly bool) {
-	daily = s.CheckDailyLimit(group, additionalCost)
-	weekly = s.CheckWeeklyLimit(group, additionalCost)
-	monthly = s.CheckMonthlyLimit(group, additionalCost)
-	return
+// AllocateSubscriptionRecordings 用于「请求已发生、钱必须记下来」的记账场景：
+// 优先按「先到期先消耗」拆分；现有钱包装不下时，把余量整笔记到首选钱包上
+// 让用量合法越界（后续请求会被预检 429），而不是丢弃拆分——丢弃等于白送。
+//
+// 与 AllocateSubscriptionUsage 的区别仅在装不下的处理；两者共用同一份排序与
+// 有限额优先口径，因此网关降级路径与原子计费仓储（repo.Apply）行为一致。
+// 返回 nil 表示连一行钱包都没有（调用方应自行告警，不要静默当成记账成功）。
+func AllocateSubscriptionRecordings(subs []*UserSubscription, cost float64) []SubscriptionAllocation {
+	if cost <= 0 {
+		return nil
+	}
+	if allocations, ok := AllocateSubscriptionUsage(subs, cost); ok {
+		return allocations
+	}
+	primary := FirstBillableSubscription(subs)
+	if primary == nil {
+		return nil
+	}
+	return []SubscriptionAllocation{{SubscriptionID: primary.ID, Amount: cost}}
 }

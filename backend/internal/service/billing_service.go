@@ -65,11 +65,11 @@ type BillingCache interface {
 	DeductUserBalance(ctx context.Context, userID int64, amount float64) error
 	InvalidateUserBalance(ctx context.Context, userID int64) error
 
-	// Subscription operations
-	GetSubscriptionCache(ctx context.Context, userID, groupID int64) (*SubscriptionCacheData, error)
-	SetSubscriptionCache(ctx context.Context, userID, groupID int64, data *SubscriptionCacheData) error
-	UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error
-	InvalidateSubscriptionCache(ctx context.Context, userID, groupID int64) error
+	// Subscription operations（钱包模型：按 user 单键聚合，不再有分组槽位）
+	GetSubscriptionCache(ctx context.Context, userID int64) (*SubscriptionCacheData, error)
+	SetSubscriptionCache(ctx context.Context, userID int64, data *SubscriptionCacheData) error
+	UpdateSubscriptionUsage(ctx context.Context, userID int64, cost float64) error
+	InvalidateSubscriptionCache(ctx context.Context, userID int64) error
 
 	// API Key rate limit operations
 	GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*APIKeyRateLimitCacheData, error)

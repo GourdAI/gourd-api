@@ -35,19 +35,19 @@ func (s *billingCacheMissStub) InvalidateUserBalance(ctx context.Context, userID
 	return nil
 }
 
-func (s *billingCacheMissStub) GetSubscriptionCache(ctx context.Context, userID, groupID int64) (*SubscriptionCacheData, error) {
+func (s *billingCacheMissStub) GetSubscriptionCache(ctx context.Context, userID int64) (*SubscriptionCacheData, error) {
 	return nil, errors.New("cache miss")
 }
 
-func (s *billingCacheMissStub) SetSubscriptionCache(ctx context.Context, userID, groupID int64, data *SubscriptionCacheData) error {
+func (s *billingCacheMissStub) SetSubscriptionCache(ctx context.Context, userID int64, data *SubscriptionCacheData) error {
 	return nil
 }
 
-func (s *billingCacheMissStub) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error {
+func (s *billingCacheMissStub) UpdateSubscriptionUsage(ctx context.Context, userID int64, cost float64) error {
 	return nil
 }
 
-func (s *billingCacheMissStub) InvalidateSubscriptionCache(ctx context.Context, userID, groupID int64) error {
+func (s *billingCacheMissStub) InvalidateSubscriptionCache(ctx context.Context, userID int64) error {
 	return nil
 }
 

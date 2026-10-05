@@ -1180,9 +1180,30 @@ func (s *AntigravityGatewayService) setModelRateLimitAndClearSession(p *handleMo
 	}
 }
 
-// updateAccountModelRateLimitInCache 立即更新 Redis 中账号的模型限流状态
-func (s *AntigravityGatewayService) updateAccountModelRateLimitInCache(ctx context.Context, account *Account, modelKey string, resetAt time.Time) {
-	if s.schedulerSnapshot == nil || account == nil || modelKey == "" {
+// updateAccountModelRateLimitInCache 把冷却状态同步到**当前请求内存中的账号对象**，
+// 让同一请求后续的判定（如 overages / isCreditsExhausted）能立刻看到这个键。
+//
+// 【不得在此整体覆写调度快照】曾经这里调用 UpdateAccountInCache，而
+// schedulerCache.SetAccount 是 `pipe.Set(accountKey, fullPayload)`（scheduler_cache.go:810）
+// ——**整体替换、不合并**。这里的 account 是请求开始时拿到的**陈旧对象**：Extra 只有本次
+// 新写的这一个键，不包含 DB 里已有的其它冷却（例如另一并发请求刚写的 model 键、或
+// AICredits）。
+//
+// 时序上它排在 repo.SetModelRateLimit **之后**，会把权威同步的结果反向覆盖：
+//
+//	SetModelRateLimit → UPDATE(含新键) → GetByID 重读全量 Extra → SetAccount ✅
+//	updateAccountModelRateLimitInCache → SetAccount(陈旧对象) ❌ 抹掉其它键
+//
+// 实测调用链：antigravity_gateway_retry.go:907 在 setModelRateLimitByModelName(→
+// SetModelRateLimit) 成功**后**立即调用本函数，keys 来自 antigravityModelRateLimitKeys
+// （模型名 + 可能的 antigravity:gemini 家族键），循环第二个键就会用「只含上一个键」的
+// 对象去覆写，而 :166/:329/:262 传入的 account 本身不带任何既有冷却 → 第一次循环就把
+// 刚写进去的键抹掉。
+//
+// 权威快照同步已由 SetModelRateLimit 内部完成（DB 重读 + 写 Redis），本函数无需也不应
+// 再做一次；即使 schedulerCache 未注入，enqueueSchedulerOutbox 也会触发 worker 重建。
+func (s *AntigravityGatewayService) updateAccountModelRateLimitInCache(_ context.Context, account *Account, modelKey string, resetAt time.Time) {
+	if account == nil || modelKey == "" {
 		return
 	}
 
@@ -1200,11 +1221,6 @@ func (s *AntigravityGatewayService) updateAccountModelRateLimitInCache(ctx conte
 	limits[modelKey] = map[string]any{
 		"rate_limited_at":     time.Now().UTC().Format(time.RFC3339),
 		"rate_limit_reset_at": resetAt.UTC().Format(time.RFC3339),
-	}
-
-	// 更新 Redis 快照
-	if err := s.schedulerSnapshot.UpdateAccountInCache(ctx, account); err != nil {
-		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] cache_update_failed account=%d model=%s err=%v", account.ID, modelKey, err)
 	}
 }
 

@@ -111,6 +111,11 @@ func (r *longContextBillingRepoStub) UpdateExtra(_ context.Context, _ int64, _ m
 	return nil
 }
 
+// ClearModelRateLimitScopes 补齐接口（本 stub 不断言该行为）。
+func (r *longContextBillingRepoStub) ClearModelRateLimitScopes(_ context.Context, _ int64, _ []string) error {
+	return nil
+}
+
 func (r *longContextBillingRepoStub) BulkUpdate(_ context.Context, _ []int64, _ AccountBulkUpdate) (int64, error) {
 	r.bulkUpdateCalls++
 	return 1, nil

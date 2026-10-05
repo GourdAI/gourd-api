@@ -6,7 +6,7 @@ import SubscriptionsView from '../SubscriptionsView.vue'
 /**
  * 订阅额度「逐字段增量」语义的前端锚点测试。
  *
- * 后端契约：键缺失 = 保持原值；>0 = 设为该额度；0 = 改回不限额。
+ * 后端契约（总额度只有一份总额池）：键缺失 = 保持原值；>0 = 设为该额度；0 = 改回不限额。
  * 其中「输 0 要真的把 0 提交出去」是最容易被静默改坏的一条：
  * 任何 `if (value)` 之类的真值判断都会把 0 当成「没填」，
  * 结果是管理员想收紧额度却提交成「不改动」，用户的闸门凭空消失。
@@ -86,7 +86,7 @@ describe('admin subscription quota assignment', () => {
     searchUsageUsers.mockResolvedValue([])
   })
 
-  /** 打开分配弹窗并选中一个用户（默认 group_id=0，即个人订阅）。 */
+  /** 打开分配弹窗并选中一个用户（手工发放，无套餐、不绑分组）。 */
   const openDialogWithUser = async (wrapper: ReturnType<typeof mountView>) => {
     await flushPromises()
     const openButton = wrapper
@@ -109,17 +109,17 @@ describe('admin subscription quota assignment', () => {
     const wrapper = mountView()
     try {
       const form = await openDialogWithUser(wrapper)
-      await form.get('[data-test="assign-quota-daily"]').setValue('0')
+      await form.get('[data-test="assign-quota-total"]').setValue('0')
       await form.trigger('submit')
       await flushPromises()
 
       expect(assignSubscription).toHaveBeenCalledTimes(1)
       const payload = assignSubscription.mock.calls[0][0]
-      expect(payload).toMatchObject({ user_id: 84, group_id: 0, validity_days: 30 })
+      expect(payload).toMatchObject({ user_id: 84, validity_days: 30 })
       // 0 必须原样出现在上线报文里：键存在且值为 0（被 undefined 化就变成“不改动”）
-      expect(payload.daily_limit_usd).toBe(0)
+      expect(payload.total_limit_usd).toBe(0)
       const wire = JSON.parse(JSON.stringify(payload))
-      expect(wire).toHaveProperty('daily_limit_usd', 0)
+      expect(wire).toHaveProperty('total_limit_usd', 0)
     } finally {
       wrapper.unmount()
       vi.useRealTimers()
@@ -137,13 +137,9 @@ describe('admin subscription quota assignment', () => {
       const payload = assignSubscription.mock.calls[0][0]
       // 中间对象里是 undefined；真正决定语义的是上线报文：JSON.stringify 会丢弃 undefined 键，
       // 后端因而是「键缺失 = 保持原值」而不是「收到 0 = 改回不限额」。
-      expect(payload.daily_limit_usd).toBeUndefined()
-      expect(payload.weekly_limit_usd).toBeUndefined()
-      expect(payload.monthly_limit_usd).toBeUndefined()
+      expect(payload.total_limit_usd).toBeUndefined()
       const wire = JSON.parse(JSON.stringify(payload))
-      expect(Object.keys(wire)).not.toContain('daily_limit_usd')
-      expect(Object.keys(wire)).not.toContain('weekly_limit_usd')
-      expect(Object.keys(wire)).not.toContain('monthly_limit_usd')
+      expect(Object.keys(wire)).not.toContain('total_limit_usd')
     } finally {
       wrapper.unmount()
       vi.useRealTimers()
@@ -155,36 +151,39 @@ describe('admin subscription quota assignment', () => {
     const wrapper = mountView()
     try {
       const form = await openDialogWithUser(wrapper)
-      const daily = form.get('[data-test="assign-quota-daily"]')
-      await daily.setValue('25')
-      await daily.setValue('')
+      const total = form.get('[data-test="assign-quota-total"]')
+      await total.setValue('25')
+      await total.setValue('')
       await form.trigger('submit')
       await flushPromises()
 
       const payload = assignSubscription.mock.calls[0][0]
-      expect(payload.daily_limit_usd).toBeUndefined()
+      expect(payload.total_limit_usd).toBeUndefined()
       // 空串若透传到 Go，*float64 反序列化会直接 400
-      expect(JSON.parse(JSON.stringify(payload))).not.toHaveProperty('daily_limit_usd')
+      expect(JSON.parse(JSON.stringify(payload))).not.toHaveProperty('total_limit_usd')
     } finally {
       wrapper.unmount()
       vi.useRealTimers()
     }
   })
 
-  it('keeps untouched windows as unchanged when only one quota is filled', async () => {
+  it('submits a positive total quota without any group fields', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const wrapper = mountView()
     try {
       const form = await openDialogWithUser(wrapper)
-      await form.get('[data-test="assign-quota-weekly"]').setValue('120')
+      await form.get('[data-test="assign-quota-total"]').setValue('120')
       await form.trigger('submit')
       await flushPromises()
 
       const payload = assignSubscription.mock.calls[0][0]
-      expect(payload.weekly_limit_usd).toBe(120)
+      expect(payload.total_limit_usd).toBe(120)
       const wire = JSON.parse(JSON.stringify(payload))
-      expect(wire.weekly_limit_usd).toBe(120)
+      expect(wire.total_limit_usd).toBe(120)
+      // 订阅不绑分组：报文里不得再出现分组与日/周/月三档字段
+      expect(Object.keys(wire)).not.toContain('group_id')
       expect(Object.keys(wire)).not.toContain('daily_limit_usd')
+      expect(Object.keys(wire)).not.toContain('weekly_limit_usd')
       expect(Object.keys(wire)).not.toContain('monthly_limit_usd')
     } finally {
       wrapper.unmount()
@@ -197,7 +196,7 @@ describe('admin subscription quota assignment', () => {
     const wrapper = mountView()
     try {
       const form = await openDialogWithUser(wrapper)
-      await form.get('[data-test="assign-quota-daily"]').setValue('-1')
+      await form.get('[data-test="assign-quota-total"]').setValue('-1')
       await form.trigger('submit')
       await flushPromises()
 

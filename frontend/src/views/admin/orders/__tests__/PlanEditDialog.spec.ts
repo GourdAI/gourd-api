@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { defineComponent } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 
 import PlanEditDialog from '../PlanEditDialog.vue'
-import type { AdminGroup } from '@/types'
+import { adminPaymentAPI } from '@/api/admin/payment'
+import type { AdminGroup, SubscriptionPlan } from '@/types'
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -139,6 +140,85 @@ function mountDialog({
 }
 
 describe('PlanEditDialog', () => {
+  it('sends total_limit_usd in the plan payload and normalizes a cleared input to null', async () => {
+    const createPlan = vi.mocked(adminPaymentAPI.createPlan)
+    createPlan.mockReset()
+    createPlan.mockResolvedValue({} as never)
+
+    const wrapper = mountDialog({ groups: [groupFixture({ id: 10, name: 'OpenAI' })] })
+    // 选中分组 + 填价格，凑齐提交前置校验
+    await wrapper.findAll('select')[0]!.setValue('10')
+    await wrapper.findAll('input[type="number"]')[0]!.setValue('9.99')
+
+    const quotaInput = wrapper.get('[data-test="plan-total-limit-usd"]')
+    await quotaInput.setValue('50')
+    await wrapper.get('form').trigger('submit')
+    expect(createPlan.mock.calls[0]![0]).toMatchObject({ total_limit_usd: 50 })
+
+    // 清空输入：v-model.number 得到 ''，必须归一为 null（= 不限额），
+    // 否则空串透到 Go 的 *float64 会直接 400。
+    createPlan.mockClear()
+    await quotaInput.setValue('')
+    await wrapper.get('form').trigger('submit')
+    expect(createPlan.mock.calls[0]![0]).toMatchObject({ total_limit_usd: null })
+
+    // 输 0 同样按「不限额」上报（后端 <=0 归一为 nil）
+    createPlan.mockClear()
+    await quotaInput.setValue('0')
+    await wrapper.get('form').trigger('submit')
+    expect(createPlan.mock.calls[0]![0]).toMatchObject({ total_limit_usd: null })
+  })
+
+  // 编辑路径：后端 total_limit_usd 是三态（nil=不改 / >0=设值 / <=0=清空）。
+  // 清空输入必须上报 0，否则被读成「不修改」，已设额度的套餐改不回不限额。
+  it('reports 0 when the limit is cleared while editing, so it can go back to unlimited', async () => {
+    const updatePlan = vi.mocked(adminPaymentAPI.updatePlan)
+    updatePlan.mockReset()
+    updatePlan.mockResolvedValue({} as never)
+
+    const plan = {
+      id: 7,
+      group_id: 10,
+      name: 'Pro',
+      description: '',
+      price: 9.9,
+      validity_days: 30,
+      validity_unit: 'days',
+      for_sale: true,
+      features: [],
+      sort_order: 0,
+      total_limit_usd: 50,
+    } as unknown as SubscriptionPlan
+
+    const wrapper = mount(PlanEditDialog, {
+      props: {
+        show: false,
+        plan,
+        groups: [groupFixture({ id: 10, name: 'OpenAI' })],
+        paymentConfig: null,
+      },
+      global: {
+        stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, Icon: true, GroupBadge: true },
+      },
+    })
+    // 表单由 watch(show) 填充：必须 false -> true 才会带入既有额度
+    await wrapper.setProps({ show: true })
+    await nextTick()
+
+    const quotaInput = wrapper.get('[data-test="plan-total-limit-usd"]')
+    expect((quotaInput.element as HTMLInputElement).value).toBe('50')
+
+    await quotaInput.setValue('')
+    await wrapper.get('form').trigger('submit')
+    expect(updatePlan.mock.calls[0]![1]).toMatchObject({ total_limit_usd: 0 })
+
+    // 未清空时按数值上报，不会被误判为清空
+    updatePlan.mockClear()
+    await quotaInput.setValue('80')
+    await wrapper.get('form').trigger('submit')
+    expect(updatePlan.mock.calls[0]![1]).toMatchObject({ total_limit_usd: 80 })
+  })
+
   it('shows CNY channel charge using the configured subscription rate and fee', async () => {
     const wrapper = mountDialog({
       paymentConfig: {

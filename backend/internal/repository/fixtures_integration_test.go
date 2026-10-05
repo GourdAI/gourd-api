@@ -398,17 +398,17 @@ func mustCreateSubscription(t *testing.T, client *dbent.Client, s *service.UserS
 		s.UpdatedAt = now
 	}
 
+	// 订阅钱包语义（2026-10-03）：订阅不绑分组，额度是单一总额池。
 	create := client.UserSubscription.Create().
 		SetUserID(s.UserID).
-		SetGroupID(s.GroupID).
+		SetNillablePlanID(s.PlanID).
 		SetStartsAt(s.StartsAt).
 		SetExpiresAt(s.ExpiresAt).
 		SetStatus(s.Status).
 		SetAssignedAt(s.AssignedAt).
 		SetNotes(s.Notes).
-		SetDailyUsageUsd(s.DailyUsageUSD).
-		SetWeeklyUsageUsd(s.WeeklyUsageUSD).
-		SetMonthlyUsageUsd(s.MonthlyUsageUSD)
+		SetNillableTotalLimitUsd(s.TotalLimitUSD).
+		SetTotalUsageUsd(s.TotalUsageUSD)
 
 	if s.AssignedBy != nil {
 		create.SetAssignedBy(*s.AssignedBy)

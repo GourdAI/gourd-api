@@ -513,7 +513,7 @@ func TestClearCreditsExhausted(t *testing.T) {
 		require.Empty(t, repo.extraUpdateCalls)
 	})
 
-	t.Run("有 AICredits key 时删除并调用 UpdateExtra", func(t *testing.T) {
+	t.Run("有 AICredits key 时只删该键且不写回整个 map", func(t *testing.T) {
 		repo := &stubAntigravityAccountRepo{}
 		svc := &AntigravityGatewayService{accountRepo: repo}
 		account := &Account{
@@ -532,13 +532,21 @@ func TestClearCreditsExhausted(t *testing.T) {
 			},
 		}
 		svc.clearCreditsExhausted(context.Background(), account)
-		require.Len(t, repo.extraUpdateCalls, 1)
-		// AICredits key 应被删除
+
+		// 关键断言：必须走「按键精确删除」，而不是把内存 map 整体写回。
+		// UpdateExtra 的 SQL 是 `extra || $1::jsonb`（顶层整体替换），写回会把
+		// 并发刚落的其它冷却一并抹掉 —— 冷却保护失效（「限流了还被调」）。
+		require.Empty(t, repo.extraUpdateCalls,
+			"不得用 UpdateExtra 写回整个 model_rate_limits")
+		require.Len(t, repo.clearScopeCalls, 1)
+		require.Equal(t, int64(1), repo.clearScopeCalls[0].accountID)
+		require.Equal(t, []string{creditsExhaustedKey}, repo.clearScopeCalls[0].scopes,
+			"只能提交 AICredits 一个键")
+
+		// 内存对象仍然同步（供同一请求后续判定使用）
 		rawLimits := account.Extra[modelRateLimitsKey].(map[string]any)
 		_, exists := rawLimits[creditsExhaustedKey]
 		require.False(t, exists, "AICredits key 应被删除")
-		// 普通模型限流应保留
-		_, exists = rawLimits["claude-sonnet-4-5"]
-		require.True(t, exists, "普通模型限流应保留")
+		require.Contains(t, rawLimits, "claude-sonnet-4-5", "其它键在内存对象上必须保留")
 	})
 }

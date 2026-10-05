@@ -91,7 +91,7 @@ func TestSubscriptionBulkAction_ReplaysPartialResultWithoutRepeatingExtension(t 
 	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(newMemoryIdempotencyRepoStub(), cfg))
 	t.Cleanup(func() { service.SetDefaultIdempotencyCoordinator(nil) })
 	expiresAt := time.Now().AddDate(0, 0, 30)
-	repo := &bulkActionHandlerSubscriptionRepo{sub: &service.UserSubscription{ID: 1, UserID: 1, GroupID: 10, ExpiresAt: expiresAt}}
+	repo := &bulkActionHandlerSubscriptionRepo{sub: &service.UserSubscription{ID: 1, UserID: 1, TotalLimitUSD: defaultSubscriptionTestFloat64(50), ExpiresAt: expiresAt}}
 	svc := service.NewSubscriptionService(nil, repo, nil, nil, nil)
 	t.Cleanup(svc.Stop)
 	h := NewSubscriptionHandler(svc)
@@ -135,7 +135,7 @@ func TestSubscriptionBulkAction_ClientCancellationStillPersistsReplay(t *testing
 	defer cancel()
 	expiresAt := time.Now().AddDate(0, 0, 30)
 	repo := &cancellationAwareBulkActionRepo{
-		bulkActionHandlerSubscriptionRepo: &bulkActionHandlerSubscriptionRepo{sub: &service.UserSubscription{ID: 1, UserID: 1, GroupID: 10, ExpiresAt: expiresAt}},
+		bulkActionHandlerSubscriptionRepo: &bulkActionHandlerSubscriptionRepo{sub: &service.UserSubscription{ID: 1, UserID: 1, TotalLimitUSD: defaultSubscriptionTestFloat64(50), ExpiresAt: expiresAt}},
 		cancelRequest:                     cancel,
 	}
 	svc := service.NewSubscriptionService(nil, repo, nil, nil, nil)
@@ -180,8 +180,6 @@ func TestSubscriptionBulkAction_ValidatesBeforeIdempotencyAndExecution(t *testin
 		`{"subscription_ids":[],"action":"restore"}`,
 		`{"subscription_ids":[1],"action":"extend","days":0}`,
 		`{"subscription_ids":[1],"action":"extend","days":36501}`,
-		`{"subscription_ids":[1],"action":"reset_quota"}`,
-		`{"subscription_ids":[1],"action":"reset_quota","daily":"yes"}`,
 		`{"subscription_ids":[1],"action":"revoke"`,
 		string(tooManyBody),
 	} {
@@ -194,6 +192,19 @@ func TestSubscriptionBulkAction_ValidatesBeforeIdempotencyAndExecution(t *testin
 	// A valid request must still fail closed when replay protection is unavailable.
 	response := bulkActionHandlerRequest(router, path, `{"subscription_ids":[1],"action":"revoke"}`, "bulk-valid")
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+
+	// 订阅重构为「单一总额池」后 reset_quota 不再需要选窗口（日/周/月三档已退役），
+	// 因此无参数的 reset_quota 是合法请求；旧用例在此断言 400，现按新语义改断言
+	// 「通过校验、仅被幂等存储不可用拦住」（503），未知字段 daily 也一律忽略。
+	for _, body := range []string{
+		`{"subscription_ids":[1],"action":"reset_quota"}`,
+		`{"subscription_ids":[1],"action":"reset_quota","daily":"yes"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			response := bulkActionHandlerRequest(router, path, body, "bulk-reset-quota-accepted")
+			require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+		})
+	}
 }
 
 func TestSubscriptionBulkAssign_RejectsInvalidUserIDsBeforeExecution(t *testing.T) {
@@ -203,7 +214,7 @@ func TestSubscriptionBulkAssign_RejectsInvalidUserIDsBeforeExecution(t *testing.
 	router.POST(path, NewSubscriptionHandler(nil).BulkAssign)
 	for _, ids := range [][]int64{{}, {1, 0}, {1, -1}, make([]int64, 101)} {
 		t.Run(fmt.Sprint(len(ids), ids), func(t *testing.T) {
-			body, err := json.Marshal(BulkAssignSubscriptionRequest{UserIDs: ids, GroupID: 1, ValidityDays: 30})
+			body, err := json.Marshal(BulkAssignSubscriptionRequest{UserIDs: ids, TotalLimitUSD: defaultSubscriptionTestFloat64(20), ValidityDays: 30})
 			require.NoError(t, err)
 			response := bulkActionHandlerRequest(router, path, string(body), "")
 			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())

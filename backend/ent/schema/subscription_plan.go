@@ -7,6 +7,7 @@ import (
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema"
+	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
 )
@@ -39,6 +40,13 @@ func (SubscriptionPlan) Fields() []ent.Field {
 			Default(""),
 		field.Float("price").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,2)"}),
+		// 套餐额度（USD）：购买后作为「一次性总额池」快照写入 user_subscriptions.total_limit_usd。
+		// NULL 或 <=0 表示该套餐不限量（有效期到期为止）。
+		// 与 price 完全独立：price 是卖多少钱，本字段是买回去能花多少钱。
+		field.Float("total_limit_usd").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
 		field.Float("original_price").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,2)"}).
 			Optional().
@@ -69,6 +77,13 @@ func (SubscriptionPlan) Fields() []ent.Field {
 			Default(time.Now).
 			UpdateDefault(time.Now).
 			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
+	}
+}
+
+func (SubscriptionPlan) Edges() []ent.Edge {
+	return []ent.Edge{
+		// 一份套餐可被多个用户购买，产生多条订阅记录。
+		edge.To("user_subscriptions", UserSubscription.Type),
 	}
 }
 

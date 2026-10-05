@@ -20,9 +20,9 @@ vi.mock('vue-i18n', async () => ({
 }))
 
 const rows = [
-  { id: 1, user_id: 11, group_id: 1, status: 'active', user: { email: 'active@example.com' } },
-  { id: 2, user_id: 22, group_id: 1, status: 'expired', user: { email: 'expired@example.com' } },
-  { id: 3, user_id: 33, group_id: 1, status: 'revoked', user: { email: 'revoked@example.com' } }
+  { id: 1, user_id: 11, plan_id: 5, total_limit_usd: 50, total_usage_usd: 1, unlimited: false, status: 'active', user: { email: 'active@example.com' } },
+  { id: 2, user_id: 22, plan_id: 5, total_limit_usd: 50, total_usage_usd: 1, unlimited: false, status: 'expired', user: { email: 'expired@example.com' } },
+  { id: 3, user_id: 33, plan_id: 5, total_limit_usd: 50, total_usage_usd: 1, unlimited: false, status: 'revoked', user: { email: 'revoked@example.com' } }
 ]
 
 function mountView() {
@@ -111,7 +111,8 @@ describe('subscription bulk operations', () => {
     await wrapper.findAll('button').find(button => button.text() === 'admin.subscriptions.assignSubscription')!.trigger('click')
     const form = wrapper.get('#assign-subscription-form')
     await form.get('input[type="checkbox"]').setValue(true)
-    form.getComponent({ name: 'Select' }).vm.$emit('update:modelValue', 7)
+    // 订阅不绑分组：批量发放只需额度 + 有效期，弹窗内已无分组选择器。
+    await form.get('[data-test="assign-quota-total"]').setValue('20')
     const search = form.get('[data-assign-user-search] input')
     for (const id of [11, 22]) {
       listUsers.mockResolvedValue({ items: [{ id, email: `user${id}@example.com` }] })
@@ -128,7 +129,7 @@ describe('subscription bulk operations', () => {
     await form.trigger('submit')
     await form.trigger('submit')
     expect(bulkAssign).toHaveBeenCalledTimes(1)
-    expect(bulkAssign).toHaveBeenCalledWith({ user_ids: [11, 22], group_id: 7, validity_days: 30 })
+    expect(bulkAssign).toHaveBeenCalledWith({ user_ids: [11, 22], validity_days: 30, total_limit_usd: 20 })
     resolveAssign({ success_count: 1, failed_count: 1, subscriptions: [{ user_id: 11 }], errors: ['User 22: conflict'] })
     await flushPromises()
     expect(form.get('[data-test="assign-users"]').text()).not.toContain('user11@example.com')
@@ -137,7 +138,7 @@ describe('subscription bulk operations', () => {
     bulkAssign.mockResolvedValueOnce({ success_count: 1, failed_count: 0, subscriptions: [{ user_id: 22 }], errors: [] })
     await form.trigger('submit')
     await flushPromises()
-    expect(bulkAssign).toHaveBeenLastCalledWith({ user_ids: [22], group_id: 7, validity_days: 30 })
+    expect(bulkAssign).toHaveBeenLastCalledWith({ user_ids: [22], validity_days: 30, total_limit_usd: 20 })
     expect(form.find('[data-test="assign-users"]').exists()).toBe(false)
   })
 })

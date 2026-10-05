@@ -724,7 +724,6 @@ func TestAlreadyProcessedRecoversStaleRechargingLease(t *testing.T) {
 		groupRepo:       groupRepo,
 		subscriptionSvc: NewSubscriptionService(groupRepo, userSubRepoNoop{}, nil, nil, nil),
 	}
-
 	require.NoError(t, svc.alreadyProcessed(ctx, order))
 	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
 	require.NoError(t, err)
@@ -1008,10 +1007,11 @@ func TestExecuteSubscriptionFulfillmentRecoversCommittedAssignmentWithoutExtendi
 
 	expiresAt := time.Now().Add(30 * 24 * time.Hour).Truncate(time.Second)
 	subRepo := newSubscriptionUserSubRepoStub()
+	// 订阅钱包化：钱包不再绑定分组，本订单已发放的那一份改由备注里的订单号识别。
 	subRepo.seed(&UserSubscription{
 		ID:        99,
 		UserID:    order.UserID,
-		GroupID:   *order.SubscriptionGroupID,
+		PlanID:    order.PlanID,
 		StartsAt:  time.Now().Add(-time.Hour),
 		ExpiresAt: expiresAt,
 		Status:    SubscriptionStatusActive,
@@ -1081,6 +1081,18 @@ func createPaymentFulfillmentSubscriptionOrder(
 		Save(ctx)
 	require.NoError(t, err)
 
+	// 订阅钱包化后，发放链路的唯一额度来源是 subscription_plans.total_limit_usd 的
+	// 发放时快照：读不到套餐会直接拒绝发放（PLAN_NOT_FOUND），所以订单必须指向
+	// 一个真实存在且带额度的套餐行。
+	plan, err := client.SubscriptionPlan.Create().
+		SetGroupID(7).
+		SetName("fulfillment-plan-" + strconv.FormatInt(time.Now().UnixNano(), 10)).
+		SetPrice(80).
+		SetTotalLimitUsd(500).
+		SetValidityDays(30).
+		Save(ctx)
+	require.NoError(t, err)
+
 	order, err := client.PaymentOrder.Create().
 		SetUserID(user.ID).
 		SetUserEmail(user.Email).
@@ -1093,7 +1105,7 @@ func createPaymentFulfillmentSubscriptionOrder(
 		SetPaymentType(payment.TypeAlipay).
 		SetPaymentTradeNo("trade-fulfillment").
 		SetOrderType(payment.OrderTypeSubscription).
-		SetPlanID(100).
+		SetPlanID(plan.ID).
 		SetSubscriptionGroupID(7).
 		SetSubscriptionDays(30).
 		SetStatus(status).
@@ -1107,11 +1119,26 @@ func createPaymentFulfillmentSubscriptionOrder(
 	return order
 }
 
+// assertPaymentSubscriptionExpiry 断言本订单对应的钱包到期时间。
+// 订阅已不按 (user, group) 寻址，改按备注里的订单号定位钱包（与
+// locatePaymentSubscriptionForOrder 同口径）；只依赖仓储接口而不依赖 stub 内部字段。
 func assertPaymentSubscriptionExpiry(t *testing.T, repo *subscriptionUserSubRepoStub, order *dbent.PaymentOrder, expected time.Time) {
 	t.Helper()
-	sub, err := repo.GetByUserIDAndGroupID(context.Background(), order.UserID, *order.SubscriptionGroupID)
+	orderNote := paymentSubscriptionOrderNote(order.ID)
+	subs, err := repo.ListByUserID(context.Background(), order.UserID)
 	require.NoError(t, err)
-	require.True(t, sub.ExpiresAt.Equal(expected), "subscription expiry changed from %s to %s", expected, sub.ExpiresAt)
+	var matched *UserSubscription
+	for i := range subs {
+		if subs[i].UserID != order.UserID {
+			continue
+		}
+		if hasPaymentSubscriptionOrderNote(subs[i].Notes, orderNote) {
+			matched = &subs[i]
+			break
+		}
+	}
+	require.NotNil(t, matched, "未找到本订单对应的订阅钱包（备注应含 %q）", orderNote)
+	require.True(t, matched.ExpiresAt.Equal(expected), "subscription expiry changed from %s to %s", expected, matched.ExpiresAt)
 }
 
 func TestExecuteSubscriptionFulfillmentAppliesAffiliateRebate(t *testing.T) {
@@ -1123,6 +1150,16 @@ func TestExecuteSubscriptionFulfillmentAppliesAffiliateRebate(t *testing.T) {
 		SetEmail("subscription-affiliate@example.com").
 		SetPasswordHash("hash").
 		SetUsername("subscription-affiliate-user").
+		Save(ctx)
+	require.NoError(t, err)
+
+	// 订阅钱包化：发放的唯一额度来源是套餐快照，订单必须指向真实套餐行
+	plan, err := client.SubscriptionPlan.Create().
+		SetGroupID(7).
+		SetName("affiliate-plan-" + strconv.FormatInt(time.Now().UnixNano(), 10)).
+		SetPrice(9.99).
+		SetTotalLimitUsd(500).
+		SetValidityDays(30).
 		Save(ctx)
 	require.NoError(t, err)
 
@@ -1138,7 +1175,7 @@ func TestExecuteSubscriptionFulfillmentAppliesAffiliateRebate(t *testing.T) {
 		SetPaymentType(payment.TypeAlipay).
 		SetPaymentTradeNo("trade-sub-affiliate").
 		SetOrderType(payment.OrderTypeSubscription).
-		SetPlanID(99).
+		SetPlanID(plan.ID).
 		SetSubscriptionGroupID(7).
 		SetSubscriptionDays(30).
 		SetStatus(OrderStatusPaid).
@@ -1212,6 +1249,18 @@ func TestExecuteSubscriptionFulfillmentDoesNotDuplicateWorkAfterLegacySuccessAud
 		Save(ctx)
 	require.NoError(t, err)
 
+	// 订阅钱包化：发放的唯一额度来源是套餐快照，订单必须指向真实套餐行（否则
+	// PLAN_NOT_FOUND 会先于幂等判定发生，而本用例要验的是「旧成功审计不造成
+	// 重复返利」）。
+	plan, err := client.SubscriptionPlan.Create().
+		SetGroupID(7).
+		SetName("affiliate-idempotent-plan-" + strconv.FormatInt(time.Now().UnixNano(), 10)).
+		SetPrice(80).
+		SetTotalLimitUsd(500).
+		SetValidityDays(30).
+		Save(ctx)
+	require.NoError(t, err)
+
 	order, err := client.PaymentOrder.Create().
 		SetUserID(user.ID).
 		SetUserEmail(user.Email).
@@ -1224,7 +1273,7 @@ func TestExecuteSubscriptionFulfillmentDoesNotDuplicateWorkAfterLegacySuccessAud
 		SetPaymentType(payment.TypeAlipay).
 		SetPaymentTradeNo("trade-sub-affiliate-idempotent").
 		SetOrderType(payment.OrderTypeSubscription).
-		SetPlanID(100).
+		SetPlanID(plan.ID).
 		SetSubscriptionGroupID(7).
 		SetSubscriptionDays(30).
 		SetStatus(OrderStatusPaid).

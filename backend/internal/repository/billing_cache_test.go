@@ -46,42 +46,39 @@ func TestBillingBalanceKey(t *testing.T) {
 	}
 }
 
+// TestBillingSubKey 验证订阅钱包缓存键。
+// 2026-10-03 重构：订阅不绑分组，键从 billing:sub:<user>:<group> 收敛为 billing:sub:<user>。
 func TestBillingSubKey(t *testing.T) {
 	tests := []struct {
 		name     string
 		userID   int64
-		groupID  int64
 		expected string
 	}{
 		{
-			name:     "normal_ids",
+			name:     "normal_user_id",
 			userID:   123,
-			groupID:  456,
-			expected: "billing:sub:123:456",
+			expected: "billing:sub:123",
 		},
 		{
-			name:     "zero_ids",
+			name:     "zero_user_id",
 			userID:   0,
-			groupID:  0,
-			expected: "billing:sub:0:0",
+			expected: "billing:sub:0",
 		},
 		{
-			name:     "negative_ids",
+			name:     "negative_user_id",
 			userID:   -1,
-			groupID:  -2,
-			expected: "billing:sub:-1:-2",
+			expected: "billing:sub:-1",
 		},
 		{
-			name:     "max_int64_ids",
+			name:     "max_int64",
 			userID:   math.MaxInt64,
-			groupID:  math.MaxInt64,
-			expected: "billing:sub:9223372036854775807:9223372036854775807",
+			expected: "billing:sub:9223372036854775807",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := billingSubKey(tc.userID, tc.groupID)
+			got := billingSubKey(tc.userID)
 			require.Equal(t, tc.expected, got)
 		})
 	}

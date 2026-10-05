@@ -128,7 +128,8 @@ func TestAdminService_CreateUser_AssignsDefaultSubscriptions(t *testing.T) {
 		},
 	}
 	settingService := NewSettingService(&settingRepoStub{values: map[string]string{
-		SettingKeyDefaultSubscriptions: `[{"group_id":5,"validity_days":30}]`,
+		// 订阅钱包化：默认发放配置不再指向分组，而是「总额度 USD + 有效天数」。
+		SettingKeyDefaultSubscriptions: `[{"total_limit_usd":5,"validity_days":30}]`,
 	}}, cfg)
 	svc := &adminServiceImpl{
 		userRepo:           repo,
@@ -143,6 +144,10 @@ func TestAdminService_CreateUser_AssignsDefaultSubscriptions(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, assigner.calls, 1)
 	require.Equal(t, int64(21), assigner.calls[0].UserID)
-	require.Equal(t, int64(5), assigner.calls[0].GroupID)
+	// 发放时记录的「来源」：订阅已不绑定分组，来源只可能是钱包额度；
+	// 保留这条断言以锁定「配置里的额度真的透传到了发放入参」。
+	require.NotNil(t, assigner.calls[0].TotalLimitUSD)
+	require.InDelta(t, 5, *assigner.calls[0].TotalLimitUSD, 0.0001)
+	require.Nil(t, assigner.calls[0].PlanID, "默认发放不带套餐来源")
 	require.Equal(t, 30, assigner.calls[0].ValidityDays)
 }

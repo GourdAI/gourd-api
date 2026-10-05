@@ -86,7 +86,7 @@ func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
 		apiKey.User,
 		apiKey,
 		apiKey.Group,
-		subscription,
+		subscriptionsForEligibility(c),
 		service.QuotaPlatform(c.Request.Context(), apiKey),
 	); err != nil {
 		status, code, message, retryAfter := billingErrorDetails(err)

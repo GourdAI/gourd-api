@@ -165,6 +165,8 @@
     subscriptionType: 'Subscription Type',
     billingType: 'Billing Type',
     subscriptionExpires: 'Subscription Expires',
+    unlimited: 'Unlimited',
+    subscriptionCount: 'Active Subscriptions',
     // Usage stat cells
     todayRequests: 'Today Requests',
     todayInputTokens: 'Today Input',

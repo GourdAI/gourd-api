@@ -236,8 +236,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 	}
 
-	// 获取订阅信息（可能为nil）- 提前获取用于后续检查
-	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+	// 获取订阅钱包（可能为空）- 提前获取用于后续检查。
+	// 钱包模型下一个用户可持多份订阅，必须拿完整切片而不能取单份代表全部。
+	subscriptions, _ := middleware2.GetSubscriptionsFromContext(c)
 
 	// 1. 首先获取用户并发槽位
 	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
@@ -253,7 +254,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 
 	// 2. 【新增】Wait后二次检查余额/订阅
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscriptions, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		reqLog.Info("gateway.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
@@ -582,7 +583,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					APIKey:             apiKey,
 					User:               apiKey.User,
 					Account:            account,
-					Subscription:       subscription,
+					Subscriptions:      subscriptions,
 					PricingAt:          pricingAt,
 					InboundEndpoint:    inboundEndpoint,
 					UpstreamEndpoint:   upstreamEndpoint,
@@ -609,7 +610,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 
 	currentAPIKey := apiKey
-	currentSubscription := subscription
+	currentSubscriptions := subscriptions
 	var fallbackGroupID *int64
 	if apiKey.Group != nil {
 		fallbackGroupID = apiKey.Group.FallbackGroupIDOnInvalidRequest
@@ -944,7 +945,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						APIKey:             currentAPIKey,
 						User:               currentAPIKey.User,
 						Account:            account,
-						Subscription:       currentSubscription,
+						Subscriptions:      currentSubscriptions,
 						PricingAt:          pricingAt,
 						InboundEndpoint:    inboundEndpoint,
 						UpstreamEndpoint:   upstreamEndpoint,
@@ -1015,7 +1016,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						ctx := context.WithValue(c.Request.Context(), ctxkey.ForcePlatform, "")
 						c.Request = c.Request.WithContext(ctx)
 						currentAPIKey = fallbackAPIKey
-						currentSubscription = nil
+						currentSubscriptions = nil
 						fallbackUsed = true
 						retryWithFallback = true
 						// 原分组账号已确定性失败（prompt too long），先释放其会话注册再走兜底分组
@@ -1874,42 +1875,20 @@ func (h *GatewayHandler) usageQuotaLimited(c *gin.Context, ctx context.Context, 
 
 // usageUnrestricted 处理 unrestricted 模式的响应（向后兼容）
 func (h *GatewayHandler) usageUnrestricted(c *gin.Context, ctx context.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, usageData gin.H, dailyUsage any, modelStats any) {
-	// 订阅模式：订阅型分组，或上下文存在「至少有一项额度」的个人订阅（group_id=0）。
-	// 必须与计费层三处 isSubscription* 判定同口径：无额度的个人订阅在计费层已退回
-	// 余额模式，这里再报「unrestricted + 个人订阅」就是展示与扣费分叉。
-	contextSubscription, hasSubscription := middleware2.GetSubscriptionFromContext(c)
-	isPersonalSub := hasSubscription && contextSubscription != nil &&
-		contextSubscription.GroupID == 0 && contextSubscription.HasEffectiveLimit(apiKey.Group)
-	if (apiKey.Group != nil && apiKey.Group.IsSubscriptionType()) || isPersonalSub {
-		planName := ""
-		if apiKey.Group != nil {
-			planName = apiKey.Group.Name
-		}
-		if isPersonalSub {
-			// 个人订阅不绑分组，展示分组名会误导
-			planName = "个人订阅"
-		}
+	// 订阅钱包模式：必须与计费层同源 —— service.SubscriptionWalletTakesOver（持有生效
+	// 订阅且至少一份设了额度才接管扣费）。不再参考分组 subscription_type（订阅不绑分组）。
+	// 全部不限额时计费层已退回余额，这里也必须走余额分支，否则会出现
+	// 「计费已退余额、接口仍报 unrestricted」的展示/扣费分叉。
+	subscriptions, _ := middleware2.GetSubscriptionsFromContext(c)
+	if service.SubscriptionWalletTakesOver(subscriptions) {
+		remaining, wallet := subscriptionWalletRemaining(subscriptions)
 		resp := gin.H{
-			"mode":     "unrestricted",
-			"isValid":  true,
-			"planName": planName,
-			"unit":     "USD",
-		}
-
-		// 订阅信息可能不在 context 中（/v1/usage 路径跳过了中间件的计费检查）
-		if subscription, ok := middleware2.GetSubscriptionFromContext(c); ok {
-			remaining := h.calculateSubscriptionRemaining(apiKey.Group, subscription)
-			resp["remaining"] = remaining
-			resp["subscription"] = gin.H{
-				"daily_usage_usd":     subscription.DailyUsageUSD,
-				"weekly_usage_usd":    subscription.WeeklyUsageUSD,
-				"monthly_usage_usd":   subscription.MonthlyUsageUSD,
-				"daily_limit_usd":     subscription.EffectiveDailyLimit(apiKey.Group),
-				"weekly_limit_usd":    subscription.EffectiveWeeklyLimit(apiKey.Group),
-				"monthly_limit_usd":   subscription.EffectiveMonthlyLimit(apiKey.Group),
-				"weekly_window_start": subscription.WeeklyWindowStart,
-				"expires_at":          subscription.ExpiresAt,
-			}
+			"mode":         "unrestricted",
+			"isValid":      true,
+			"planName":     subscriptionWalletPlanName(subscriptions),
+			"unit":         "USD",
+			"remaining":    remaining,
+			"subscription": wallet,
 		}
 
 		if usageData != nil {
@@ -1952,57 +1931,75 @@ func (h *GatewayHandler) usageUnrestricted(c *gin.Context, ctx context.Context, 
 	c.JSON(http.StatusOK, resp)
 }
 
-// calculateSubscriptionRemaining 计算订阅剩余可用额度
-// 逻辑：
-// 1. 如果日/周/月任一限额达到100%，返回0
-// 2. 否则返回所有已配置周期中剩余额度的最小值
-// 额度取生效值：订阅自有额度优先，其次归属分组额度。
-func (h *GatewayHandler) calculateSubscriptionRemaining(group *service.Group, sub *service.UserSubscription) float64 {
-	var remainingValues []float64
-	if sub == nil {
-		return -1
-	}
-
-	// 检查日限额
-	if limit := sub.EffectiveDailyLimit(group); limit != nil {
-		remaining := *limit - sub.DailyUsageUSD
-		if remaining <= 0 {
-			return 0
-		}
-		remainingValues = append(remainingValues, remaining)
-	}
-
-	// 检查周限额
-	if limit := sub.EffectiveWeeklyLimit(group); limit != nil {
-		remaining := *limit - sub.WeeklyUsageUSD
-		if remaining <= 0 {
-			return 0
-		}
-		remainingValues = append(remainingValues, remaining)
-	}
-
-	// 检查月限额
-	if limit := sub.EffectiveMonthlyLimit(group); limit != nil {
-		remaining := *limit - sub.MonthlyUsageUSD
-		if remaining <= 0 {
-			return 0
-		}
-		remainingValues = append(remainingValues, remaining)
-	}
-
-	// 如果没有配置任何限额，返回-1表示无限制
-	if len(remainingValues) == 0 {
-		return -1
-	}
-
-	// 返回最小值
-	min := remainingValues[0]
-	for _, v := range remainingValues[1:] {
-		if v < min {
-			min = v
+// subscriptionWalletPlanName 返回钱包展示名：取第一份有限额钱包的名称，
+// 退化时取第一份钱包名称（订阅不绑分组，展示分组名会误导）。
+func subscriptionWalletPlanName(subscriptions []*service.UserSubscription) string {
+	for _, sub := range subscriptions {
+		if sub != nil && sub.HasEffectiveLimit() {
+			return sub.DisplayName()
 		}
 	}
-	return min
+	for _, sub := range subscriptions {
+		if sub != nil {
+			return sub.DisplayName()
+		}
+	}
+	return "个人订阅"
+}
+
+// subscriptionWalletRemaining 聚合订阅钱包的剩余可用额度（与计费预检同源：
+// 判定用聚合 Σlimit vs Σusage，所以这里把各份有限额钱包的剩余相加）。
+// 返回 -1 表示持有不限额钱包（无上限）。第二个返回值是对外展示的钱包概览。
+func subscriptionWalletRemaining(subscriptions []*service.UserSubscription) (float64, gin.H) {
+	var remaining float64
+	var totalLimit float64
+	var totalUsage float64
+	var hasUnlimited bool
+	var latestExpiry time.Time
+	var count int
+
+	for _, sub := range subscriptions {
+		if sub == nil || !sub.IsActive() {
+			continue
+		}
+		count++
+		if sub.ExpiresAt.After(latestExpiry) {
+			latestExpiry = sub.ExpiresAt
+		}
+		totalUsage += sub.TotalUsageUSD
+		if sub.IsUnlimited() {
+			// 不限额钱包：额度和用量都不计入聚合上限（与 aggregateSubscriptionWallet 同口径）。
+			hasUnlimited = true
+			continue
+		}
+		if limit := sub.EffectiveTotalLimit(); limit != nil {
+			totalLimit += *limit
+		}
+		if left := sub.RemainingUSD(); left != nil {
+			remaining += *left
+		}
+	}
+
+	wallet := gin.H{
+		"subscription_count": count,
+		"total_limit_usd":    totalLimit,
+		"total_usage_usd":    totalUsage,
+		"remaining_usd":      remaining,
+		"has_unlimited":      hasUnlimited,
+		"expires_at":         latestExpiry,
+	}
+	if hasUnlimited {
+		return -1, wallet
+	}
+	if count == 0 {
+		// 钱包已全部到期/失效：与计费层一样退回余额模式，这里报 0 而不是 -1，
+		// 避免调用方把“无可用额度”误读成“不限量”。
+		return 0, wallet
+	}
+	if remaining <= 0 {
+		return 0, wallet
+	}
+	return remaining, wallet
 }
 
 // handleConcurrencyError handles concurrency-related acquire errors.
@@ -2291,12 +2288,12 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	setOpsRequestContext(c, parsedReq.Model, parsedReq.Stream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(parsedReq.Stream, false)))
 
-	// 获取订阅信息（可能为nil）
-	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+	// 获取订阅钱包（可能为空）
+	subscriptions, _ := middleware2.GetSubscriptionsFromContext(c)
 
 	// 校验 billing eligibility（订阅/余额）
 	// 【注意】不计算并发，但需要校验订阅/余额
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscriptions, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
@@ -2604,6 +2601,17 @@ func billingErrorDetails(err error) (status int, code, message string, retryAfte
 		msg := pkgerrors.Message(err)
 		retrySeconds := 60 - int(time.Now().Unix()%60)
 		return http.StatusTooManyRequests, "rate_limit_exceeded", msg, retrySeconds
+	}
+	if errors.Is(err, service.ErrSubscriptionQuotaExhausted) {
+		// 订阅钱包额度耗尽：契约定为 429（SUBSCRIPTION_QUOTA_EXHAUSTED），与 user×platform
+		// quota 同一口径，让只认 429 的 SDK 自动退避而不是当成“权限不足”直接报错。
+		// 不读 window_resets_at：总额度是一次性池（不随日/周/月滚动重置），只有续费/新钱包
+		// 才能恢复，编造 Retry-After 会误导客户端反复重试，因此返回 0（不下发该头）。
+		msg := pkgerrors.Message(err)
+		if msg == "" {
+			msg = "Subscription quota exhausted."
+		}
+		return http.StatusTooManyRequests, "rate_limit_exceeded", msg, 0
 	}
 	if errors.Is(err, service.ErrUserPlatformDailyQuotaExhausted) ||
 		errors.Is(err, service.ErrUserPlatformWeeklyQuotaExhausted) ||

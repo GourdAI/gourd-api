@@ -47,24 +47,97 @@ const workbuddyEmptyStreamErrorFrame = `{"error":{"message":"empty upstream stre
 //
 // 实现为拉取式（无后台 goroutine）：消费方读多少、上游就消费多少，客户端断连
 // 场景下不存在写阻塞的泄漏 goroutine；上游流自然终止（EOF）时读侧收到 [DONE] 后 EOF。
+// newWorkbuddySSEReader 包装上游 SSE 为规范化流（无错误帧回调）。
 func newWorkbuddySSEReader(r io.Reader) io.Reader {
+	return newWorkbuddySSEReaderWithHook(r, nil)
+}
+
+// newWorkbuddySSEReaderWithHook 同 newWorkbuddySSEReader，但在遇到**上游**错误帧时
+// 同步回调 onErrFrame(code, message)。
+//
+// 为何要这个钩子：error 帧在下方只被「原样透传」（不进白名单重建，否则客户端
+// 看不到上游 code/msg），透传与处置不能混为一谈；而账号级冷却必须拿到 account 与
+// gin.Context，这两个对象只存在于调用方（sendWorkbuddyUpstreamRequest）。
+//
+// 回调不得覆盖网关自己合成的空流兜底帧（workbuddyEmptyStreamErrorFrame）：那是本地
+// 缺陷（code=upstream_parse），不是上游账号问题，误报会把好号打下线。
+func newWorkbuddySSEReaderWithHook(r io.Reader, onErrFrame func(code, message string)) io.Reader {
 	if r == nil {
 		r = strings.NewReader("")
 	}
 	return &workbuddySSEReader{
-		br:       bufio.NewReaderSize(r, 64*1024),
-		toolSeen: map[int]bool{},
+		br:         bufio.NewReaderSize(r, 64*1024),
+		toolSeen:   map[int]bool{},
+		onErrFrame: onErrFrame,
 	}
 }
 
 // workbuddySSEReader 拉取式规范化 SSE 读取器。
 type workbuddySSEReader struct {
 	br          *bufio.Reader
-	pending     bytes.Buffer // 已产出、待消费的规范化帧字节
-	toolSeen    map[int]bool // delta.tool_calls 已发过首片的 index（name 收敛）
-	firstID     string       // 首帧真实 id（后续帧缺失/空串时续传）
-	validFrames int          // 有效帧计数（JSON 解析成功或 error 帧）
-	finished    bool         // 已向 pending 写入 [DONE]，不再产出
+	pending     bytes.Buffer               // 已产出、待消费的规范化帧字节
+	toolSeen    map[int]bool               // delta.tool_calls 已发过首片的 index（name 收敛）
+	firstID     string                     // 首帧真实 id（后续帧缺失/空串时续传）
+	validFrames int                        // 有效帧计数（JSON 解析成功或 error 帧）
+	finished    bool                       // 已向 pending 写入 [DONE]，不再产出
+	onErrFrame  func(code, message string) // 上游 error 帧处置回调（可为 nil）
+}
+
+// workbuddyErrorFrameFields 从一帧解析体取出上游 error 帧的 code 与 message。
+//
+// 抽成包级函数是为了让流式（workbuddySSEReader.notifyErrFrame）与非流式聚合
+// （aggregateWorkbuddySSEWithHook）共用同一口径，否则两处对同一个码会给出不同结论。
+// code 兼容字符串与数字两种形态（实测上游两处都用过：chat 流内 "6004" 是 string，
+// billing 顶层 110 是 int）。ok=false 表示这不是 error 帧，或帧内什到 nothing 可用。
+func workbuddyErrorFrameFields(obj map[string]any) (code, message string, ok bool) {
+	if obj == nil {
+		return "", "", false
+	}
+	raw, hasErr := obj["error"]
+	if !hasErr {
+		return "", "", false
+	}
+	errObj, isObj := raw.(map[string]any)
+	if !isObj {
+		// error 为字符串形态（非对象）：没有码可分类，但也不得丢消息。
+		if text, isStr := raw.(string); isStr && strings.TrimSpace(text) != "" {
+			return "", strings.TrimSpace(text), true
+		}
+		return "", "", false
+	}
+	switch v := errObj["code"].(type) {
+	case string:
+		code = v
+	case float64:
+		code = fmt.Sprintf("%d", int64(v))
+	}
+	message, _ = errObj["message"].(string)
+	if strings.TrimSpace(code) == "" && strings.TrimSpace(message) == "" {
+		return "", "", false
+	}
+	return strings.TrimSpace(code), message, true
+}
+
+// notifyErrFrame 把**上游** error 帧的 code/message 交给处置回调。
+//
+// 只给上游帧调用（见 pump 里的 error 透传分支）；网关自合成的空流兜底帧不走这里，
+// 否则「上游没吐内容」会被误报成「账号额度耗尽」而把好号打下线。
+// 回调 panic 被吃掉：不得因为处置失败而打断 SSE 转发。
+func (r *workbuddySSEReader) notifyErrFrame(obj map[string]any) {
+	if r.onErrFrame == nil {
+		return
+	}
+	code, msg, ok := workbuddyErrorFrameFields(obj)
+	if !ok {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.L().Warn("workbuddy sse error-frame handler panicked",
+				zap.String("code", code), zap.Any("recover", rec))
+		}
+	}()
+	r.onErrFrame(code, msg)
 }
 
 // Read 实现 io.Reader：无待消费字节时逐行推进上游，直到产出至少一帧或流程终止。
@@ -116,6 +189,7 @@ func (r *workbuddySSEReader) writeFrame(payload string) {
 	if _, hasErr := obj["error"]; hasErr {
 		r.validFrames++
 		r.pending.WriteString("data: " + payload + "\n\n")
+		r.notifyErrFrame(obj)
 		return
 	}
 	// 先按 index 收敛 tool_calls name（每 index 仅首片保留，后续分片删 name 键），再规范化透传。
@@ -317,6 +391,22 @@ func workbuddyUsageWithCacheReadMapping(u map[string]any) map[string]any {
 // tool_call——脏参数会被客户端解析成非法 JSON 卡死会话。
 // usage 保留上游原字段并 ensureUsageTotal 补 total；空流返回 errWorkbuddyEmptyStream。
 func aggregateWorkbuddySSE(r io.Reader) ([]byte, *OpenAIUsage, error) {
+	return aggregateWorkbuddySSEWithHook(r, nil)
+}
+
+// aggregateWorkbuddySSEWithHook 同 aggregateWorkbuddySSE，但在遇到**上游** error 帧时
+// 同步回调 onErrFrame(code, message)。
+//
+// 为何非流式也要接：客户端要非流式时，本函数是消费上游 SSE 的唯一入口。它的帧循环
+// 原本只取 id/model/usage/choices，**对 error 键零处理** —— 上游只吐 error 帧时，该帧
+// 会被计入 validEvents（不触发空流兜底）、聚合出一个空 content 的 200 响应：客户端看到
+// 空回复、账单按 0 token 出账，而账号状态一切如常、调度继续选用（与
+// trae_upstream_error.go 文件头记录的症状同构）。不接这里就会出现「流式能冷却、
+// 非流式不能」的不对称半成品。
+//
+// 本函数**不改变响应体语义**（error 帧仍计入 validEvents、仍聚合为空内容响应），
+// 只做账号处置与观测；对外协议不变。要改变响应形态属单独决策。
+func aggregateWorkbuddySSEWithHook(r io.Reader, onErrFrame func(code, message string)) ([]byte, *OpenAIUsage, error) {
 	if r == nil {
 		return nil, nil, errWorkbuddyEmptyStream
 	}
@@ -427,6 +517,20 @@ func aggregateWorkbuddySSE(r io.Reader) ([]byte, *OpenAIUsage, error) {
 				if json.Unmarshal([]byte(payload), &chunk) == nil {
 					// 有效事件计数：仅 JSON 解析成功的数据帧计入。
 					validEvents++
+					// 上游 error 帧：交给处置回调（响应体语义不变，仅落状态/观测）。
+					if onErrFrame != nil {
+						if code, msg, isErr := workbuddyErrorFrameFields(chunk); isErr {
+							func() {
+								defer func() {
+									if rec := recover(); rec != nil {
+										logger.L().Warn("workbuddy aggregate error-frame handler panicked",
+											zap.String("code", code), zap.Any("recover", rec))
+									}
+								}()
+								onErrFrame(code, msg)
+							}()
+						}
+					}
 					if v, ok := chunk["id"].(string); ok && id == "" {
 						id = v
 					}

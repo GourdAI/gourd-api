@@ -700,21 +700,10 @@ export default {
       revokeSubscription: 'Revoke Subscription',
       restoreSubscription: 'Restore Subscription',
       allStatus: 'All Status',
-      allGroups: 'All Groups',
-      allPlatforms: 'All Platforms',
-      daily: 'Daily',
-      weekly: 'Weekly',
-      monthly: 'Monthly',
-      noLimits: 'No limits configured',
       unlimited: 'Unlimited',
-      resetNow: 'Resetting soon',
-      windowNotActive: 'Window not active',
-      resetInMinutes: 'Resets in {minutes}m',
-      resetInHoursMinutes: 'Resets in {hours}h {minutes}m',
-      resetInDaysHours: 'Resets in {days}d {hours}h',
-      quotaEndsInMinutes: 'Quota ends in {minutes}m',
-      quotaEndsInHoursMinutes: 'Quota ends in {hours}h {minutes}m',
-      quotaEndsInDaysHours: 'Quota ends in {days}d {hours}h',
+      total: 'Total',
+      remaining: 'Remaining',
+      manualAssignment: 'Manual grant',
       daysRemaining: '{days} days remaining',
       hoursMinutesRemaining: '{hours}h {minutes}m remaining',
       minutesRemaining: '{minutes}m remaining',
@@ -726,9 +715,12 @@ export default {
         revoked: 'Revoked',
         suspended: 'Suspended'
       },
+      daily: 'Daily',
+      weekly: 'Weekly',
+      monthly: 'Monthly',
       columns: {
         user: 'User',
-        group: 'Group',
+        plan: 'Source Plan',
         usage: 'Usage',
         expires: 'Expires',
         status: 'Status',
@@ -736,19 +728,13 @@ export default {
       },
       form: {
         user: 'User',
-        group: 'Subscription Group',
         validityDays: 'Validity (Days)',
         adjustDays: 'Adjust by (Days)',
-        dailyLimit: 'Daily Quota (USD)',
-        weeklyLimit: 'Weekly Quota (USD)',
-        monthlyLimit: 'Monthly Quota (USD)'
+        totalLimit: 'Total Quota (USD)'
       },
       selectUser: 'Select a user',
-      selectGroup: 'Select a subscription group',
-    personalSubscription: 'Personal (no group, quota only)',
-    personalGroupHint: 'No group binding: this quota applies across the groups and models the user can already access. A subscription is a wallet — it never grants extra group permissions.',
-      groupHint: 'Only groups with subscription billing type are shown',
-      quotaHint: 'Blank means unlimited for a new subscription; when re-assigning an existing one, blank leaves the quota unchanged while 0 resets it to unlimited. Quotas here apply to this user only and take precedence over the group quota.',
+      personalSubscription: 'Personal (no group, quota only)',
+      quotaHint: 'One subscription = one prepaid wallet: a single total pool spent until exhausted, with any remainder voided at expiry — it never resets daily/weekly/monthly. Blank means unlimited for a new subscription; when re-assigning an existing one, blank leaves the quota unchanged while 0 resets it to unlimited.',
     quotaInvalid: 'Quota must be a non-negative number',
     quotaPlaceholder: '0 = unlimited',
       validityHint: 'Number of days the subscription will be valid',
@@ -764,7 +750,7 @@ export default {
       restore: 'Restore',
       resetQuota: 'Reset Quota',
       resetQuotaTitle: 'Reset Usage Quota',
-      resetQuotaConfirm: "Reset the daily, weekly, and monthly usage quota for '{user}'? Usage will be zeroed and windows restarted from today.",
+      resetQuotaConfirm: "Reset the used amount of the subscription quota pool for '{user}'? Usage will be zeroed (the total quota and expiration stay unchanged).",
       quotaResetSuccess: 'Quota reset successfully',
       failedToResetQuota: 'Failed to reset quota',
       noSubscriptionsYet: 'No subscriptions yet',
@@ -781,7 +767,6 @@ export default {
       adjustWouldExpire: 'Remaining days after adjustment must be greater than 0',
       adjustOutOfRange: 'Adjustment days must be between -36500 and 36500',
       pleaseSelectUser: 'Please select a user',
-      pleaseSelectGroup: 'Please select a group',
       validityDaysRequired: 'Please enter a valid number of days (at least 1)',
       revokeConfirm:
         "Are you sure you want to revoke the subscription for '{user}'? You can restore it later from the revoked list.",
@@ -789,20 +774,20 @@ export default {
         "Restore the subscription for '{user}'? If the original subscription has expired, it will be restored as expired.",
       guide: {
         title: 'Subscription Management Guide',
-        subtitle: 'Subscription mode lets you assign time-based usage quotas to users, with daily/weekly/monthly limits. Follow these steps to get started.',
+        subtitle: 'A subscription is a personal quota wallet: one total allowance plus one validity window. Follow these steps to grant and manage it.',
         showGuide: 'Usage Guide',
         step1: {
-          title: 'Create a Subscription Group',
-          line1: 'Go to "Group Management" page, click "Create Group"',
-          line2: 'Set billing type to "Subscription", configure daily/weekly/monthly quota limits',
-          line3: 'Save the group and ensure its status is "Active"',
+          title: 'Decide the allowance and validity',
+          line1: 'Before granting, decide the total quota (USD) and validity days for this wallet',
+          line2: 'The total is one-time: spent until exhausted, remainder voided at expiry, no daily/weekly/monthly reset',
+          line3: 'Blank or 0 = unlimited; an unlimited wallet does not take over billing, usage still falls back to balance',
           link: 'Go to Group Management'
         },
         step2: {
           title: 'Assign Subscription to User',
           line1: 'Click the "Assign Subscription" button in the top right',
           line2: 'Search for a user by email and select them',
-          line3: 'Choose a subscription group, set validity days, then click "Assign"'
+          line3: 'Enter the total quota (USD) and validity days, then click "Assign"'
         },
         step3: {
           title: 'Manage Existing Subscriptions'
@@ -811,11 +796,11 @@ export default {
           adjust: 'Adjust',
           adjustDesc: 'Extend or shorten the subscription validity period',
           resetQuota: 'Reset Quota',
-          resetQuotaDesc: 'Reset daily/weekly/monthly usage to zero',
+          resetQuotaDesc: 'Zero the used amount of the total quota pool',
           revoke: 'Revoke',
           revokeDesc: 'Immediately terminate the subscription (restorable from the revoked list)'
         },
-        tip: 'Tip: Only groups with billing type "Subscription" and status "Active" appear in the group dropdown. If no options are available, create one in Group Management first.'
+        tip: 'Tip: Subscriptions manage quota only — they never grant group access. A key is billed at the multiplier of the group it belongs to; the money is simply deducted from this wallet.'
       }
     },
 

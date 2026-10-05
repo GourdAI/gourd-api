@@ -3156,22 +3156,6 @@ func (c *GroupClient) QueryRedeemCodes(_m *Group) *RedeemCodeQuery {
 	return query
 }
 
-// QuerySubscriptions queries the subscriptions edge of a Group.
-func (c *GroupClient) QuerySubscriptions(_m *Group) *UserSubscriptionQuery {
-	query := (&UserSubscriptionClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(group.Table, group.FieldID, id),
-			sqlgraph.To(usersubscription.Table, usersubscription.FieldID),
-			sqlgraph.Edge(sqlgraph.O2M, false, group.SubscriptionsTable, group.SubscriptionsColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
-}
-
 // QueryUsageLogs queries the usage_logs edge of a Group.
 func (c *GroupClient) QueryUsageLogs(_m *Group) *UsageLogQuery {
 	query := (&UsageLogClient{config: c.config}).Query()
@@ -5193,6 +5177,22 @@ func (c *SubscriptionPlanClient) GetX(ctx context.Context, id int64) *Subscripti
 	return obj
 }
 
+// QueryUserSubscriptions queries the user_subscriptions edge of a SubscriptionPlan.
+func (c *SubscriptionPlanClient) QueryUserSubscriptions(_m *SubscriptionPlan) *UserSubscriptionQuery {
+	query := (&UserSubscriptionClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(subscriptionplan.Table, subscriptionplan.FieldID, id),
+			sqlgraph.To(usersubscription.Table, usersubscription.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, subscriptionplan.UserSubscriptionsTable, subscriptionplan.UserSubscriptionsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *SubscriptionPlanClient) Hooks() []Hook {
 	return c.hooks.SubscriptionPlan
@@ -6763,15 +6763,15 @@ func (c *UserSubscriptionClient) QueryUser(_m *UserSubscription) *UserQuery {
 	return query
 }
 
-// QueryGroup queries the group edge of a UserSubscription.
-func (c *UserSubscriptionClient) QueryGroup(_m *UserSubscription) *GroupQuery {
-	query := (&GroupClient{config: c.config}).Query()
+// QueryPlan queries the plan edge of a UserSubscription.
+func (c *UserSubscriptionClient) QueryPlan(_m *UserSubscription) *SubscriptionPlanQuery {
+	query := (&SubscriptionPlanClient{config: c.config}).Query()
 	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
 		id := _m.ID
 		step := sqlgraph.NewStep(
 			sqlgraph.From(usersubscription.Table, usersubscription.FieldID, id),
-			sqlgraph.To(group.Table, group.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, true, usersubscription.GroupTable, usersubscription.GroupColumn),
+			sqlgraph.To(subscriptionplan.Table, subscriptionplan.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, usersubscription.PlanTable, usersubscription.PlanColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil

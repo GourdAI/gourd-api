@@ -169,6 +169,12 @@ func (m *mockAccountRepoForGemini) ClearRateLimit(ctx context.Context, id int64)
 func (m *mockAccountRepoForGemini) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error {
 	return nil
 }
+
+// ClearModelRateLimitScopes 补齐接口（本 stub 不断言该行为）。
+func (m *mockAccountRepoForGemini) ClearModelRateLimitScopes(_ context.Context, _ int64, _ []string) error {
+	return nil
+}
+
 func (m *mockAccountRepoForGemini) ClearModelRateLimits(ctx context.Context, id int64) error {
 	return nil
 }

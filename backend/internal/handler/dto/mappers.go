@@ -899,27 +899,29 @@ func UserSubscriptionFromServiceAdmin(sub *service.UserSubscription) *AdminUserS
 
 func userSubscriptionFromServiceBase(sub *service.UserSubscription) UserSubscription {
 	return UserSubscription{
-		ID:                 sub.ID,
-		UserID:             sub.UserID,
-		GroupID:            sub.GroupID,
-		StartsAt:           sub.StartsAt,
-		ExpiresAt:          sub.ExpiresAt,
-		Status:             sub.Status,
-		DailyWindowStart:   sub.DailyWindowStart,
-		WeeklyWindowStart:  sub.WeeklyWindowStart,
-		MonthlyWindowStart: sub.MonthlyWindowStart,
-		DailyUsageUSD:      sub.DailyUsageUSD,
-		WeeklyUsageUSD:     sub.WeeklyUsageUSD,
-		MonthlyUsageUSD:    sub.MonthlyUsageUSD,
-		DailyLimitUSD:      sub.DailyLimitUSD,
-		WeeklyLimitUSD:     sub.WeeklyLimitUSD,
-		MonthlyLimitUSD:    sub.MonthlyLimitUSD,
-		CreatedAt:          sub.CreatedAt,
-		UpdatedAt:          sub.UpdatedAt,
-		RevokedAt:          sub.DeletedAt,
-		User:               UserFromServiceShallow(sub.User),
-		Group:              GroupFromServiceShallow(sub.Group),
+		ID:            sub.ID,
+		UserID:        sub.UserID,
+		PlanID:        sub.PlanID,
+		StartsAt:      sub.StartsAt,
+		ExpiresAt:     sub.ExpiresAt,
+		Status:        sub.Status,
+		TotalLimitUSD: sub.TotalLimitUSD,
+		TotalUsageUSD: sub.TotalUsageUSD,
+		RemainingUSD:  sub.RemainingUSD(),
+		Unlimited:     sub.IsUnlimited(),
+		CreatedAt:     sub.CreatedAt,
+		UpdatedAt:     sub.UpdatedAt,
+		RevokedAt:     sub.DeletedAt,
+		User:          UserFromServiceShallow(sub.User),
+		Plan:          subscriptionPlanRefFromService(sub.Plan),
 	}
+}
+
+func subscriptionPlanRefFromService(plan *service.SubscriptionPlanInfo) *SubscriptionPlanRef {
+	if plan == nil {
+		return nil
+	}
+	return &SubscriptionPlanRef{ID: plan.ID, Name: plan.Name}
 }
 
 func BulkAssignResultFromService(r *service.BulkAssignResult) *BulkAssignResult {

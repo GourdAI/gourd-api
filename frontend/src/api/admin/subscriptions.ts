@@ -18,10 +18,8 @@ export type SubscriptionBulkAction = 'extend' | 'reset_quota' | 'revoke' | 'rest
 export interface SubscriptionBulkActionRequest {
   subscription_ids: number[]
   action: SubscriptionBulkAction
+  /** 仅 action='extend' 使用；正整数延长，负整数缩短 */
   days?: number
-  daily?: boolean
-  weekly?: boolean
-  monthly?: boolean
 }
 
 export interface SubscriptionBulkActionResult {
@@ -54,9 +52,12 @@ export async function bulkAction(
 
 /**
  * List all subscriptions with pagination
+ *
+ * 订阅 = 个人额度钱包，不绑定分组，因此没有 group_id / platform 筛选（
+ * 后端 List 已改为按 user_id / plan_id / status 寻址）。
  * @param page - Page number (default: 1)
  * @param pageSize - Items per page (default: 20)
- * @param filters - Optional filters (status, user_id, group_id, sort_by, sort_order)
+ * @param filters - Optional filters (status, user_id, plan_id, sort_by, sort_order)
  * @returns Paginated list of subscriptions
  */
 export async function list(
@@ -65,8 +66,7 @@ export async function list(
   filters?: {
     status?: 'active' | 'expired' | 'revoked' | 'suspended'
     user_id?: number
-    group_id?: number
-    platform?: string
+    plan_id?: number
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   },
@@ -171,39 +171,15 @@ export async function restore(id: number): Promise<UserSubscription> {
 }
 
 /**
- * Reset daily, weekly, and/or monthly usage quota for a subscription
+ * Reset the used amount of a subscription's total quota pool.
+ *
+ * 总额池只有一份，不存在日/周/月分档重置，因此本接口无请求体参数。
  * @param id - Subscription ID
- * @param options - Which windows to reset
  * @returns Updated subscription
  */
-export async function resetQuota(
-  id: number,
-  options: { daily: boolean; weekly: boolean; monthly: boolean }
-): Promise<UserSubscription> {
+export async function resetQuota(id: number): Promise<UserSubscription> {
   const { data } = await apiClient.post<UserSubscription>(
     `/admin/subscriptions/${id}/reset-quota`,
-    options
-  )
-  return data
-}
-
-/**
- * List subscriptions by group
- * @param groupId - Group ID
- * @param page - Page number
- * @param pageSize - Items per page
- * @returns Paginated list of subscriptions in the group
- */
-export async function listByGroup(
-  groupId: number,
-  page: number = 1,
-  pageSize: number = 20
-): Promise<PaginatedResponse<UserSubscription>> {
-  const { data } = await apiClient.get<PaginatedResponse<UserSubscription>>(
-    `/admin/groups/${groupId}/subscriptions`,
-    {
-      params: { page, page_size: pageSize }
-    }
   )
   return data
 }
@@ -240,7 +216,6 @@ export const subscriptionsAPI = {
   revoke,
   restore,
   resetQuota,
-  listByGroup,
   listByUser
 }
 

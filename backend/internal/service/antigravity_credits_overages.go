@@ -86,9 +86,12 @@ func (s *AntigravityGatewayService) clearCreditsExhausted(ctx context.Context, a
 	}
 	delete(rawLimits, creditsExhaustedKey)
 	account.Extra[modelRateLimitsKey] = rawLimits
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
-		modelRateLimitsKey: rawLimits,
-	}); err != nil {
+	// 【必须按键精确删除，不能写回整个 map】以前这里把内存里 delete 后的 rawLimits
+	// 经 UpdateExtra 写回，而 UpdateExtra 的 SQL 是 `extra || $1::jsonb`（顶层整体
+	// 替换）。rawLimits 来自请求开始时的快照，不包含并发请求刚落的其它冷却（例如
+	// 同一轮重试里刚写的模型键），于是这一次“清 AICredits”会把 DB 里其它所有冷却
+	// 一并抹掉 —— 冷却保护直接失效，表现为「限流了还被调、反复 404」。
+	if err := s.accountRepo.ClearModelRateLimitScopes(ctx, account.ID, []string{creditsExhaustedKey}); err != nil {
 		logger.LegacyPrintf("service.antigravity_gateway", "clear credits exhausted failed: account=%d err=%v", account.ID, err)
 	}
 }

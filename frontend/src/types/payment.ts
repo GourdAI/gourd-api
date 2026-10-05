@@ -121,6 +121,12 @@ export interface SubscriptionPlan {
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
   monthly_limit_usd?: number | null
+  /**
+   * 套餐额度（USD）：购买/发放时作为快照写入 user_subscriptions.total_limit_usd。
+   * 订阅 = 个人额度钱包，额度长在套餐上；null / 缺失 = 不限额。
+   * 后端 json: AdminSubscriptionPlanResult.total_limit_usd (omitempty)
+   */
+  total_limit_usd?: number | null
   supported_model_scopes?: string[]
   name: string
   description: string

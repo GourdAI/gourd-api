@@ -1176,6 +1176,13 @@ func normalizeOptionalNonNegativeFloatString(raw string) (string, error) {
 	return strconv.FormatFloat(value, 'f', -1, 64), nil
 }
 
+// parseDefaultSubscriptions 解析「新用户默认发放订阅钱包」配置。
+// 合法条目：total_limit_usd > 0 且 validity_days > 0。
+//
+// 为什么必须丢弃额度缺失（nil / <=0）的条目：无额度的钱包不接管扣费
+// （SubscriptionWalletTakesOver 防资损闸门），发放它等于给用户一条永远
+// 不起作用的记录，还会在列表里显示“已赠送”。旧格式数据（{group_id,validity_days}）
+// 反序列化后额度为 nil，因此会在此统一丢弃，需管理员重新配一次额度。
 func parseDefaultSubscriptions(raw string) []DefaultSubscriptionSetting {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1189,12 +1196,17 @@ func parseDefaultSubscriptions(raw string) []DefaultSubscriptionSetting {
 
 	normalized := make([]DefaultSubscriptionSetting, 0, len(items))
 	for _, item := range items {
-		if item.GroupID <= 0 || item.ValidityDays <= 0 {
+		if item.ValidityDays <= 0 {
+			continue
+		}
+		if item.TotalLimitUSD == nil || *item.TotalLimitUSD <= 0 {
 			continue
 		}
 		if item.ValidityDays > MaxValidityDays {
 			item.ValidityDays = MaxValidityDays
 		}
+		limit := *item.TotalLimitUSD
+		item.TotalLimitUSD = &limit
 		normalized = append(normalized, item)
 	}
 

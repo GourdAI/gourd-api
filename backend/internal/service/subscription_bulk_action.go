@@ -16,9 +16,6 @@ type BulkSubscriptionActionInput struct {
 	SubscriptionIDs []int64 `json:"subscription_ids"`
 	Action          string  `json:"action"`
 	Days            int     `json:"days,omitempty"`
-	Daily           bool    `json:"daily,omitempty"`
-	Weekly          bool    `json:"weekly,omitempty"`
-	Monthly         bool    `json:"monthly,omitempty"`
 }
 
 // Validate checks the entire request before any subscription is changed.
@@ -40,9 +37,7 @@ func (input *BulkSubscriptionActionInput) Validate() error {
 			return infraerrors.BadRequest("INVALID_ADJUSTMENT_DAYS", "days must be nonzero and between -36500 and 36500")
 		}
 	case "reset_quota":
-		if !input.Daily && !input.Weekly && !input.Monthly {
-			return ErrInvalidInput
-		}
+		// 总额池只有一个额度，重置就是归零 total_usage_usd，无需选择窗口。
 	case "revoke", "restore":
 	default:
 		return infraerrors.BadRequest("INVALID_SUBSCRIPTION_ACTION", "action must be extend, reset_quota, revoke, or restore")
@@ -90,7 +85,7 @@ func (s *SubscriptionService) BulkSubscriptionAction(ctx context.Context, input 
 				case "extend":
 					changed, mutationErr = s.ExtendSubscription(txCtx, id, input.Days)
 				case "reset_quota":
-					changed, mutationErr = s.AdminResetQuota(txCtx, id, input.Daily, input.Weekly, input.Monthly)
+					changed, mutationErr = s.AdminResetQuota(txCtx, id)
 				case "revoke":
 					changed, mutationErr = s.userSubRepo.GetByID(txCtx, id)
 					if mutationErr == nil {
@@ -104,7 +99,7 @@ func (s *SubscriptionService) BulkSubscriptionAction(ctx context.Context, input 
 			if err == nil && changed != nil {
 				// Invalidate again after commit: concurrent readers could have filled
 				// a cache with the old row while the transaction was still open.
-				if cacheErr := s.invalidateSubscriptionCaches(changed.UserID, changed.GroupID); cacheErr != nil {
+				if cacheErr := s.invalidateSubscriptionCaches(changed.UserID); cacheErr != nil {
 					log.Printf("[SubscriptionBulkAction] committed action=%s subscription_id=%d cache_error=%s", input.Action, id, logredact.RedactText(cacheErr.Error()))
 				}
 			}

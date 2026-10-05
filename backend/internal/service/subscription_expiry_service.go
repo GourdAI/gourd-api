@@ -137,7 +137,7 @@ func (s *SubscriptionExpiryService) sendExpiryReminders(ctx context.Context) {
 	}
 	defer release()
 	for page := 1; ; page++ {
-		subs, pag, err := s.userSubRepo.List(ctx, pagination.PaginationParams{Page: page, PageSize: 200}, nil, nil, SubscriptionStatusActive, "", "expires_at", "asc")
+		subs, pag, err := s.userSubRepo.List(ctx, pagination.PaginationParams{Page: page, PageSize: 200}, nil, nil, SubscriptionStatusActive, "expires_at", "asc")
 		if err != nil {
 			log.Printf("[SubscriptionExpiry] List active subscriptions for reminder failed: %v", err)
 			return
@@ -189,7 +189,10 @@ func (s *SubscriptionExpiryService) smtpConfigured(ctx context.Context) bool {
 }
 
 func (s *SubscriptionExpiryService) sendExpiryReminderIfDue(ctx context.Context, sub *UserSubscription) {
-	// 个人订阅（group_id=0）没有 Group 边，不能因此跳过提醒。
+	// 提醒只依赖 User 边；订阅已丕绑定分组（2026-10-03 重构），因此不得因为
+	// 拿不到 Plan/Group 关联而跳过提醒。
+	// 注：邮件变量名仍叫 subscription_group（存量邮件模板正文引用它），实际值取
+	// DisplayName() = 套餐名或「个人订阅」；改名会连带修改库里模板，本轮不动。
 	if sub == nil || sub.User == nil || sub.User.Email == "" {
 		return
 	}

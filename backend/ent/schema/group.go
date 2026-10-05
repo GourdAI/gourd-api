@@ -318,7 +318,8 @@ func (Group) Edges() []ent.Edge {
 	return []ent.Edge{
 		edge.To("api_keys", APIKey.Type),
 		edge.To("redeem_codes", RedeemCode.Type),
-		edge.To("subscriptions", UserSubscription.Type),
+		// 注：曾有的 edge.To("subscriptions", UserSubscription.Type) 已随「订阅制分组」
+		// 机制一并废弃（2026-10-03 拍板）：订阅是个人额度钱包，不归属任何分组。
 		edge.To("usage_logs", UsageLog.Type),
 		edge.From("accounts", Account.Type).
 			Ref("groups").

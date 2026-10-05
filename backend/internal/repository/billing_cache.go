@@ -44,18 +44,19 @@ func billingBalanceKey(userID int64) string {
 	return fmt.Sprintf("%s%d", billingBalanceKeyPrefix, userID)
 }
 
-// billingSubKey generates the Redis key for subscription cache.
-func billingSubKey(userID, groupID int64) string {
-	return fmt.Sprintf("%s%d:%d", billingSubKeyPrefix, userID, groupID)
+// billingSubKey generates the Redis key for the user's subscription wallet cache.
+// 订阅不再绑定分组，因此缓收人键从 (user, group) 收敛为 user 单键。
+func billingSubKey(userID int64) string {
+	return fmt.Sprintf("%s%d", billingSubKeyPrefix, userID)
 }
 
 const (
-	subFieldStatus       = "status"
-	subFieldExpiresAt    = "expires_at"
-	subFieldDailyUsage   = "daily_usage"
-	subFieldWeeklyUsage  = "weekly_usage"
-	subFieldMonthlyUsage = "monthly_usage"
-	subFieldVersion      = "version"
+	subFieldStatus     = "status"
+	subFieldExpiresAt  = "expires_at"
+	subFieldTotalLimit = "total_limit"
+	subFieldTotalUsage = "total_usage"
+	subFieldUnlimited  = "has_unlimited"
+	subFieldVersion    = "version"
 )
 
 // billingRateLimitKey generates the Redis key for API key rate limit cache.
@@ -90,9 +91,7 @@ var (
 			return 0
 		end
 		local cost = tonumber(ARGV[1])
-		redis.call('HINCRBYFLOAT', KEYS[1], 'daily_usage', cost)
-		redis.call('HINCRBYFLOAT', KEYS[1], 'weekly_usage', cost)
-		redis.call('HINCRBYFLOAT', KEYS[1], 'monthly_usage', cost)
+		redis.call('HINCRBYFLOAT', KEYS[1], 'total_usage', cost)
 		redis.call('EXPIRE', KEYS[1], ARGV[2])
 		return 1
 	`)
@@ -173,8 +172,8 @@ func (c *billingCache) InvalidateUserBalance(ctx context.Context, userID int64) 
 	return c.rdb.Del(ctx, key).Err()
 }
 
-func (c *billingCache) GetSubscriptionCache(ctx context.Context, userID, groupID int64) (*service.SubscriptionCacheData, error) {
-	key := billingSubKey(userID, groupID)
+func (c *billingCache) GetSubscriptionCache(ctx context.Context, userID int64) (*service.SubscriptionCacheData, error) {
+	key := billingSubKey(userID)
 	result, err := c.rdb.HGetAll(ctx, key).Result()
 	if err != nil {
 		return nil, err
@@ -182,16 +181,7 @@ func (c *billingCache) GetSubscriptionCache(ctx context.Context, userID, groupID
 	if len(result) == 0 {
 		return nil, redis.Nil
 	}
-	data, err := c.parseSubscriptionCache(result)
-	if err != nil {
-		return nil, err
-	}
-	// 槽位即订阅归属：写入侧 SetSubscriptionCache 用的 key 就是订阅自身的 GroupID
-	// （见 BillingCacheService.GetSubscriptionStatus 的 enqueueCacheWrite），
-	// 因此从 key 回填比另存一个 hash 字段更可靠：无需迁移旧条目，也不会出现
-	// 「key 在 (user,5)、数据里写 group_id=0」的双源漂移。
-	data.GroupID = groupID
-	return data, nil
+	return c.parseSubscriptionCache(result)
 }
 
 func (c *billingCache) parseSubscriptionCache(data map[string]string) (*service.SubscriptionCacheData, error) {
@@ -209,17 +199,15 @@ func (c *billingCache) parseSubscriptionCache(data map[string]string) (*service.
 		}
 	}
 
-	if dailyStr, ok := data[subFieldDailyUsage]; ok {
-		result.DailyUsage, _ = strconv.ParseFloat(dailyStr, 64)
+	if limitStr, ok := data[subFieldTotalLimit]; ok {
+		result.TotalLimit, _ = strconv.ParseFloat(limitStr, 64)
 	}
 
-	if weeklyStr, ok := data[subFieldWeeklyUsage]; ok {
-		result.WeeklyUsage, _ = strconv.ParseFloat(weeklyStr, 64)
+	if usageStr, ok := data[subFieldTotalUsage]; ok {
+		result.TotalUsage, _ = strconv.ParseFloat(usageStr, 64)
 	}
 
-	if monthlyStr, ok := data[subFieldMonthlyUsage]; ok {
-		result.MonthlyUsage, _ = strconv.ParseFloat(monthlyStr, 64)
-	}
+	result.HasUnlimited = data[subFieldUnlimited] == "1" || strings.EqualFold(data[subFieldUnlimited], "true")
 
 	if versionStr, ok := data[subFieldVersion]; ok {
 		result.Version, _ = strconv.ParseInt(versionStr, 10, 64)
@@ -228,20 +216,24 @@ func (c *billingCache) parseSubscriptionCache(data map[string]string) (*service.
 	return result, nil
 }
 
-func (c *billingCache) SetSubscriptionCache(ctx context.Context, userID, groupID int64, data *service.SubscriptionCacheData) error {
+func (c *billingCache) SetSubscriptionCache(ctx context.Context, userID int64, data *service.SubscriptionCacheData) error {
 	if data == nil {
 		return nil
 	}
 
-	key := billingSubKey(userID, groupID)
+	key := billingSubKey(userID)
 
+	unlimited := "0"
+	if data.HasUnlimited {
+		unlimited = "1"
+	}
 	fields := map[string]any{
-		subFieldStatus:       data.Status,
-		subFieldExpiresAt:    data.ExpiresAt.Unix(),
-		subFieldDailyUsage:   data.DailyUsage,
-		subFieldWeeklyUsage:  data.WeeklyUsage,
-		subFieldMonthlyUsage: data.MonthlyUsage,
-		subFieldVersion:      data.Version,
+		subFieldStatus:     data.Status,
+		subFieldExpiresAt:  data.ExpiresAt.Unix(),
+		subFieldTotalLimit: data.TotalLimit,
+		subFieldTotalUsage: data.TotalUsage,
+		subFieldUnlimited:  unlimited,
+		subFieldVersion:    data.Version,
 	}
 
 	pipe := c.rdb.Pipeline()
@@ -251,18 +243,18 @@ func (c *billingCache) SetSubscriptionCache(ctx context.Context, userID, groupID
 	return err
 }
 
-func (c *billingCache) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error {
-	key := billingSubKey(userID, groupID)
+func (c *billingCache) UpdateSubscriptionUsage(ctx context.Context, userID int64, cost float64) error {
+	key := billingSubKey(userID)
 	_, err := updateSubUsageScript.Run(ctx, c.rdb, []string{key}, cost, int(jitteredTTL().Seconds())).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
-		log.Printf("Warning: update subscription usage cache failed for user %d group %d: %v", userID, groupID, err)
+		log.Printf("Warning: update subscription usage cache failed for user %d: %v", userID, err)
 		return err
 	}
 	return nil
 }
 
-func (c *billingCache) InvalidateSubscriptionCache(ctx context.Context, userID, groupID int64) error {
-	key := billingSubKey(userID, groupID)
+func (c *billingCache) InvalidateSubscriptionCache(ctx context.Context, userID int64) error {
+	key := billingSubKey(userID)
 	return c.rdb.Del(ctx, key).Err()
 }
 

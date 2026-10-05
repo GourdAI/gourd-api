@@ -25,6 +25,8 @@ type SubscriptionPlan struct {
 	Description string `json:"description,omitempty"`
 	// Price holds the value of the "price" field.
 	Price float64 `json:"price,omitempty"`
+	// TotalLimitUsd holds the value of the "total_limit_usd" field.
+	TotalLimitUsd *float64 `json:"total_limit_usd,omitempty"`
 	// OriginalPrice holds the value of the "original_price" field.
 	OriginalPrice *float64 `json:"original_price,omitempty"`
 	// Currency holds the value of the "currency" field.
@@ -44,8 +46,29 @@ type SubscriptionPlan struct {
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// UpdatedAt holds the value of the "updated_at" field.
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	// Edges holds the relations/edges for other nodes in the graph.
+	// The values are being populated by the SubscriptionPlanQuery when eager-loading is set.
+	Edges        SubscriptionPlanEdges `json:"edges"`
 	selectValues sql.SelectValues
+}
+
+// SubscriptionPlanEdges holds the relations/edges for other nodes in the graph.
+type SubscriptionPlanEdges struct {
+	// UserSubscriptions holds the value of the user_subscriptions edge.
+	UserSubscriptions []*UserSubscription `json:"user_subscriptions,omitempty"`
+	// loadedTypes holds the information for reporting if a
+	// type was loaded (or requested) in eager-loading or not.
+	loadedTypes [1]bool
+}
+
+// UserSubscriptionsOrErr returns the UserSubscriptions value or an error if the edge
+// was not loaded in eager-loading.
+func (e SubscriptionPlanEdges) UserSubscriptionsOrErr() ([]*UserSubscription, error) {
+	if e.loadedTypes[0] {
+		return e.UserSubscriptions, nil
+	}
+	return nil, &NotLoadedError{edge: "user_subscriptions"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -55,7 +78,7 @@ func (*SubscriptionPlan) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case subscriptionplan.FieldForSale:
 			values[i] = new(sql.NullBool)
-		case subscriptionplan.FieldPrice, subscriptionplan.FieldOriginalPrice:
+		case subscriptionplan.FieldPrice, subscriptionplan.FieldTotalLimitUsd, subscriptionplan.FieldOriginalPrice:
 			values[i] = new(sql.NullFloat64)
 		case subscriptionplan.FieldID, subscriptionplan.FieldGroupID, subscriptionplan.FieldValidityDays, subscriptionplan.FieldSortOrder:
 			values[i] = new(sql.NullInt64)
@@ -107,6 +130,13 @@ func (_m *SubscriptionPlan) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field price", values[i])
 			} else if value.Valid {
 				_m.Price = value.Float64
+			}
+		case subscriptionplan.FieldTotalLimitUsd:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field total_limit_usd", values[i])
+			} else if value.Valid {
+				_m.TotalLimitUsd = new(float64)
+				*_m.TotalLimitUsd = value.Float64
 			}
 		case subscriptionplan.FieldOriginalPrice:
 			if value, ok := values[i].(*sql.NullFloat64); !ok {
@@ -182,6 +212,11 @@ func (_m *SubscriptionPlan) Value(name string) (ent.Value, error) {
 	return _m.selectValues.Get(name)
 }
 
+// QueryUserSubscriptions queries the "user_subscriptions" edge of the SubscriptionPlan entity.
+func (_m *SubscriptionPlan) QueryUserSubscriptions() *UserSubscriptionQuery {
+	return NewSubscriptionPlanClient(_m.config).QueryUserSubscriptions(_m)
+}
+
 // Update returns a builder for updating this SubscriptionPlan.
 // Note that you need to call SubscriptionPlan.Unwrap() before calling this method if this SubscriptionPlan
 // was returned from a transaction, and the transaction was committed or rolled back.
@@ -216,6 +251,11 @@ func (_m *SubscriptionPlan) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("price=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Price))
+	builder.WriteString(", ")
+	if v := _m.TotalLimitUsd; v != nil {
+		builder.WriteString("total_limit_usd=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
 	builder.WriteString(", ")
 	if v := _m.OriginalPrice; v != nil {
 		builder.WriteString("original_price=")

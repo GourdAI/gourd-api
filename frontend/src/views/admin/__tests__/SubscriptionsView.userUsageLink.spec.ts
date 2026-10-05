@@ -65,16 +65,14 @@ describe('admin subscription users', () => {
       items: [{
         id: 9,
         user_id: 42,
-        group_id: 3,
+        plan_id: 5,
         status: 'active',
         starts_at: '2026-01-01T00:00:00Z',
         expires_at: null,
-        daily_usage_usd: 0,
-        weekly_usage_usd: 0,
-        monthly_usage_usd: 0,
-        daily_window_start: null,
-        weekly_window_start: null,
-        monthly_window_start: null,
+        total_limit_usd: 50,
+        total_usage_usd: 0,
+        remaining_usd: 50,
+        unlimited: false,
         created_at: '2026-01-01T00:00:00Z',
         updated_at: '2026-01-01T00:00:00Z',
         user: { email: 'reader@example.com', username: 'Reader' }
@@ -155,7 +153,7 @@ describe('admin subscription users', () => {
         .find((button) => button.text() === 'admin.subscriptions.assignSubscription')!
         .trigger('click')
       const form = wrapper.get('#assign-subscription-form')
-      form.getComponent({ name: 'Select' }).vm.$emit('update:modelValue', 3)
+      // 订阅不绑分组：发放弹窗已无分组选择器，仅选用户 + 额度 + 有效期。
       const search = wrapper.get('[data-assign-user-search] input')
       await search.trigger('focus')
       await search.setValue('reader')
@@ -182,7 +180,7 @@ describe('admin subscription users', () => {
 
       expect(assignSubscription).toHaveBeenCalledTimes(1)
       expect(assignSubscription).toHaveBeenCalledWith({
-        user_id: 84, group_id: 3, validity_days: 30
+        user_id: 84, validity_days: 30, total_limit_usd: undefined
       })
     } finally {
       wrapper.unmount()
@@ -231,16 +229,14 @@ describe('admin subscription users', () => {
       items: [{
         id: 9,
         user_id: 42,
-        group_id: 3,
+        plan_id: 5,
         status: 'active',
         starts_at: '2026-01-01T00:00:00Z',
         expires_at: null,
-        daily_usage_usd: 0,
-        weekly_usage_usd: 0,
-        monthly_usage_usd: 0,
-        daily_window_start: null,
-        weekly_window_start: null,
-        monthly_window_start: null,
+        total_limit_usd: 50,
+        total_usage_usd: 0,
+        remaining_usd: 50,
+        unlimited: false,
         created_at: '2026-01-01T00:00:00Z',
         updated_at: '2026-01-01T00:00:00Z',
         user: { email: 'reader@example.com' }

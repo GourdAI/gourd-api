@@ -3909,7 +3909,6 @@
                     type="button"
                     class="btn btn-secondary btn-sm"
                     @click="addDefaultSubscription"
-                    :disabled="subscriptionGroups.length === 0"
                   >
                     {{ t("admin.settings.defaults.addDefaultSubscription") }}
                   </button>
@@ -3932,75 +3931,21 @@
                       <label
                         class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
                       >
-                        {{ t("admin.settings.defaults.subscriptionGroup") }}
+                        {{ t("admin.settings.defaults.subscriptionTotalLimit") }}
                       </label>
-                      <Select
-                        v-model="item.group_id"
-                        class="default-sub-group-select"
-                        :options="defaultSubscriptionGroupOptions"
+                      <input
+                        v-model.number="item.total_limit_usd"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        class="input h-[42px] default-sub-limit-usd"
+                        data-test="default-sub-limit-usd"
                         :placeholder="
-                          t('admin.settings.defaults.subscriptionGroup')
+                          t(
+                            'admin.settings.defaults.subscriptionTotalLimitPlaceholder',
+                          )
                         "
-                      >
-                        <template #selected="{ option }">
-                          <GroupBadge
-                            v-if="option"
-                            :name="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).label
-                            "
-                            :platform="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).platform
-                            "
-                            :subscription-type="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).subscriptionType
-                            "
-                            :rate-multiplier="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).rate
-                            "
-                          />
-                          <span v-else class="text-gray-400">
-                            {{ t("admin.settings.defaults.subscriptionGroup") }}
-                          </span>
-                        </template>
-                        <template #option="{ option, selected }">
-                          <GroupOptionItem
-                            :name="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).label
-                            "
-                            :platform="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).platform
-                            "
-                            :subscription-type="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).subscriptionType
-                            "
-                            :rate-multiplier="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).rate
-                            "
-                            :description="
-                              (
-                                option as unknown as DefaultSubscriptionGroupOption
-                              ).description
-                            "
-                            :selected="selected"
-                          />
-                        </template>
-                      </Select>
+                      />
                     </div>
                     <div>
                       <label
@@ -4232,7 +4177,6 @@
                         @click="
                           addAuthSourceDefaultSubscription(authSource.source)
                         "
-                        :disabled="subscriptionGroups.length === 0"
                       >
                         {{
                           t("admin.settings.defaults.addDefaultSubscription")
@@ -4262,77 +4206,22 @@
                           <label
                             class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
                           >
-                            {{ t("admin.settings.defaults.subscriptionGroup") }}
+                            {{
+                              t("admin.settings.defaults.subscriptionTotalLimit")
+                            }}
                           </label>
-                          <Select
-                            v-model="item.group_id"
-                            class="default-sub-group-select"
-                            :options="defaultSubscriptionGroupOptions"
+                          <input
+                            v-model.number="item.total_limit_usd"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            class="input h-[42px] default-sub-limit-usd"
                             :placeholder="
-                              t('admin.settings.defaults.subscriptionGroup')
+                              t(
+                                'admin.settings.defaults.subscriptionTotalLimitPlaceholder',
+                              )
                             "
-                          >
-                            <template #selected="{ option }">
-                              <GroupBadge
-                                v-if="option"
-                                :name="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).label
-                                "
-                                :platform="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).platform
-                                "
-                                :subscription-type="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).subscriptionType
-                                "
-                                :rate-multiplier="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).rate
-                                "
-                              />
-                              <span v-else class="text-gray-400">
-                                {{
-                                  t("admin.settings.defaults.subscriptionGroup")
-                                }}
-                              </span>
-                            </template>
-                            <template #option="{ option, selected }">
-                              <GroupOptionItem
-                                :name="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).label
-                                "
-                                :platform="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).platform
-                                "
-                                :subscription-type="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).subscriptionType
-                                "
-                                :rate-multiplier="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).rate
-                                "
-                                :description="
-                                  (
-                                    option as unknown as DefaultSubscriptionGroupOption
-                                  ).description
-                                "
-                                :selected="selected"
-                              />
-                            </template>
-                          </Select>
+                          />
                         </div>
                         <div>
                           <label
@@ -8858,7 +8747,6 @@ import type {
   AuthSourceType,
   SystemSettings,
   UpdateSettingsRequest,
-  DefaultSubscriptionSetting,
   DefaultPlatformQuotasMap,
   OpenAIFastPolicyRule,
   WeChatConnectMode,
@@ -8867,7 +8755,6 @@ import type {
   WebSearchTestResult,
 } from "@/api/admin/settings";
 import type {
-  AdminGroup,
   LoginAgreementDocument,
   NotifyEmailEntry,
   Proxy,
@@ -8886,8 +8773,6 @@ import {
 import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
 import PaymentProviderList from "@/components/payment/PaymentProviderList.vue";
 import PaymentProviderDialog from "@/components/payment/PaymentProviderDialog.vue";
-import GroupBadge from "@/components/common/GroupBadge.vue";
-import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import Toggle from "@/components/common/Toggle.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
@@ -9036,7 +8921,6 @@ const adminApiKeyExists = ref(false);
 const adminApiKeyMasked = ref("");
 const adminApiKeyOperating = ref(false);
 const newAdminApiKey = ref("");
-const subscriptionGroups = ref<AdminGroup[]>([]);
 
 // Upstream billing probe state
 const upstreamBillingProbeLoading = ref(true);
@@ -9544,16 +9428,6 @@ function resetClaudeOAuthSystemPromptBlocks(): void {
   syncClaudeOAuthSystemPromptBlocksFormField();
 }
 
-
-interface DefaultSubscriptionGroupOption {
-  value: number;
-  label: string;
-  description: string | null;
-  platform: AdminGroup["platform"];
-  subscriptionType: AdminGroup["subscription_type"];
-  rate: number;
-  [key: string]: unknown;
-}
 
 type SettingsForm = Omit<
   SystemSettings,
@@ -10280,19 +10154,6 @@ async function saveWebSearchConfig(): Promise<boolean> {
     return false;
   }
 }
-
-const defaultSubscriptionGroupOptions = computed<
-  DefaultSubscriptionGroupOption[]
->(() =>
-  subscriptionGroups.value.map((group) => ({
-    value: group.id,
-    label: group.name,
-    description: group.description,
-    platform: group.platform,
-    subscriptionType: group.subscription_type,
-    rate: group.rate_multiplier,
-  })),
-);
 
 const registrationEmailSuffixWhitelistSeparatorKeys = new Set([
   " ",
@@ -11024,34 +10885,14 @@ async function loadSettings() {
   }
 }
 
-async function loadSubscriptionGroups() {
-  try {
-    const groups = await adminAPI.groups.getAll();
-    subscriptionGroups.value = groups.filter(
-      (group) =>
-        group.subscription_type === "subscription" && group.status === "active",
-    );
-  } catch (_error: unknown) {
-    subscriptionGroups.value = [];
-  }
-}
-
-function findNextAvailableSubscriptionGroup(
-  existingGroupIDs: number[],
-): AdminGroup | undefined {
-  const existing = new Set(existingGroupIDs);
-  return subscriptionGroups.value.find((group) => !existing.has(group.id));
-}
+// 默认发放的是「额度钱包」：订阅不绑定分组，因此无需加载分组候选，
+// 也不再按分组去重 —— 同一个来源配多份不同额度的钱包是合法语义。
+const DEFAULT_SUBSCRIPTION_WALLET_VALIDITY_DAYS = 30;
 
 function addDefaultSubscription() {
-  if (subscriptionGroups.value.length === 0) return;
-  const candidate = findNextAvailableSubscriptionGroup(
-    form.default_subscriptions.map((item) => item.group_id),
-  );
-  if (!candidate) return;
   form.default_subscriptions.push({
-    group_id: candidate.id,
-    validity_days: 30,
+    total_limit_usd: null,
+    validity_days: DEFAULT_SUBSCRIPTION_WALLET_VALIDITY_DAYS,
   });
 }
 
@@ -11060,14 +10901,9 @@ function removeDefaultSubscription(index: number) {
 }
 
 function addAuthSourceDefaultSubscription(source: AuthSourceType) {
-  if (subscriptionGroups.value.length === 0) return;
-  const candidate = findNextAvailableSubscriptionGroup(
-    authSourceDefaults[source].subscriptions.map((item) => item.group_id),
-  );
-  if (!candidate) return;
   authSourceDefaults[source].subscriptions.push({
-    group_id: candidate.id,
-    validity_days: 30,
+    total_limit_usd: null,
+    validity_days: DEFAULT_SUBSCRIPTION_WALLET_VALIDITY_DAYS,
   });
 }
 
@@ -11076,20 +10912,6 @@ function removeAuthSourceDefaultSubscription(
   index: number,
 ) {
   authSourceDefaults[source].subscriptions.splice(index, 1);
-}
-
-function findDuplicateDefaultSubscription(
-  subscriptions: DefaultSubscriptionSetting[],
-): DefaultSubscriptionSetting | undefined {
-  const seenGroupIDs = new Set<number>();
-
-  return subscriptions.find((item) => {
-    if (seenGroupIDs.has(item.group_id)) {
-      return true;
-    }
-    seenGroupIDs.add(item.group_id);
-    return false;
-  });
 }
 
 // 站点类型：由 subscription_enabled 与 payment_balance_disabled 两个开关派生的单选，
@@ -11190,37 +11012,31 @@ async function saveSettings() {
     const normalizedDefaultSubscriptions = normalizeDefaultSubscriptionSettings(
       form.default_subscriptions,
     );
-    const duplicateDefaultSubscription = findDuplicateDefaultSubscription(
-      normalizedDefaultSubscriptions,
-    );
-    if (duplicateDefaultSubscription) {
-      appStore.showError(
-        t("admin.settings.defaults.defaultSubscriptionsDuplicate", {
-          groupId: duplicateDefaultSubscription.group_id,
-        }),
+    // 额度非正的条目会被丢弃（无额度钱包不接管扣费）；丢弃了用户填的行要告知，
+    // 否则管理员会以为已经保存。
+    if (
+      form.default_subscriptions.length > 0 &&
+      normalizedDefaultSubscriptions.length < form.default_subscriptions.length
+    ) {
+      appStore.showWarning(
+        t("admin.settings.defaults.defaultSubscriptionsInvalidDropped"),
       );
-      return;
     }
+    form.default_subscriptions = normalizedDefaultSubscriptions;
 
     for (const authSource of authSourceDefaultsMeta.value) {
-      authSourceDefaults[authSource.source].subscriptions =
-        normalizeDefaultSubscriptionSettings(
-          authSourceDefaults[authSource.source].subscriptions,
-        );
-      const duplicate = findDuplicateDefaultSubscription(
+      const before = authSourceDefaults[authSource.source].subscriptions.length;
+      const normalized = normalizeDefaultSubscriptionSettings(
         authSourceDefaults[authSource.source].subscriptions,
       );
-      if (duplicate) {
-        appStore.showError(
+      if (normalized.length < before) {
+        appStore.showWarning(
           `${authSource.title}: ${t(
-            "admin.settings.defaults.defaultSubscriptionsDuplicate",
-            {
-              groupId: duplicate.group_id,
-            },
+            "admin.settings.defaults.defaultSubscriptionsInvalidDropped",
           )}`,
         );
-        return;
       }
+      authSourceDefaults[authSource.source].subscriptions = normalized;
     }
 
     if (form.wechat_connect_mp_enabled && form.wechat_connect_mobile_enabled) {
@@ -12659,7 +12475,6 @@ async function handleDeleteProvider() {
 
 onMounted(() => {
   loadSettings();
-  loadSubscriptionGroups();
   loadAdminApiKey();
   loadUpstreamBillingProbeSettings();
   loadOllamaCloudUsageSettings();

@@ -2,14 +2,12 @@ package service
 
 import (
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/dgraph-io/ristretto"
 	"github.com/stretchr/testify/require"
 )
@@ -36,15 +34,16 @@ func TestMaybeInvalidateAssignmentCaches_DefersForOuterTransactionOwner(t *testi
 	t.Cleanup(cache.Close)
 
 	svc := &SubscriptionService{subCacheL1: cache}
-	key := subCacheKey(7, 9)
+	// 钱包化后缓存只有一个坐标 user："sub:<uid>"，旧 ":<gid>" 段已随槽位模型删除。
+	key := subCacheKey(7)
 	require.True(t, cache.Set(key, &UserSubscription{ID: 42}, 1))
 	cache.Wait()
 
-	svc.maybeInvalidateAssignmentCaches(7, 9, true)
+	svc.maybeInvalidateAssignmentCaches(7, true)
 	_, cachedBeforeCommit := cache.Get(key)
 	require.True(t, cachedBeforeCommit, "outer transaction must retain caches until its owner commits")
 
-	svc.maybeInvalidateAssignmentCaches(7, 9, false)
+	svc.maybeInvalidateAssignmentCaches(7, false)
 	cache.Wait()
 	_, cachedAfterCommit := cache.Get(key)
 	require.False(t, cachedAfterCommit, "post-commit invalidation must remove the cached subscription")
@@ -104,6 +103,8 @@ func (s *subscriptionGroupRepoStub) GetByID(context.Context, int64) (*Group, err
 	return s.group, nil
 }
 
+// userSubRepoNoop 是 UserSubscriptionRepository 的空实现基座：
+// 任何未被具体 stub 覆盖的方法被调用即 panic，用于把「不该发生的仓储访问」变成测试失败。
 type userSubRepoNoop struct{}
 
 func (userSubRepoNoop) Create(context.Context, *UserSubscription) error {
@@ -118,12 +119,6 @@ func (userSubRepoNoop) GetByIDForUpdate(context.Context, int64) (*UserSubscripti
 func (userSubRepoNoop) GetByIDIncludeDeleted(context.Context, int64) (*UserSubscription, error) {
 	panic("unexpected GetByIDIncludeDeleted call")
 }
-func (userSubRepoNoop) GetByUserIDAndGroupID(context.Context, int64, int64) (*UserSubscription, error) {
-	panic("unexpected GetByUserIDAndGroupID call")
-}
-func (userSubRepoNoop) GetActiveByUserIDAndGroupID(context.Context, int64, int64) (*UserSubscription, error) {
-	panic("unexpected GetActiveByUserIDAndGroupID call")
-}
 func (userSubRepoNoop) Update(context.Context, *UserSubscription) error {
 	panic("unexpected Update call")
 }
@@ -137,20 +132,14 @@ func (userSubRepoNoop) ListByUserID(context.Context, int64) ([]UserSubscription,
 func (userSubRepoNoop) ListActiveByUserID(context.Context, int64) ([]UserSubscription, error) {
 	panic("unexpected ListActiveByUserID call")
 }
-func (userSubRepoNoop) ListByGroupID(context.Context, int64, pagination.PaginationParams) ([]UserSubscription, *pagination.PaginationResult, error) {
-	panic("unexpected ListByGroupID call")
-}
-func (userSubRepoNoop) List(context.Context, pagination.PaginationParams, *int64, *int64, string, string, string, string) ([]UserSubscription, *pagination.PaginationResult, error) {
+func (userSubRepoNoop) List(context.Context, pagination.PaginationParams, *int64, *int64, string, string, string) ([]UserSubscription, *pagination.PaginationResult, error) {
 	panic("unexpected List call")
 }
-func (userSubRepoNoop) ExistsByUserIDAndGroupID(context.Context, int64, int64) (bool, error) {
-	panic("unexpected ExistsByUserIDAndGroupID call")
+func (userSubRepoNoop) ExistsActiveByUserID(context.Context, int64) (bool, error) {
+	panic("unexpected ExistsActiveByUserID call")
 }
-func (userSubRepoNoop) ExistsActiveByUserIDAndGroupID(context.Context, int64, int64) (bool, error) {
-	panic("unexpected ExistsActiveByUserIDAndGroupID call")
-}
-func (userSubRepoNoop) UpdateAssignedLimits(context.Context, int64, *float64, *float64, *float64) error {
-	panic("unexpected UpdateAssignedLimits call")
+func (userSubRepoNoop) UpdateAssignedLimit(context.Context, int64, *float64) error {
+	panic("unexpected UpdateAssignedLimit call")
 }
 func (userSubRepoNoop) ExtendExpiry(context.Context, int64, time.Time) error {
 	panic("unexpected ExtendExpiry call")
@@ -161,20 +150,8 @@ func (userSubRepoNoop) UpdateStatus(context.Context, int64, string) error {
 func (userSubRepoNoop) UpdateNotes(context.Context, int64, string) error {
 	panic("unexpected UpdateNotes call")
 }
-func (userSubRepoNoop) ActivateWindows(context.Context, int64, time.Time, time.Time) error {
-	panic("unexpected ActivateWindows call")
-}
-func (userSubRepoNoop) ResetUsageWindows(context.Context, int64, bool, bool, bool, time.Time, time.Time) error {
-	panic("unexpected ResetUsageWindows call")
-}
-func (userSubRepoNoop) ResetDailyUsage(context.Context, int64, *time.Time, time.Time) error {
-	panic("unexpected ResetDailyUsage call")
-}
-func (userSubRepoNoop) ResetWeeklyUsage(context.Context, int64, *time.Time, time.Time) error {
-	panic("unexpected ResetWeeklyUsage call")
-}
-func (userSubRepoNoop) ResetMonthlyUsage(context.Context, int64, *time.Time, time.Time) error {
-	panic("unexpected ResetMonthlyUsage call")
+func (userSubRepoNoop) ResetUsage(context.Context, int64) error {
+	panic("unexpected ResetUsage call")
 }
 func (userSubRepoNoop) IncrementUsage(context.Context, int64, float64) error {
 	panic("unexpected IncrementUsage call")
@@ -183,25 +160,23 @@ func (userSubRepoNoop) BatchUpdateExpiredStatus(context.Context) (int64, error) 
 	panic("unexpected BatchUpdateExpiredStatus call")
 }
 
+// subscriptionUserSubRepoStub 是分配链路用的内存钱包仓储。
+//
+// 索引只有一个坐标 byID：钱包化后寻址靠 ListByUserID + PlanID 过滤
+// （旧 byUserGroup 的 (user, group) 槽位键已随 group_id 列一起删除）。
 type subscriptionUserSubRepoStub struct {
 	userSubRepoNoop
 
 	nextID      int64
 	byID        map[int64]*UserSubscription
-	byUserGroup map[string]*UserSubscription
 	createCalls int
 }
 
 func newSubscriptionUserSubRepoStub() *subscriptionUserSubRepoStub {
 	return &subscriptionUserSubRepoStub{
-		nextID:      1,
-		byID:        make(map[int64]*UserSubscription),
-		byUserGroup: make(map[string]*UserSubscription),
+		nextID: 1,
+		byID:   make(map[int64]*UserSubscription),
 	}
-}
-
-func (s *subscriptionUserSubRepoStub) key(userID, groupID int64) string {
-	return strconvFormatInt(userID) + ":" + strconvFormatInt(groupID)
 }
 
 func (s *subscriptionUserSubRepoStub) seed(sub *UserSubscription) {
@@ -214,21 +189,6 @@ func (s *subscriptionUserSubRepoStub) seed(sub *UserSubscription) {
 		s.nextID++
 	}
 	s.byID[cp.ID] = &cp
-	s.byUserGroup[s.key(cp.UserID, cp.GroupID)] = &cp
-}
-
-func (s *subscriptionUserSubRepoStub) ExistsByUserIDAndGroupID(_ context.Context, userID, groupID int64) (bool, error) {
-	_, ok := s.byUserGroup[s.key(userID, groupID)]
-	return ok, nil
-}
-
-func (s *subscriptionUserSubRepoStub) GetByUserIDAndGroupID(_ context.Context, userID, groupID int64) (*UserSubscription, error) {
-	sub := s.byUserGroup[s.key(userID, groupID)]
-	if sub == nil {
-		return nil, ErrSubscriptionNotFound
-	}
-	cp := *sub
-	return &cp, nil
 }
 
 func (s *subscriptionUserSubRepoStub) Create(_ context.Context, sub *UserSubscription) error {
@@ -243,7 +203,6 @@ func (s *subscriptionUserSubRepoStub) Create(_ context.Context, sub *UserSubscri
 	}
 	sub.ID = cp.ID
 	s.byID[cp.ID] = &cp
-	s.byUserGroup[s.key(cp.UserID, cp.GroupID)] = &cp
 	return nil
 }
 
@@ -264,40 +223,115 @@ func (s *subscriptionUserSubRepoStub) Update(_ context.Context, sub *UserSubscri
 	if sub == nil {
 		return ErrSubscriptionNilInput
 	}
-	existing := s.byID[sub.ID]
-	if existing == nil {
+	if s.byID[sub.ID] == nil {
 		return ErrSubscriptionNotFound
 	}
-	oldKey := s.key(existing.UserID, existing.GroupID)
 	cp := *sub
 	s.byID[cp.ID] = &cp
-	if oldKey != s.key(cp.UserID, cp.GroupID) {
-		delete(s.byUserGroup, oldKey)
-	}
-	s.byUserGroup[s.key(cp.UserID, cp.GroupID)] = &cp
 	return nil
 }
 
+// ListByUserID 返回该用户全部钱包（分配寻址的入口）。
+func (s *subscriptionUserSubRepoStub) ListByUserID(_ context.Context, userID int64) ([]UserSubscription, error) {
+	out := make([]UserSubscription, 0, len(s.byID))
+	for _, sub := range s.byID {
+		if sub.UserID == userID {
+			out = append(out, *sub)
+		}
+	}
+	return out, nil
+}
+
+func (s *subscriptionUserSubRepoStub) ExistsActiveByUserID(_ context.Context, userID int64) (bool, error) {
+	for _, sub := range s.byID {
+		if sub.UserID == userID && sub.Status == SubscriptionStatusActive && sub.ExpiresAt.After(time.Now()) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// UpdateAssignedLimit 只写额度列，绝不触碰用量（与生产仓储口径一致：
+// 整行覆盖会吞掉并发 IncrementUsage 写入的用量）。
+func (s *subscriptionUserSubRepoStub) UpdateAssignedLimit(_ context.Context, id int64, total *float64) error {
+	sub := s.byID[id]
+	if sub == nil {
+		return ErrSubscriptionNotFound
+	}
+	sub.TotalLimitUSD = normalizeSubLimit(total)
+	return nil
+}
+
+func (s *subscriptionUserSubRepoStub) ExtendExpiry(_ context.Context, id int64, expiresAt time.Time) error {
+	sub := s.byID[id]
+	if sub == nil {
+		return ErrSubscriptionNotFound
+	}
+	sub.ExpiresAt = expiresAt
+	return nil
+}
+
+func (s *subscriptionUserSubRepoStub) UpdateStatus(_ context.Context, id int64, status string) error {
+	sub := s.byID[id]
+	if sub == nil {
+		return ErrSubscriptionNotFound
+	}
+	sub.Status = status
+	return nil
+}
+
+func (s *subscriptionUserSubRepoStub) UpdateNotes(_ context.Context, id int64, notes string) error {
+	sub := s.byID[id]
+	if sub == nil {
+		return ErrSubscriptionNotFound
+	}
+	sub.Notes = notes
+	return nil
+}
+
+func (s *subscriptionUserSubRepoStub) ResetUsage(_ context.Context, id int64) error {
+	sub := s.byID[id]
+	if sub == nil {
+		return ErrSubscriptionNotFound
+	}
+	sub.TotalUsageUSD = 0
+	return nil
+}
+
+func (s *subscriptionUserSubRepoStub) IncrementUsage(_ context.Context, id int64, costUSD float64) error {
+	sub := s.byID[id]
+	if sub == nil {
+		return ErrSubscriptionNotFound
+	}
+	sub.TotalUsageUSD += costUSD
+	return nil
+}
+
+// planIDPtr 构造 *int64（PlanID / 额度坐标）。本文件无构建标签，
+// 所以不能复用定义在带 //go:build unit 文件里的 ptrInt64。
+func planIDPtr(v int64) *int64 { return &v }
+
+// ── 分配幂等语义（PlanID 为幂等坐标）──────────────────────────────
+
 func TestAssignSubscriptionReuseWhenSemanticsMatch(t *testing.T) {
 	start := time.Now().Add(-time.Hour)
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
 	subRepo := newSubscriptionUserSubRepoStub()
 	subRepo.seed(&UserSubscription{
 		ID:        10,
 		UserID:    1001,
-		GroupID:   1,
+		PlanID:    planIDPtr(1),
 		StartsAt:  start,
 		ExpiresAt: start.AddDate(0, 0, 30),
 		Status:    SubscriptionStatusActive,
 		Notes:     "init",
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	// 订阅不绑定分组：groupRepo 传空实现（任何访问都会 panic），
+	// 以此锁定分配链路不再触碰分组仓储（契约 2/6）。
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	sub, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
 		UserID:       1001,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "init",
 	})
@@ -310,24 +344,21 @@ func TestAssignSubscriptionReuseWhenSemanticsMatch(t *testing.T) {
 
 func TestAssignSubscriptionDoesNotReactivateFutureSuspendedSubscription(t *testing.T) {
 	start := time.Now().Add(-time.Hour)
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
 	subRepo := newSubscriptionUserSubRepoStub()
 	subRepo.seed(&UserSubscription{
 		ID:        13,
 		UserID:    1003,
-		GroupID:   1,
+		PlanID:    planIDPtr(1),
 		StartsAt:  start,
 		ExpiresAt: start.AddDate(0, 0, 30),
 		Status:    SubscriptionStatusSuspended,
 		Notes:     "assignment",
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	sub, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
 		UserID:       1003,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "assignment",
 	})
@@ -344,78 +375,58 @@ func TestAssignSubscriptionDoesNotReactivateFutureSuspendedSubscription(t *testi
 func TestAssignSubscriptionDoesNotReactivatePastExpirySuspendedSubscription(t *testing.T) {
 	start := time.Now().AddDate(0, 0, -31)
 	expiresAt := start.AddDate(0, 0, 30)
-	windowStart := startOfDay(start)
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
 	subRepo := newSubscriptionUserSubRepoStub()
 	subRepo.seed(&UserSubscription{
-		ID:                 15,
-		UserID:             1005,
-		GroupID:            1,
-		StartsAt:           start,
-		ExpiresAt:          expiresAt,
-		Status:             SubscriptionStatusSuspended,
-		DailyWindowStart:   &windowStart,
-		WeeklyWindowStart:  &windowStart,
-		MonthlyWindowStart: &windowStart,
-		DailyUsageUSD:      1,
-		WeeklyUsageUSD:     2,
-		MonthlyUsageUSD:    3,
-		Notes:              "suspended assignment",
+		ID:            15,
+		UserID:        1005,
+		PlanID:        planIDPtr(1),
+		StartsAt:      start,
+		ExpiresAt:     expiresAt,
+		Status:        SubscriptionStatusSuspended,
+		TotalLimitUSD: ptrFloat64(100),
+		TotalUsageUSD: 6,
+		Notes:         "suspended assignment",
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	sub, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
 		UserID:       1005,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "suspended assignment",
 	})
 
 	require.NoError(t, err)
 	require.Equal(t, int64(15), sub.ID)
-	require.Equal(t, SubscriptionStatusSuspended, sub.Status)
+	require.Equal(t, SubscriptionStatusSuspended, sub.Status, "被人工暂停的钱包不得被一次普通分配唤醒")
 	require.Equal(t, start, sub.StartsAt)
 	require.Equal(t, expiresAt, sub.ExpiresAt)
 	require.Equal(t, "suspended assignment", sub.Notes)
-	require.Equal(t, &windowStart, sub.DailyWindowStart)
-	require.Equal(t, &windowStart, sub.WeeklyWindowStart)
-	require.Equal(t, &windowStart, sub.MonthlyWindowStart)
-	require.Equal(t, float64(1), sub.DailyUsageUSD)
-	require.Equal(t, float64(2), sub.WeeklyUsageUSD)
-	require.Equal(t, float64(3), sub.MonthlyUsageUSD)
+	require.InDelta(t, 100.0, *sub.TotalLimitUSD, 1e-9)
+	require.InDelta(t, 6.0, sub.TotalUsageUSD, 1e-9, "分配不得改动总额池")
 	require.Equal(t, 0, subRepo.createCalls)
 }
 
-func TestAssignSubscriptionRenewsExpiredSemanticMatch(t *testing.T) {
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
+func TestAssignSubscriptionRenewsExpiredWalletKeepsUsage(t *testing.T) {
 	subRepo := newSubscriptionUserSubRepoStub()
 	oldStart := time.Now().Add(-time.Hour)
-	oldWindowStart := startOfDay(oldStart)
 	subRepo.seed(&UserSubscription{
-		ID:                 12,
-		UserID:             1002,
-		GroupID:            1,
-		StartsAt:           oldStart,
-		ExpiresAt:          oldStart.AddDate(0, 0, 30),
-		Status:             SubscriptionStatusExpired,
-		DailyWindowStart:   &oldWindowStart,
-		WeeklyWindowStart:  &oldWindowStart,
-		MonthlyWindowStart: &oldWindowStart,
-		DailyUsageUSD:      1,
-		WeeklyUsageUSD:     2,
-		MonthlyUsageUSD:    3,
-		Notes:              " assignment ",
+		ID:            12,
+		UserID:        1002,
+		PlanID:        planIDPtr(1),
+		StartsAt:      oldStart,
+		ExpiresAt:     oldStart.AddDate(0, 0, 30),
+		Status:        SubscriptionStatusExpired,
+		TotalLimitUSD: ptrFloat64(100),
+		TotalUsageUSD: 6,
+		Notes:         " assignment ",
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	before := time.Now()
 	sub, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
 		UserID:       1002,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "assignment",
 	})
@@ -428,35 +439,31 @@ func TestAssignSubscriptionRenewsExpiredSemanticMatch(t *testing.T) {
 	require.False(t, sub.StartsAt.Before(before))
 	require.False(t, sub.StartsAt.After(after))
 	require.Equal(t, sub.StartsAt.AddDate(0, 0, 30), sub.ExpiresAt)
-	require.Equal(t, timezone.StartOfDay(sub.StartsAt), *sub.DailyWindowStart, "续期后日窗口应锚定当天 0 点")
-	require.Equal(t, sub.StartsAt, *sub.WeeklyWindowStart)
-	require.Equal(t, sub.StartsAt, *sub.MonthlyWindowStart)
-	require.Zero(t, sub.DailyUsageUSD)
-	require.Zero(t, sub.WeeklyUsageUSD)
-	require.Zero(t, sub.MonthlyUsageUSD)
+	// 总额池是一次性的（产品定案 4）：续费只延长有效期，**不清零已用额度**。
+	// 清零等于凭空再发一笔钱，是资损方向，必须锁死。
+	require.InDelta(t, 6.0, sub.TotalUsageUSD, 1e-9, "续费不得把已花掉的钱退回去")
+	require.InDelta(t, 100.0, *sub.TotalLimitUSD, 1e-9, "未带额度的分配保持原额度不变")
+	// 备注在 trim 后相同 → 不重复追加。
 	require.Equal(t, " assignment ", sub.Notes)
 }
 
 func TestAssignSubscriptionRenewsExpiredAndAppendsDifferentNotes(t *testing.T) {
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
 	subRepo := newSubscriptionUserSubRepoStub()
 	oldStart := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 	subRepo.seed(&UserSubscription{
 		ID:        14,
 		UserID:    1004,
-		GroupID:   1,
+		PlanID:    planIDPtr(1),
 		StartsAt:  oldStart,
 		ExpiresAt: oldStart.AddDate(0, 0, 30),
 		Status:    SubscriptionStatusExpired,
 		Notes:     "old assignment",
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	sub, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
 		UserID:       1004,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "new assignment",
 	})
@@ -467,24 +474,21 @@ func TestAssignSubscriptionRenewsExpiredAndAppendsDifferentNotes(t *testing.T) {
 
 func TestAssignSubscriptionConflictWhenSemanticsMismatch(t *testing.T) {
 	start := time.Now().Add(-time.Hour)
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
 	subRepo := newSubscriptionUserSubRepoStub()
 	subRepo.seed(&UserSubscription{
 		ID:        11,
 		UserID:    2001,
-		GroupID:   1,
+		PlanID:    planIDPtr(1),
 		StartsAt:  start,
 		ExpiresAt: start.AddDate(0, 0, 30),
 		Status:    SubscriptionStatusActive,
 		Notes:     "old-note",
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	_, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
 		UserID:       2001,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "new-note",
 	})
@@ -495,15 +499,12 @@ func TestAssignSubscriptionConflictWhenSemanticsMismatch(t *testing.T) {
 
 func TestBulkAssignSubscriptionCreatedReusedAndConflict(t *testing.T) {
 	start := time.Now().Add(-time.Hour)
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
 	subRepo := newSubscriptionUserSubRepoStub()
 	// user 1: 语义一致，可 reused
 	subRepo.seed(&UserSubscription{
 		ID:        21,
 		UserID:    1,
-		GroupID:   1,
+		PlanID:    planIDPtr(1),
 		StartsAt:  start,
 		ExpiresAt: start.AddDate(0, 0, 30),
 		Status:    SubscriptionStatusActive,
@@ -513,17 +514,17 @@ func TestBulkAssignSubscriptionCreatedReusedAndConflict(t *testing.T) {
 	subRepo.seed(&UserSubscription{
 		ID:        23,
 		UserID:    3,
-		GroupID:   1,
+		PlanID:    planIDPtr(1),
 		StartsAt:  start,
 		ExpiresAt: start.AddDate(0, 0, 60),
 		Status:    SubscriptionStatusActive,
 		Notes:     "same-note",
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	result, err := svc.BulkAssignSubscription(context.Background(), &BulkAssignSubscriptionInput{
 		UserIDs:      []int64{1, 2, 3},
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		AssignedBy:   9,
 		Notes:        "same-note",
@@ -539,30 +540,26 @@ func TestBulkAssignSubscriptionCreatedReusedAndConflict(t *testing.T) {
 	require.Equal(t, 1, subRepo.createCalls)
 }
 
-func TestBulkAssignSubscriptionRenewsExpiredSemanticMatch(t *testing.T) {
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
+func TestBulkAssignSubscriptionRenewsExpiredWalletKeepsUsage(t *testing.T) {
 	subRepo := newSubscriptionUserSubRepoStub()
 	oldStart := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 	subRepo.seed(&UserSubscription{
-		ID:              24,
-		UserID:          4,
-		GroupID:         1,
-		StartsAt:        oldStart,
-		ExpiresAt:       oldStart.AddDate(0, 0, 7),
-		Status:          SubscriptionStatusExpired,
-		DailyUsageUSD:   1,
-		WeeklyUsageUSD:  2,
-		MonthlyUsageUSD: 3,
-		Notes:           "bulk",
+		ID:            24,
+		UserID:        4,
+		PlanID:        planIDPtr(1),
+		StartsAt:      oldStart,
+		ExpiresAt:     oldStart.AddDate(0, 0, 7),
+		Status:        SubscriptionStatusExpired,
+		TotalLimitUSD: ptrFloat64(50),
+		TotalUsageUSD: 6,
+		Notes:         "bulk",
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	before := time.Now()
 	result, err := svc.BulkAssignSubscription(context.Background(), &BulkAssignSubscriptionInput{
 		UserIDs:      []int64{4},
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 7,
 		Notes:        "bulk",
 	})
@@ -579,32 +576,66 @@ func TestBulkAssignSubscriptionRenewsExpiredSemanticMatch(t *testing.T) {
 	require.False(t, renewed.StartsAt.Before(before))
 	require.False(t, renewed.StartsAt.After(after))
 	require.Equal(t, renewed.StartsAt.AddDate(0, 0, 7), renewed.ExpiresAt)
-	require.Zero(t, renewed.DailyUsageUSD)
-	require.Zero(t, renewed.WeeklyUsageUSD)
-	require.Zero(t, renewed.MonthlyUsageUSD)
+	require.InDelta(t, 6.0, renewed.TotalUsageUSD, 1e-9, "批量续费同样不得清零总额池用量")
 	require.Equal(t, "bulk", renewed.Notes)
 }
 
 func TestAssignSubscriptionKeepsWorkingWhenIdempotencyStoreUnavailable(t *testing.T) {
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription},
-	}
 	subRepo := newSubscriptionUserSubRepoStub()
 	SetDefaultIdempotencyCoordinator(NewIdempotencyCoordinator(failingIdempotencyRepo{}, DefaultIdempotencyConfig()))
 	t.Cleanup(func() {
 		SetDefaultIdempotencyCoordinator(nil)
 	})
 
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 	sub, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
 		UserID:       9001,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "new",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	require.Equal(t, 1, subRepo.createCalls, "semantic idempotent endpoint should not depend on idempotency store availability")
+}
+
+// 无套餐的手工发放（PlanID=nil）按「该用户是否已有生效钱包」寻址，
+// 并且必须在用户已有钱包时取到期最晚的一份作为主钱包。
+func TestAssignSubscriptionManualGrantTargetsWalletWithoutPlan(t *testing.T) {
+	now := time.Now()
+	subRepo := newSubscriptionUserSubRepoStub()
+	subRepo.seed(&UserSubscription{
+		ID:            31,
+		UserID:        7001,
+		StartsAt:      now.AddDate(0, 0, -10),
+		ExpiresAt:     now.AddDate(0, 0, 20),
+		Status:        SubscriptionStatusActive,
+		TotalUsageUSD: 6,
+		Notes:         "manual",
+	})
+
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
+	limit := 25.0
+	sub, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
+		UserID:        7001,
+		PlanID:        nil,
+		ValidityDays:  30,
+		Notes:         "manual",
+		TotalLimitUSD: &limit,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(31), sub.ID)
+	require.Equal(t, 0, subRepo.createCalls, "已有生效钱包时应复用而非新开一份")
+	require.Nil(t, sub.PlanID, "手工发放没有套餐")
+
+	// 带额度的请求视为「调额度」：必须走 UpdateAssignedLimit 落库。
+	// 注意 AssignSubscription 在这一分支返回的是改额度**前**读到的内存副本
+	//（仓储层只写额度列，不回读），所以断言必须看库里的实际写入结果：
+	// 额度已更新，且用量没有因为整行覆盖而被吞掉。
+	stored, err := subRepo.GetByID(context.Background(), 31)
+	require.NoError(t, err)
+	require.InDelta(t, 25.0, *stored.TotalLimitUSD, 1e-9, "额度应写入总额池快照")
+	require.InDelta(t, 6.0, stored.TotalUsageUSD, 1e-9, "改额度不得覆盖已有用量")
 }
 
 func TestNormalizeAssignValidityDays(t *testing.T) {
@@ -618,7 +649,7 @@ func TestDetectAssignSemanticConflictCases(t *testing.T) {
 	start := time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC)
 	base := &UserSubscription{
 		UserID:    1,
-		GroupID:   1,
+		PlanID:    planIDPtr(1),
 		StartsAt:  start,
 		ExpiresAt: start.AddDate(0, 0, 30),
 		Notes:     "same",
@@ -626,7 +657,7 @@ func TestDetectAssignSemanticConflictCases(t *testing.T) {
 
 	reason, conflict := detectAssignSemanticConflict(base, &AssignSubscriptionInput{
 		UserID:       1,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "same",
 	})
@@ -635,7 +666,7 @@ func TestDetectAssignSemanticConflictCases(t *testing.T) {
 
 	reason, conflict = detectAssignSemanticConflict(base, &AssignSubscriptionInput{
 		UserID:       1,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 60,
 		Notes:        "same",
 	})
@@ -644,7 +675,7 @@ func TestDetectAssignSemanticConflictCases(t *testing.T) {
 
 	reason, conflict = detectAssignSemanticConflict(base, &AssignSubscriptionInput{
 		UserID:       1,
-		GroupID:      1,
+		PlanID:       planIDPtr(1),
 		ValidityDays: 30,
 		Notes:        "other",
 	})
@@ -652,24 +683,36 @@ func TestDetectAssignSemanticConflictCases(t *testing.T) {
 	require.Equal(t, "notes_mismatch", reason)
 }
 
-func TestAssignSubscriptionGroupTypeValidation(t *testing.T) {
-	groupRepo := &subscriptionGroupRepoStub{
-		group: &Group{ID: 1, SubscriptionType: SubscriptionTypeStandard},
-	}
+// 订阅不再绑定分组：分配链路必须完全不触碰分组仓储（契约 2/6）。
+// 用 groupRepoNoop（任何方法都 panic）构造服务并成功分配，即反向锁定
+// 「分组存废/类型校验已彻底退出分配路径」。
+func TestAssignSubscriptionNeverTouchesGroupRepository(t *testing.T) {
 	subRepo := newSubscriptionUserSubRepoStub()
-	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
+	svc := NewSubscriptionService(groupRepoNoop{}, subRepo, nil, nil, nil)
 
-	_, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
-		UserID:       1,
-		GroupID:      1,
+	sub, err := svc.AssignSubscription(context.Background(), &AssignSubscriptionInput{
+		UserID:       8001,
+		PlanID:       planIDPtr(99),
 		ValidityDays: 30,
 	})
-	require.Error(t, err)
-	require.Equal(t, infraerrors.Code(ErrGroupNotSubscriptionType), infraerrors.Code(err))
-}
+	require.NoError(t, err, "分配不得因分组校验被拒绝（分组准入与订阅无关）")
+	require.NotNil(t, sub)
+	require.Equal(t, 1, subRepo.createCalls)
 
-func strconvFormatInt(v int64) string {
-	return strconv.FormatInt(v, 10)
+	// 带额度同样直通，且额度落的是快照而非分组配置。
+	subRepo2 := newSubscriptionUserSubRepoStub()
+	svc2 := NewSubscriptionService(groupRepoNoop{}, subRepo2, nil, nil, nil)
+	limit := 12.5
+	sub2, err := svc2.AssignSubscription(context.Background(), &AssignSubscriptionInput{
+		UserID:        8002,
+		PlanID:        planIDPtr(99),
+		ValidityDays:  7,
+		TotalLimitUSD: &limit,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, 12.5, *sub2.TotalLimitUSD, 1e-9)
+	require.Zero(t, sub2.TotalUsageUSD, "新发钱包用量从 0 开始")
+	require.True(t, sub2.HasEffectiveLimit(), "填了额度的钱包应接管扣费")
 }
 
 func infraerrorsReason(err error) string {

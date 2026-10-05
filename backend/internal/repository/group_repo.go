@@ -877,14 +877,15 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 
 	// Lock the group row to avoid concurrent writes while we cascade.
 	// 这里使用 exec.QueryContext 手动扫描，确保同一事务内加锁并能区分"未找到"与其他错误。
-	rows, err := exec.QueryContext(ctx, "SELECT id, subscription_type FROM groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id)
+	// 不再 SELECT subscription_type：订阅与分组已解绑（契约第 6 节），删除分组不再对
+	// user_subscriptions 做任何级联；行锁本身保留，继续防止并发写。
+	rows, err := exec.QueryContext(ctx, "SELECT id FROM groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id)
 	if err != nil {
 		return nil, err
 	}
 	var lockedID int64
-	var subscriptionType string
 	if rows.Next() {
-		if err := rows.Scan(&lockedID, &subscriptionType); err != nil {
+		if err := rows.Scan(&lockedID); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -912,35 +913,11 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 		}
 	}
 
-	var affectedUserIDs []int64
-	if subscriptionType == service.SubscriptionTypeSubscription {
-		// 只查询未软删除的订阅，避免通知已取消订阅的用户
-		rows, err := exec.QueryContext(ctx, "SELECT user_id FROM user_subscriptions WHERE group_id = $1 AND deleted_at IS NULL", id)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var userID int64
-			if scanErr := rows.Scan(&userID); scanErr != nil {
-				_ = rows.Close()
-				return nil, scanErr
-			}
-			affectedUserIDs = append(affectedUserIDs, userID)
-		}
-		if err := rows.Close(); err != nil {
-			return nil, err
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
+	// 订阅级联已删除（契约第 6 节）：user_subscriptions 不再有 group_id 列，订阅是用户
+	// 维度的额度钱包，不因某个分组被删而作废。因此本函数不再收集「受影响用户」，
+	// 恒返回空集（签名保留，避免改动 GroupRepository 接口与调用方）。
 
-		// 软删除订阅：设置 deleted_at 而非硬删除
-		if _, err := exec.ExecContext(ctx, "UPDATE user_subscriptions SET deleted_at = NOW() WHERE group_id = $1 AND deleted_at IS NULL", id); err != nil {
-			return nil, err
-		}
-	}
-
-	// 2. Remove the group id from user_allowed_groups join table.
+	// 1. Remove the group id from user_allowed_groups join table.
 	// Legacy users.allowed_groups 列已弃用，不再同步。
 	if _, err := exec.ExecContext(ctx, "DELETE FROM user_allowed_groups WHERE group_id = $1", id); err != nil {
 		return nil, err
@@ -970,7 +947,7 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group cascade delete failed: group=%d err=%v", id, err)
 	}
 
-	return affectedUserIDs, nil
+	return nil, nil
 }
 
 type groupAccountCounts struct {

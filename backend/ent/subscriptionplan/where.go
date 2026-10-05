@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"entgo.io/ent/dialect/sql"
+	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 )
 
@@ -72,6 +73,11 @@ func Description(v string) predicate.SubscriptionPlan {
 // Price applies equality check predicate on the "price" field. It's identical to PriceEQ.
 func Price(v float64) predicate.SubscriptionPlan {
 	return predicate.SubscriptionPlan(sql.FieldEQ(FieldPrice, v))
+}
+
+// TotalLimitUsd applies equality check predicate on the "total_limit_usd" field. It's identical to TotalLimitUsdEQ.
+func TotalLimitUsd(v float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldEQ(FieldTotalLimitUsd, v))
 }
 
 // OriginalPrice applies equality check predicate on the "original_price" field. It's identical to OriginalPriceEQ.
@@ -332,6 +338,56 @@ func PriceLT(v float64) predicate.SubscriptionPlan {
 // PriceLTE applies the LTE predicate on the "price" field.
 func PriceLTE(v float64) predicate.SubscriptionPlan {
 	return predicate.SubscriptionPlan(sql.FieldLTE(FieldPrice, v))
+}
+
+// TotalLimitUsdEQ applies the EQ predicate on the "total_limit_usd" field.
+func TotalLimitUsdEQ(v float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldEQ(FieldTotalLimitUsd, v))
+}
+
+// TotalLimitUsdNEQ applies the NEQ predicate on the "total_limit_usd" field.
+func TotalLimitUsdNEQ(v float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldNEQ(FieldTotalLimitUsd, v))
+}
+
+// TotalLimitUsdIn applies the In predicate on the "total_limit_usd" field.
+func TotalLimitUsdIn(vs ...float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldIn(FieldTotalLimitUsd, vs...))
+}
+
+// TotalLimitUsdNotIn applies the NotIn predicate on the "total_limit_usd" field.
+func TotalLimitUsdNotIn(vs ...float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldNotIn(FieldTotalLimitUsd, vs...))
+}
+
+// TotalLimitUsdGT applies the GT predicate on the "total_limit_usd" field.
+func TotalLimitUsdGT(v float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldGT(FieldTotalLimitUsd, v))
+}
+
+// TotalLimitUsdGTE applies the GTE predicate on the "total_limit_usd" field.
+func TotalLimitUsdGTE(v float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldGTE(FieldTotalLimitUsd, v))
+}
+
+// TotalLimitUsdLT applies the LT predicate on the "total_limit_usd" field.
+func TotalLimitUsdLT(v float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldLT(FieldTotalLimitUsd, v))
+}
+
+// TotalLimitUsdLTE applies the LTE predicate on the "total_limit_usd" field.
+func TotalLimitUsdLTE(v float64) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldLTE(FieldTotalLimitUsd, v))
+}
+
+// TotalLimitUsdIsNil applies the IsNil predicate on the "total_limit_usd" field.
+func TotalLimitUsdIsNil() predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldIsNull(FieldTotalLimitUsd))
+}
+
+// TotalLimitUsdNotNil applies the NotNil predicate on the "total_limit_usd" field.
+func TotalLimitUsdNotNil() predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldNotNull(FieldTotalLimitUsd))
 }
 
 // OriginalPriceEQ applies the EQ predicate on the "original_price" field.
@@ -812,6 +868,29 @@ func UpdatedAtLT(v time.Time) predicate.SubscriptionPlan {
 // UpdatedAtLTE applies the LTE predicate on the "updated_at" field.
 func UpdatedAtLTE(v time.Time) predicate.SubscriptionPlan {
 	return predicate.SubscriptionPlan(sql.FieldLTE(FieldUpdatedAt, v))
+}
+
+// HasUserSubscriptions applies the HasEdge predicate on the "user_subscriptions" edge.
+func HasUserSubscriptions() predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, UserSubscriptionsTable, UserSubscriptionsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasUserSubscriptionsWith applies the HasEdge predicate on the "user_subscriptions" edge with a given conditions (other predicates).
+func HasUserSubscriptionsWith(preds ...predicate.UserSubscription) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(func(s *sql.Selector) {
+		step := newUserSubscriptionsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
 }
 
 // And groups predicates with the AND operator between them.

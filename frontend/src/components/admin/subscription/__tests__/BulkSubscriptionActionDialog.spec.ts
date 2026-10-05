@@ -16,11 +16,14 @@ function subscription(id: number): UserSubscription {
   return {
     id,
     user_id: id,
-    group_id: 8,
+    plan_id: 3,
     status: 'active',
+    total_limit_usd: 50,
+    total_usage_usd: 10,
+    unlimited: false,
     user: { email: `user${id}@example.com` },
-    group: { name: 'Subscription group' }
-  } as UserSubscription
+    plan: { id: 3, name: 'Starter wallet' }
+  } as unknown as UserSubscription
 }
 
 const successResult: SubscriptionBulkActionResult = {
@@ -68,7 +71,7 @@ describe('BulkSubscriptionActionDialog', () => {
   it.each([30, -7, 36500, -36500])('submits whole-day adjustments of %s and shows target identities', async days => {
     const wrapper = mountDialog()
     expect(wrapper.text()).toContain('user1@example.com')
-    expect(wrapper.text()).toContain('Subscription group')
+    expect(wrapper.text()).toContain('Starter wallet')
     await wrapper.get('input[type="number"]').setValue(days)
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -85,21 +88,14 @@ describe('BulkSubscriptionActionDialog', () => {
     expect(bulkAction).not.toHaveBeenCalled()
   })
 
-  it('defaults to all quota windows and validates at least one selected window', async () => {
+  it('submits reset_quota without window parameters (single total pool has no daily/weekly/monthly)', async () => {
     const wrapper = mountDialog('reset_quota')
-    for (const checkbox of wrapper.findAll('input[type="checkbox"]')) {
-      expect((checkbox.element as HTMLInputElement).checked).toBe(true)
-      await checkbox.setValue(false)
-    }
-    await wrapper.get('form').trigger('submit')
-    expect(bulkAction).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('admin.subscriptions.bulk.selectWindow')
-
-    await wrapper.get('input[name="weekly"]').setValue(true)
+    expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('admin.subscriptions.bulk.resetHint')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(bulkAction).toHaveBeenCalledWith({
-      subscription_ids: [1, 2], action: 'reset_quota', daily: false, weekly: true, monthly: false
+      subscription_ids: [1, 2], action: 'reset_quota'
     }, expect.any(String))
   })
 

@@ -67,13 +67,22 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 		return nil
 	}
 
-	modelKey := a.GetMappedModel(requestedModel)
+	raw := strings.TrimSpace(requestedModel)
+	if raw == "" {
+		return nil
+	}
+
+	modelKey := a.GetMappedModel(raw)
 	if a.Platform == PlatformAntigravity {
-		modelKey = resolveFinalAntigravityModelKey(ctx, a, requestedModel)
+		modelKey = resolveFinalAntigravityModelKey(ctx, a, raw)
 	}
 	modelKey = strings.TrimSpace(modelKey)
+	// Antigravity 的映射表是白名单：未配置的模型 mapAntigravityModel 返回空串，
+	// 而写侧 (modelRateLimitKeyForUpstreamModelNotFound) 在解析不出时**回退到原始名**。
+	// 读侧必须做同样的回退：此前在这里直接 return nil，会让下面的双键兜底在
+	// Antigravity 平台整体失效（实测：写 key="claude-opus-4-8"、读 keys=nil）。
 	if modelKey == "" {
-		return nil
+		modelKey = raw
 	}
 
 	// 写入侧存在两套模型名口径：管理员自定义临时不可调度规则
@@ -82,12 +91,25 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 	// (modelRateLimitKeyForUpstreamModelNotFound) 记录的是账号映射后的上游模型名。
 	// 只查映射名时，前者在配了 model_mapping 的账号上永远命中不了：冷却写进了 DB
 	// 却拦不住调度，同一账号被反复选中并再次撞上上游 404。因此两个键都要查。
-	keys := make([]string, 0, 3)
-	keys = append(keys, modelKey)
-	if raw := strings.TrimSpace(requestedModel); raw != "" && raw != modelKey {
-		keys = append(keys, raw)
+	keys := make([]string, 0, 4)
+	appendKey := func(key string) {
+		if key = strings.TrimSpace(key); key != "" && !containsString(keys, key) {
+			keys = append(keys, key)
+		}
 	}
-	// 家族级 scope：原始名与映射名任一命中家族即纳入（两个写入口径都可能落在家族 key 上）。
+	appendKey(modelKey)
+	appendKey(raw)
+	// Antigravity 的 429/503 冷却写入口 (setModelRateLimitByModelName) 用的是上游
+	// error metadata 里的**官方模型 ID**（normalize 后，不带 -thinking 后缀）。
+	// 别名 + thinking 组合下，本函数只会得到 [官方名-thinking, 别名] 两个键，
+	// 恰好漏写官方名本身 → 冷却永远读不到（实测：写 claude-sonnet-4-5，
+	// 读 [claude-sonnet-4-5-thinking, sonnet]）。客户端直接用官方名时本就能命中
+	// （raw 在 keys 里），所以补上「不带 thinking 后缀的映射名」只是让别名用户
+	// 与直接名用户获得一致的拦截能力，不新增误封。
+	if a.Platform == PlatformAntigravity {
+		appendKey(normalizeAntigravityModelName(mapAntigravityModel(a, raw)))
+	}
+	// 家族级 scope：原始名、映射名与官方名任一命中家族即纳入（两个写入口径都可能落在家族 key 上）。
 	matchesAny := func(predicate func(string) bool) bool {
 		for _, name := range keys {
 			if predicate(name) {
@@ -98,18 +120,18 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 	}
 	switch a.Platform {
 	case PlatformAntigravity:
-		if matchesAny(isAntigravityGeminiModel) && !containsString(keys, antigravityGeminiModelRateLimitKey) {
-			keys = append(keys, antigravityGeminiModelRateLimitKey)
+		if matchesAny(isAntigravityGeminiModel) {
+			appendKey(antigravityGeminiModelRateLimitKey)
 		}
 	case PlatformOpenAI:
 		if matchesAny(func(name string) bool {
 			return openAIImageGenerationRateLimitApplies(ctx, name, name)
-		}) && !containsString(keys, openAIImageGenerationRateLimitKey) {
-			keys = append(keys, openAIImageGenerationRateLimitKey)
+		}) {
+			appendKey(openAIImageGenerationRateLimitKey)
 		}
 	case PlatformAnthropic:
-		if matchesAny(isAnthropicFableModel) && !containsString(keys, anthropicFableRateLimitKey) {
-			keys = append(keys, anthropicFableRateLimitKey)
+		if matchesAny(isAnthropicFableModel) {
+			appendKey(anthropicFableRateLimitKey)
 		}
 	}
 	return keys

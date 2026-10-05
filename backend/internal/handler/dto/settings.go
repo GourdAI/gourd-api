@@ -352,8 +352,9 @@ type SystemSettings struct {
 }
 
 type DefaultSubscriptionSetting struct {
-	GroupID      int64 `json:"group_id"`
-	ValidityDays int   `json:"validity_days"`
+	// TotalLimitUSD 新用户默认获得的订阅钱包总额度（USD）。
+	TotalLimitUSD *float64 `json:"total_limit_usd"`
+	ValidityDays  int      `json:"validity_days"`
 }
 
 type PublicSettings struct {

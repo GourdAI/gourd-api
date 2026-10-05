@@ -454,9 +454,8 @@ func (s *RedeemService) redeem(ctx context.Context, userID int64, code string, r
 	switch redeemCode.Type {
 	case RedeemTypeBalance, RedeemTypeConcurrency:
 	case RedeemTypeSubscription:
-		if redeemCode.GroupID == nil {
-			return nil, infraerrors.BadRequest("REDEEM_CODE_INVALID", "invalid subscription redeem code: missing group_id")
-		}
+		// 2026-10-03 订阅钱包改造（契约第 7 节）：发放订阅不再按分组寻址。
+		// redeem_codes.group_id 字段保留仅作历史展示/对账，缺失它也不得阻断兑换。
 	default:
 		return nil, unsupportedRedeemTypeError(redeemCode.Type)
 	}
@@ -517,17 +516,19 @@ func (s *RedeemService) redeem(ctx context.Context, userID int64, code string, r
 	case RedeemTypeSubscription:
 		validityDays := redeemCode.ValidityDays
 		if validityDays < 0 {
-			// 负数天数：缩短订阅，减到 0 则取消订阅
-			if err := s.reduceOrCancelSubscription(txCtx, userID, *redeemCode.GroupID, -validityDays, redeemCode.Code); err != nil {
+			// 负数天数：缩短订阅，减到 0 则取消订阅（不再按分组定位钱包）
+			if err := s.reduceOrCancelSubscription(txCtx, userID, -validityDays, redeemCode.Code); err != nil {
 				return nil, fmt.Errorf("reduce or cancel subscription: %w", err)
 			}
 		} else {
 			if validityDays == 0 {
 				validityDays = 30
 			}
+			// 兑换码不绑定套餐，无额度快照可取：TotalLimitUSD 故意传 nil（只给有效期）。
+			// 额度为空的钱包不会接管扣费（契约第 2 节 SubscriptionWalletTakesOver），
+			// 而是静默回落余额计费——这是契约第 7 节明确的防资损行为，勿“修复”成默认不限额。
 			_, _, err := s.subscriptionService.AssignOrExtendSubscription(txCtx, &AssignSubscriptionInput{
 				UserID:       userID,
-				GroupID:      *redeemCode.GroupID,
 				ValidityDays: validityDays,
 				AssignedBy:   0, // 系统分配
 				Notes:        fmt.Sprintf("通过兑换码 %s 兑换", redeemCode.Code),
@@ -592,14 +593,12 @@ func (s *RedeemService) invalidateRedeemCaches(ctx context.Context, userID int64
 		if s.billingCacheService == nil {
 			return
 		}
-		if redeemCode.GroupID != nil {
-			groupID := *redeemCode.GroupID
-			go func() {
-				cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID)
-			}()
-		}
+		// 订阅缓存按 user 失效（契约第 4 节：Redis 键不再有 :group 后缀）。
+		go func() {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = s.billingCacheService.InvalidateSubscription(cacheCtx, userID)
+		}()
 	}
 }
 
@@ -695,11 +694,35 @@ func (s *RedeemService) GetUserHistory(ctx context.Context, userID int64, limit 
 	return codes, nil
 }
 
-// reduceOrCancelSubscription 缩短订阅天数，剩余天数 <= 0 时取消订阅
-func (s *RedeemService) reduceOrCancelSubscription(ctx context.Context, userID, groupID int64, reduceDays int, code string) error {
-	sub, err := s.subscriptionService.userSubRepo.GetByUserIDAndGroupID(ctx, userID, groupID)
+// reduceOrCancelSubscription 缩短该用户的一份钱包订阅天数，剩余天数 <= 0 时取消订阅。
+//
+// 2026-10-03 订阅钱包改造：原实现按 (user, group) 寻址，该槽位模型已废弃。
+// 兑换码不绑定套餐（redeem_codes 无 plan_id），因此无法按 (user, plan) 定位；
+// 改为按「先到期先消耗」的同一口径取该用户当前最先到期的生效钱包做扣减，
+// 与计费消耗顺序保持一致（先把要被消耗完的那份缩短）。
+func (s *RedeemService) reduceOrCancelSubscription(ctx context.Context, userID int64, reduceDays int, code string) error {
+	if s.subscriptionService == nil || s.subscriptionService.userSubRepo == nil {
+		return errors.New("subscription service is unavailable")
+	}
+	repo := s.subscriptionService.userSubRepo
+
+	subs, err := repo.ListActiveByUserID(ctx, userID)
 	if err != nil {
+		return fmt.Errorf("list active subscriptions: %w", err)
+	}
+	if len(subs) == 0 {
 		return ErrSubscriptionNotFound
+	}
+	// 目标钱包选型：兑换码发的是「无额度（nil limit）钱包」，因此负数码优先回收同类钱包，
+	// 避免把付费用户带额度的钱包天数缩短（那等于拿用户的钱去平账）。
+	// ListActiveByUserID 已按 expires_at 升序（=消耗顺序），同类中取最先到期的一份；
+	// 用户已无无限额钱包时（常见：兑换码发的钱包已过期）退回最先到期的那一份。
+	sub := subs[0]
+	for i := range subs {
+		if subs[i].IsUnlimited() {
+			sub = subs[i]
+			break
+		}
 	}
 
 	now := time.Now()
@@ -712,17 +735,17 @@ func (s *RedeemService) reduceOrCancelSubscription(ctx context.Context, userID, 
 
 	if remaining <= reduceDays {
 		// 剩余天数不足，直接取消订阅
-		if err := s.subscriptionService.userSubRepo.UpdateStatus(ctx, sub.ID, SubscriptionStatusExpired); err != nil {
+		if err := repo.UpdateStatus(ctx, sub.ID, SubscriptionStatusExpired); err != nil {
 			return fmt.Errorf("cancel subscription: %w", err)
 		}
 		// 设置过期时间为当前时间
-		if err := s.subscriptionService.userSubRepo.ExtendExpiry(ctx, sub.ID, now); err != nil {
+		if err := repo.ExtendExpiry(ctx, sub.ID, now); err != nil {
 			return fmt.Errorf("set subscription expiry: %w", err)
 		}
 	} else {
 		// 缩短天数
 		newExpiresAt := sub.ExpiresAt.AddDate(0, 0, -reduceDays)
-		if err := s.subscriptionService.userSubRepo.ExtendExpiry(ctx, sub.ID, newExpiresAt); err != nil {
+		if err := repo.ExtendExpiry(ctx, sub.ID, newExpiresAt); err != nil {
 			return fmt.Errorf("reduce subscription: %w", err)
 		}
 	}
@@ -733,12 +756,12 @@ func (s *RedeemService) reduceOrCancelSubscription(ctx context.Context, userID, 
 		newNotes += "\n"
 	}
 	newNotes += notes
-	if err := s.subscriptionService.userSubRepo.UpdateNotes(ctx, sub.ID, newNotes); err != nil {
+	if err := repo.UpdateNotes(ctx, sub.ID, newNotes); err != nil {
 		return fmt.Errorf("update subscription notes: %w", err)
 	}
 
-	// 失效缓存
-	s.subscriptionService.InvalidateSubCache(userID, groupID)
+	// 失效缓存（按 user，不再带分组）
+	s.subscriptionService.InvalidateSubCache(userID)
 
 	return nil
 }

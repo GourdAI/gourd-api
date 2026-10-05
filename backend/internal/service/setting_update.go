@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -99,7 +98,7 @@ func (s *SettingService) refreshCachedSettingsAfterWrite(ctx context.Context, se
 }
 
 func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, settings *SystemSettings) (map[string]string, error) {
-	if err := s.validateDefaultSubscriptionGroups(ctx, settings.DefaultSubscriptions); err != nil {
+	if err := s.validateDefaultSubscriptionWallets(settings.DefaultSubscriptions); err != nil {
 		return nil, err
 	}
 	normalizedWhitelist, err := NormalizeRegistrationEmailSuffixWhitelist(settings.RegistrationEmailSuffixWhitelist)
@@ -650,7 +649,7 @@ func (s *SettingService) buildAuthSourceDefaultUpdates(ctx context.Context, sett
 		settings.Google.Subscriptions,
 		settings.DingTalk.Subscriptions,
 	} {
-		if err := s.validateDefaultSubscriptionGroups(ctx, subscriptions); err != nil {
+		if err := s.validateDefaultSubscriptionWallets(subscriptions); err != nil {
 			return nil, err
 		}
 	}
@@ -802,41 +801,25 @@ func (s *SettingService) defaultRewriteMessageCacheControl() bool {
 	return false
 }
 
-func (s *SettingService) validateDefaultSubscriptionGroups(ctx context.Context, items []DefaultSubscriptionSetting) error {
-	if len(items) == 0 {
-		return nil
-	}
-
-	checked := make(map[int64]struct{}, len(items))
+// validateDefaultSubscriptionWallets 校验「新用户默认发放订阅钱包」配置。
+//
+// 2026-10-03 重构：订阅不绑分组后，本校验从「分组必须存在且为订阅型」改为
+// 「额度必须为正值且有限」——无额度的钱包不接管扣费（防资损闸门），
+// 发放它等于发一条不起作用的记录，因此必须在写配置时就拦住。
+// 不再按 group_id 去重：多条 {额度,天数} 配置发放多份独立钱包是合法语义。
+func (s *SettingService) validateDefaultSubscriptionWallets(items []DefaultSubscriptionSetting) error {
 	for _, item := range items {
-		if item.GroupID <= 0 {
-			continue
-		}
-		if _, ok := checked[item.GroupID]; ok {
-			return ErrDefaultSubGroupDuplicate.WithMetadata(map[string]string{
-				"group_id": strconv.FormatInt(item.GroupID, 10),
+		if item.ValidityDays <= 0 {
+			return ErrDefaultSubscriptionInvalid.WithMetadata(map[string]string{
+				"validity_days": strconv.Itoa(item.ValidityDays),
 			})
 		}
-		checked[item.GroupID] = struct{}{}
-		if s.defaultSubGroupReader == nil {
-			continue
-		}
-
-		group, err := s.defaultSubGroupReader.GetByID(ctx, item.GroupID)
-		if err != nil {
-			if errors.Is(err, ErrGroupNotFound) {
-				return ErrDefaultSubGroupInvalid.WithMetadata(map[string]string{
-					"group_id": strconv.FormatInt(item.GroupID, 10),
-				})
-			}
-			return fmt.Errorf("get default subscription group %d: %w", item.GroupID, err)
-		}
-		if !group.IsSubscriptionType() {
-			return ErrDefaultSubGroupInvalid.WithMetadata(map[string]string{
-				"group_id": strconv.FormatInt(item.GroupID, 10),
+		if item.TotalLimitUSD == nil || *item.TotalLimitUSD <= 0 ||
+			math.IsNaN(*item.TotalLimitUSD) || math.IsInf(*item.TotalLimitUSD, 0) {
+			return ErrDefaultSubscriptionInvalid.WithMetadata(map[string]string{
+				"reason": "total_limit_usd must be a finite positive number",
 			})
 		}
 	}
-
 	return nil
 }

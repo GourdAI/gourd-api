@@ -415,10 +415,7 @@
               <GroupBadge
                 v-for="sub in row.subscriptions"
                 :key="sub.id"
-                :name="sub.group?.name || (sub.group_id === 0 ? t('admin.subscriptions.personalSubscription') : '')"
-                :platform="sub.group?.platform"
-                :subscription-type="sub.group?.subscription_type"
-                :rate-multiplier="sub.group?.rate_multiplier"
+                :name="sub.plan?.name || t('admin.subscriptions.personalSubscription')"
                 :days-remaining="sub.expires_at ? getDaysRemaining(sub.expires_at) : null"
                 :title="sub.expires_at ? formatDateTime(sub.expires_at) : ''"
               />

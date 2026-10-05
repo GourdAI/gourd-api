@@ -524,15 +524,17 @@ func (f *fakeZeroQuotaCache) SetUserPlatformQuotaCache(_ context.Context, _ int6
 	return nil
 }
 
-// GetSubscriptionCache 返回有效订阅（active、未过期、usage 远低于 limit），
-// 用于支持 checkSubscriptionEligibility 通过，以便验证 quota 检查不被触发。
-func (f *fakeZeroQuotaCache) GetSubscriptionCache(_ context.Context, _ int64, _ int64) (*SubscriptionCacheData, error) {
+// GetSubscriptionCache 返回一份「有效且仍有余量」的聚合钱包（active、未过期、
+// TotalUsage 远低于 TotalLimit），用于支持 checkSubscriptionEligibility 通过，
+// 以便验证 quota 检查不被触发。
+// 钱包化后缓存只有一个坐标 user，额度字段也收敛为 TotalLimit/TotalUsage 求和项。
+func (f *fakeZeroQuotaCache) GetSubscriptionCache(_ context.Context, _ int64) (*SubscriptionCacheData, error) {
 	return &SubscriptionCacheData{
 		Status:       SubscriptionStatusActive,
 		ExpiresAt:    time.Now().Add(30 * 24 * time.Hour),
-		DailyUsage:   0,
-		WeeklyUsage:  0,
-		MonthlyUsage: 0,
+		TotalLimit:   10,
+		TotalUsage:   0,
+		HasUnlimited: false,
 	}, nil
 }
 
@@ -576,12 +578,14 @@ func TestCheckBillingEligibility_SubscriptionMode_BypassesPlatformQuota(t *testi
 		ID:               10,
 		SubscriptionType: "subscription",
 		Status:           "active",
-		// 无 DailyLimitUSD → checkSubscriptionEligibility 不会因超限失败
 	}
-	sub := &UserSubscription{Status: "active"}
+	// 订阅模式由「至少一份钱包设了额度」决定（防资损闸门 SubscriptionWalletTakesOver），
+	// 所以必须给这份钱包填额度，否则它会退回余额模式、本测试要锁的豁免路径就不成立了。
+	subLimit := 10.0
+	subs := []*UserSubscription{{Status: SubscriptionStatusActive, TotalLimitUSD: &subLimit}}
 	user := &User{ID: 42}
 
-	err := s.CheckBillingEligibility(context.Background(), user, nil, subGroup, sub, "anthropic")
+	err := s.CheckBillingEligibility(context.Background(), user, nil, subGroup, subs, "anthropic")
 	// 订阅模式下不应收到任何 user×platform quota 错误
 	if errors.Is(err, ErrUserPlatformDailyQuotaExhausted) ||
 		errors.Is(err, ErrUserPlatformWeeklyQuotaExhausted) ||

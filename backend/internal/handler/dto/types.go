@@ -54,11 +54,11 @@ type AdminUser struct {
 }
 
 type APIKey struct {
-	ID          int64      `json:"id"`
-	UserID      int64      `json:"user_id"`
-	Key         string     `json:"key"`
-	Name        string     `json:"name"`
-	GroupID     *int64     `json:"group_id"`
+	ID      int64  `json:"id"`
+	UserID  int64  `json:"user_id"`
+	Key     string `json:"key"`
+	Name    string `json:"name"`
+	GroupID *int64 `json:"group_id"`
 	// GroupIDs 是候选分组集合（主分组优先）。始终存在（无绑定时为空数组），
 	// 供前端展示与编辑多分组绑定；group_id / group 继续表达主分组，保持兼容。
 	GroupIDs    []int64    `json:"group_ids"`
@@ -750,36 +750,42 @@ type Setting struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// UserSubscription 是「个人额度钱包」的对外 DTO。
+//
+// 订阅不绑定分组、不授予任何分组准入（2026-10-03 产品定案）：
+// group_id / group 与日/周/月三档额度字段已全部移除，额度只有一份总额池。
+// 不加 omitempty：前端编辑弹窗需要区分「字段不存在」与「不限额」。
 type UserSubscription struct {
-	ID      int64 `json:"id"`
-	UserID  int64 `json:"user_id"`
-	GroupID int64 `json:"group_id"`
+	ID     int64  `json:"id"`
+	UserID int64  `json:"user_id"`
+	PlanID *int64 `json:"plan_id"`
 
 	StartsAt  time.Time `json:"starts_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Status    string    `json:"status"`
 
-	DailyWindowStart   *time.Time `json:"daily_window_start"`
-	WeeklyWindowStart  *time.Time `json:"weekly_window_start"`
-	MonthlyWindowStart *time.Time `json:"monthly_window_start"`
-
-	DailyUsageUSD   float64 `json:"daily_usage_usd"`
-	WeeklyUsageUSD  float64 `json:"weekly_usage_usd"`
-	MonthlyUsageUSD float64 `json:"monthly_usage_usd"`
-
-	// 订阅自有额度（nil/0 = 该窗口不限额）：优先于分组额度生效。
-	// 不加 omitempty：前端编辑弹窗需要区分「字段不存在」与「不限额」，
-	// 并据此回填既有额度（只填日额度却把周/月静默清空 = 提权）。
-	DailyLimitUSD   *float64 `json:"daily_limit_usd"`
-	WeeklyLimitUSD  *float64 `json:"weekly_limit_usd"`
-	MonthlyLimitUSD *float64 `json:"monthly_limit_usd"`
+	// TotalLimitUSD 总额度（USD）：nil 或 <=0 = 不限额。
+	TotalLimitUSD *float64 `json:"total_limit_usd"`
+	// TotalUsageUSD 已消耗金额（总额池口径，不随日/周/月滚动重置）。
+	TotalUsageUSD float64 `json:"total_usage_usd"`
+	// RemainingUSD 剩余额度：nil 表示不限额（无上限）。
+	RemainingUSD *float64 `json:"remaining_usd"`
+	// Unlimited 便捷标记，等价于 TotalLimitUSD 归一化后为 nil。
+	Unlimited bool `json:"unlimited"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 
-	User  *User  `json:"user,omitempty"`
-	Group *Group `json:"group,omitempty"`
+	User *User                `json:"user,omitempty"`
+	Plan *SubscriptionPlanRef `json:"plan,omitempty"`
+}
+
+// SubscriptionPlanRef 是订阅行上「来源套餐」的最小投影（仅用于展示套餐名）。
+// 管理员手工发放的订阅没有套餐，此时 Plan 为 nil。
+type SubscriptionPlanRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 // AdminUserSubscription 是管理员接口使用的订阅 DTO（包含分配信息/备注等字段）。

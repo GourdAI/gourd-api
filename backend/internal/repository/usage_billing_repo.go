@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -172,19 +173,35 @@ func (r *usageBillingRepository) applyBatchImageBalanceHold(
 }
 
 func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand, result *service.UsageBillingApplyResult) error {
-	if cmd.SubscriptionCost > 0 && cmd.SubscriptionID != nil {
-		if err := incrementUsageBillingSubscription(ctx, tx, *cmd.SubscriptionID, cmd.SubscriptionCost); err != nil {
+	// 【不得修改入参 cmd】Apply 失败时上层（worker 重试）可能拿同一个 cmd 再跑一次；
+	// 若把回落金额累加进 cmd.BalanceCost，重试会重复扣余额。因此本函数内的余额调整
+	// 一律用局部变量。
+	balanceCost := cmd.BalanceCost
+
+	if cmd.SubscriptionCost > 0 {
+		fallbackAmount, err := applySubscriptionCost(ctx, tx, cmd)
+		if err != nil {
 			return err
 		}
+		if fallbackAmount > 0 {
+			// 向上汇报回落金额，让缓存写与真实落库处一致。
+			result.SubscriptionFallbackAmount = fallbackAmount
+		}
+		// 订阅钱包拿不到的部分并入本次余额扣减，只走一次 deductUsageBillingBalance
+		// （保证 result.NewBalance / BalanceOverdrafted 口径统一）。
+		// 主路径的 SubscriptionCost 与 BalanceCost 本就互斥（buildUsageBillingCommand
+		// 用 if/else if），纯余额场景下此处等价于原值。
+		balanceCost += fallbackAmount
 	}
 
-	if cmd.BalanceCost > 0 {
-		newBalance, sufficient, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, cmd.BalanceCost)
+	if balanceCost > 0 {
+		newBalance, sufficient, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, balanceCost)
 		if err != nil {
 			return err
 		}
 		result.NewBalance = &newBalance
 		result.BalanceOverdrafted = !sufficient
+		result.DeductedBalanceAmount = balanceCost
 	}
 
 	if cmd.APIKeyQuotaCost > 0 {
@@ -212,20 +229,128 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	return nil
 }
 
+// lockUserSubscriptionWalletsSQL 在计费事务内按「先到期先消耗」顺序锁定该用户全部生效钱包。
+//
+// 锁定读是拆分正确性的前提：没有 FOR UPDATE，两个并发请求会各自读到旧用量、
+// 把同一份额度花两遍。ORDER BY expires_at 同时固定了加锁顺序，避免多行锁交叉等待。
+const lockUserSubscriptionWalletsSQL = `
+		SELECT id, expires_at, total_limit_usd, total_usage_usd
+		FROM user_subscriptions
+		WHERE user_id = $1
+			AND deleted_at IS NULL
+			AND status = 'active'
+			AND expires_at > NOW()
+		ORDER BY expires_at ASC
+		FOR UPDATE
+	`
+
+func lockUserSubscriptionWallets(ctx context.Context, tx *sql.Tx, userID int64) ([]*service.UserSubscription, error) {
+	rows, err := tx.QueryContext(ctx, lockUserSubscriptionWalletsSQL, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var subs []*service.UserSubscription
+	for rows.Next() {
+		var (
+			id        int64
+			expiresAt time.Time
+			limit     sql.NullFloat64
+			usage     float64
+		)
+		if err := rows.Scan(&id, &expiresAt, &limit, &usage); err != nil {
+			return nil, err
+		}
+		sub := &service.UserSubscription{
+			ID:            id,
+			UserID:        userID,
+			Status:        service.SubscriptionStatusActive,
+			ExpiresAt:     expiresAt,
+			TotalUsageUSD: usage,
+		}
+		if limit.Valid {
+			v := limit.Float64
+			sub.TotalLimitUSD = &v
+		}
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return subs, nil
+}
+
+// applySubscriptionCost 把一笔订阅费用按「先到期先消耗」拆开并逐行累加。
+//
+// 之前主计费路径只能写单行（cmd.SubscriptionID），将整笔记到「最早到期」那份钱包：
+// 越界部分会随该行过期一起消失，等于白送（实测每人漏 5 USD）。
+// 拆分口径与网关降级路径共用同一个纯函数 service.AllocateSubscriptionRecordings，
+// 因此两条路径不会分叉；装不下时同样是「整笔记到首选钱包、让用量合法越界」而不是丢钱。
+//
+// 返回的 fallbackAmount>0 表示这笔钱没能记到任何订阅钱包（用户已拍板口径：
+// 「宁可透支也不白送」），调用侧负贵把它转到余额扣减。
+func applySubscriptionCost(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) (float64, error) {
+	subs, err := lockUserSubscriptionWallets(ctx, tx, cmd.UserID)
+	if err != nil {
+		return 0, err
+	}
+
+	allocations := service.AllocateSubscriptionRecordings(subs, cmd.SubscriptionCost)
+	if len(allocations) == 0 {
+		// 锁不到任何生效钱包：行可能已被撤销/软删，或刚跨过 expires_at（L1 缓存的陈旧切片
+		// 与事务内锁定读不是同一份数据，这个错位是结构性存在，不靠运气）。
+		// 先试调用方快照里的归属行；写不进（软删行带 deleted_at IS NULL 守卫→affected=0）
+		// 则整笔回落余额。
+		//
+		// 【为什么不能继续返回 ErrSubscriptionNotFound】该 error 会在 tx.Commit() 之前
+		// 上抛，导致整个计费事务回滚 —— 同事务里的 balance 扣减和 dedup claim 一并消失。
+		// 而请求已经发生、真实上游成本已经花掉：客户端响应已发出无法回退，重试又会被
+		// 当成新请求继续花，结果是「平台为该请求分文未得」。宁可把这笔钱记到余额（哪怕
+		// 因此透支，deductUsageBillingBalance 本就不拦负余额），也不能让它静默消失。
+		if cmd.SubscriptionID != nil {
+			fallbackErr := incrementUsageBillingSubscription(ctx, tx, *cmd.SubscriptionID, cmd.SubscriptionCost)
+			if fallbackErr == nil {
+				return 0, nil
+			}
+			if !errors.Is(fallbackErr, service.ErrSubscriptionNotFound) {
+				return 0, fallbackErr
+			}
+		}
+		logger.LegacyPrintf("repository.usage_billing",
+			"ALERT: subscription wallet unavailable, falling back to balance: user=%d request=%s cost=%.8f",
+			cmd.UserID, cmd.RequestID, cmd.SubscriptionCost)
+		return cmd.SubscriptionCost, nil
+	}
+
+	for _, alloc := range allocations {
+		if err := incrementUsageBillingSubscription(ctx, tx, alloc.SubscriptionID, alloc.Amount); err != nil {
+			// 行在锁后被并发销毁（理论上被 FOR UPDATE 挡住，但保留同一出口）：
+			// 未命中转余额回落，真 DB 故障仍然上抛（应该回滚重试，不能静默记账）。
+			if errors.Is(err, service.ErrSubscriptionNotFound) {
+				logger.LegacyPrintf("repository.usage_billing",
+					"ALERT: subscription row vanished mid-apply, falling back to balance: user=%d request=%s cost=%.8f",
+					cmd.UserID, cmd.RequestID, cmd.SubscriptionCost)
+				return cmd.SubscriptionCost, nil
+			}
+			return 0, err
+		}
+	}
+	return 0, nil
+}
+
 func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscriptionID int64, costUSD float64) error {
+	// 订阅为「个人额度钱包 + 单一总额池」（2026-10-03 重构）：
+	// 旧的 daily/weekly/monthly_usage_usd 三列与 group_id 槽位已随迁移 246 删除，
+	// 此处必须与 repository/user_subscription_repo.go 的 IncrementUsage 保持同一口径，
+	// 否则主计费路径（repo.Apply）每笔订阅扣费都会因列不存在而整事务回滚。
 	const updateSQL = `
 		UPDATE user_subscriptions
 		SET
-			daily_usage_usd = daily_usage_usd + $1,
-			weekly_usage_usd = weekly_usage_usd + $1,
-			monthly_usage_usd = monthly_usage_usd + $1,
+			total_usage_usd = total_usage_usd + $1,
 			updated_at = NOW()
 		WHERE id = $2
 			AND deleted_at IS NULL
-			AND (
-				group_id = 0
-				OR group_id IN (SELECT id FROM groups WHERE deleted_at IS NULL)
-			)
 	`
 	res, err := tx.ExecContext(ctx, updateSQL, costUSD, subscriptionID)
 	if err != nil {

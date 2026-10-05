@@ -30,10 +30,13 @@ func TestUserSubscriptionGetByIDForUpdateLocksRow(t *testing.T) {
 
 	mock.ExpectQuery("locked subscription").WillReturnRows(
 		sqlmock.NewRows(usersubscription.Columns).AddRow(
+			// 列顺序严格按 usersubscription.Columns（共 14 列，2026-10-03 钱包重构后）：
+			// id, created_at, updated_at, deleted_at, user_id, plan_id, starts_at,
+			// expires_at, status, total_limit_usd, total_usage_usd, assigned_by,
+			// assigned_at, notes
 			int64(7), now, now, nil, int64(11), int64(13), now, now.AddDate(0, 0, 30), "active",
-			nil, nil, nil, 0.0, 0.0, 0.0,
-			// 订阅自有额度 daily/weekly/monthly_limit_usd：NULL = 不限额
-			nil, nil, nil,
+			// 总额度 NULL = 不限额；已用 0
+			nil, 0.0,
 			nil, now, "renewal",
 		),
 	)

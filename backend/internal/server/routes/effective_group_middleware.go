@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"context"
 	"net/http"
 	"strings"
 
@@ -31,13 +30,11 @@ import (
 //     回退主分组，不影响既有行为；
 //   - 决议结果同时写入 request ctx 的 ctxkey.Group（与 setGroupContext 语义一致），
 //     供需要在 request ctx 上读分组的链路使用。
-func effectiveGroupMiddleware(gatewayService *service.GatewayService, subscriptionService *service.SubscriptionService) gin.HandlerFunc {
-	// 把订阅重载抽成函数类型：*service.SubscriptionService 为 nil 时 loader 也为 nil，
-	// 避开 typed-nil 接口陷阱，同时让 reloadSubscriptionForEffectiveGroup 可被单测替身驱动。
-	var loader subscriptionLoader
-	if subscriptionService != nil {
-		loader = subscriptionService.GetActiveSubscription
-	}
+//
+// 订阅不再绑定分组，也不再参与「生效分组决议」：原「按生效分组重载订阅」探针
+// （reloadSubscriptionForEffectiveGroup）已删除。subscriptionService 参数仅为不改动
+// 调用方（routes/gateway.go）接线而保留，函数体内不再引用它。
+func effectiveGroupMiddleware(gatewayService *service.GatewayService, _ *service.SubscriptionService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		apiKey, ok := middleware.GetAPIKeyFromContext(c)
 		if !ok || apiKey == nil {
@@ -75,41 +72,10 @@ func effectiveGroupMiddleware(gatewayService *service.GatewayService, subscripti
 		if decision.Group.ID > 0 && c.Request != nil {
 			c.Request = c.Request.WithContext(service.WithEffectiveGroup(c.Request.Context(), decision.Group))
 		}
-		// P1③：生效分组为订阅型且与 auth 阶段按主分组加载的订阅不同组时，按生效分组
-		// 重新加载订阅并覆写 ctx，保证 usage_logs.subscription_id 归属到真正提供服务的分组。
-		// 重载失败（生效分组无有效订阅）时**不覆写**：保留主分组订阅，由计费层
-		// checkSubscriptionEligibility 按生效分组查出无订阅而拒绝——绝不沿用主分组订阅放行，
-		// 也不降级为余额模式（避免引入新的放行路径）。
-		reloadSubscriptionForEffectiveGroup(c, decision.Group, apiKey.UserID, loader)
+		// 生效分组变更不再触发订阅读取：订阅是用户维度的额度钱包，与分组无关；
+		// auth 中间件已按 user_id 一次性加载该用户全部生效钱包，切组不改变钱包归属。
 		c.Next()
 	}
-}
-
-// subscriptionLoader 是「按 (user, group) 取有效订阅」的窄依赖，
-// *service.SubscriptionService.GetActiveSubscription 直接满足该签名。
-type subscriptionLoader func(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error)
-
-// reloadSubscriptionForEffectiveGroup 在生效分组为订阅型且与 ctx 中已加载订阅（按主分组
-// 加载）不属于同一分组时，按生效分组重新加载订阅并覆写 ctx。
-//
-// 只在重载成功时覆写；失败/无订阅时保持原样，交由计费层按生效分组拒绝（见调用处注释）。
-func reloadSubscriptionForEffectiveGroup(
-	c *gin.Context,
-	group *service.Group,
-	userID int64,
-	loader subscriptionLoader,
-) {
-	if loader == nil || group == nil || !group.IsSubscriptionType() {
-		return
-	}
-	if current, ok := middleware.GetSubscriptionFromContext(c); ok && current != nil && current.GroupID == group.ID {
-		return // ctx 中已是生效分组的订阅，无需重载。
-	}
-	sub, err := loader(c.Request.Context(), userID, group.ID)
-	if err != nil || sub == nil {
-		return // 不覆写：保留主分组订阅，计费层会按生效分组拒绝。
-	}
-	c.Set(string(middleware.ContextKeySubscription), sub)
 }
 
 // candidateGroups 返回 key 的候选分组对象集合（快照已物化；缺失时退化为主分组）。

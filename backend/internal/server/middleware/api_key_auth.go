@@ -188,34 +188,17 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			return
 		}
 
-		// ── 5. 按端点需要加载订阅 ───────────────────────────────────
+		// ── 5. 探测生效订阅钱包（仅用于计费模式判定） ─────────────────
 
-		var subscription *service.UserSubscription
-		groupIsSubscription := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
-
-		// 订阅读取（倍率自省不需要）：
-		// - 订阅型分组：必须命中该分组的订阅（保持原有 403 语义），并依赖 apiKey.Group 非空；
-		// - 其他情形：探测「个人订阅」（group_id=0）。注意：这一步**不授予任何分组准入**
-		//   （准入已由上方 abortIfAPIKeyGroupNotAllowed 按分组权限严格判完），
-		//   它只决定“这笔请求的扣费从哪份额度里走”。
+		// 订阅是「个人额度钱包」：不绑定分组、不授予任何分组准入（2026-10-03 契约第 6 节）。
+		// 因此这里**无条件**探测该用户是否持有生效钱包，结果只用于决定「这笔请求的扣费
+		// 从哪走」：钱包接管则跳过余额硬闸，否则回落余额检查。
+		// 探测失败或无订阅一律按 nil 切片处理（绝不 403）——准入已由上方
+		// abortIfAPIKeyGroupNotAllowed 按分组权限判完，这里不是闸。
+		var subscriptions []*service.UserSubscription
 		if subscriptionService != nil && !billingInfoRequest {
-			if groupIsSubscription {
-				sub, subErr := subscriptionService.GetActiveSubscription(
-					c.Request.Context(),
-					apiKey.User.ID,
-					apiKey.Group.ID,
-				)
-				if subErr != nil {
-					if !skipBilling {
-						AbortWithError(c, 403, "SUBSCRIPTION_NOT_FOUND", "No active subscription found for this group")
-						return
-					}
-					// skipBilling: 订阅不存在也放行，handler 会返回可用的数据
-				} else {
-					subscription = sub
-				}
-			} else if personal, err := subscriptionService.GetActiveSubscription(c.Request.Context(), apiKey.User.ID, 0); err == nil && personal != nil {
-				subscription = personal
+			if subs, err := subscriptionService.GetActiveSubscriptions(c.Request.Context(), apiKey.User.ID); err == nil {
+				subscriptions = subs
 			}
 		}
 
@@ -242,32 +225,13 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				return
 			}
 
-			// 订阅模式：验证订阅限额
-			if subscription != nil {
-				needsMaintenance, validateErr := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
-				if needsMaintenance {
-					refreshed, maintenanceErr := subscriptionService.EnsureWindowMaintenance(c.Request.Context(), subscription)
-					if maintenanceErr != nil {
-						AbortWithError(c, 500, "SUBSCRIPTION_MAINTENANCE_FAILED", "Failed to maintain subscription usage windows")
-						return
-					}
-					subscription = refreshed
-					_, validateErr = subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
-				}
-				if validateErr != nil {
-					code := "SUBSCRIPTION_INVALID"
-					status := 403
-					if errors.Is(validateErr, service.ErrDailyLimitExceeded) ||
-						errors.Is(validateErr, service.ErrWeeklyLimitExceeded) ||
-						errors.Is(validateErr, service.ErrMonthlyLimitExceeded) {
-						code = "USAGE_LIMIT_EXCEEDED"
-						status = 429
-					}
-					AbortWithError(c, status, code, validateErr.Error())
-					return
-				}
-			} else {
-				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
+			// 计费模式判定：持有生效钱包、且至少一份设了额度，订阅钱包才接管扣费。
+			// 全部不限额的钱包不得接管（否则管理员只建有效期、忘填额度就等于全平台免费，
+			// 这是契约刻意保留的资损闸门，勿"修复"）。
+			// 钱包余量不足由计费层 BillingCacheService.CheckBillingEligibility 按用户聚合
+			// 拒绝（SUBSCRIPTION_QUOTA_EXHAUSTED），中间件不再重复做逐份额度校验。
+			if !service.SubscriptionWalletTakesOver(subscriptions) {
+				// 非订阅模式 或 subscriptionService 未注入：回退到余额检查
 				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
 					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 					return
@@ -277,8 +241,8 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 
 		// ── 7. 设置上下文 → Next ─────────────────────────────────────
 
-		if subscription != nil {
-			c.Set(string(ContextKeySubscription), subscription)
+		if len(subscriptions) > 0 {
+			c.Set(string(ContextKeySubscription), subscriptions)
 		}
 		c.Set(string(ContextKeyAPIKey), apiKey)
 		c.Set(string(ContextKeyUser), AuthSubject{
@@ -378,14 +342,36 @@ func GetOpsFallbackAPIKey(c *gin.Context) (*service.APIKey, bool) {
 	return apiKey, ok
 }
 
-// GetSubscriptionFromContext 从上下文中获取订阅信息
-func GetSubscriptionFromContext(c *gin.Context) (*service.UserSubscription, bool) {
+// GetSubscriptionsFromContext 从上下文中获取该用户的全部生效订阅钱包
+// （按 expires_at 升序 = 先到期先消耗）。中间件未加载或无生效钱包时返回 (nil, false)。
+func GetSubscriptionsFromContext(c *gin.Context) ([]*service.UserSubscription, bool) {
 	value, exists := c.Get(string(ContextKeySubscription))
 	if !exists {
 		return nil, false
 	}
-	subscription, ok := value.(*service.UserSubscription)
-	return subscription, ok
+	subscriptions, ok := value.([]*service.UserSubscription)
+	return subscriptions, ok
+}
+
+// GetSubscriptionFromContext 返回最先到期的一份订阅钱包（展示/兼容性便捷入口）。
+// 计费一律按聚合钱包判定，请使用 GetSubscriptionsFromContext，勿以单份代表全部额度。
+// 兼容两种写入形态：中间件现在存切片；旧调用方/测试替身存单指针时同样可读。
+func GetSubscriptionFromContext(c *gin.Context) (*service.UserSubscription, bool) {
+	value, exists := c.Get(string(ContextKeySubscription))
+	if !exists || value == nil {
+		return nil, false
+	}
+	switch v := value.(type) {
+	case []*service.UserSubscription:
+		if len(v) == 0 || v[0] == nil {
+			return nil, false
+		}
+		return v[0], true
+	case *service.UserSubscription:
+		return v, v != nil
+	default:
+		return nil, false
+	}
 }
 
 func setGroupContext(c *gin.Context, group *service.Group) {
@@ -459,10 +445,9 @@ func validateAPIKeyGroupAllowed(apiKey *service.APIKey) bool {
 		if group == nil {
 			continue
 		}
-		if group.IsSubscriptionType() {
-			// 订阅型分组：订阅有效性在后续订阅校验/计费层判定（与历史行为一致）。
-			return true
-		}
+		// 订阅型分组不再享有无条件放行：订阅只是额度钱包，不是分组通行证
+		//（2026-10-03 契约第 6 节）。准入一律回到分组权限校验，
+		// 与标准分组同强度（受限/专属分组仍需 user_allowed_groups 授权）。
 		if apiKey.User.CanBindGroup(group.ID, group.IsExclusive) {
 			return true
 		}

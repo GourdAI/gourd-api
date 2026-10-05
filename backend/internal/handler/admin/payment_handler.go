@@ -288,28 +288,33 @@ func (h *PaymentHandler) ListPlans(c *gin.Context) {
 }
 
 type AdminSubscriptionPlanResult struct {
-	ID              int64     `json:"id"`
-	GroupID         int64     `json:"group_id"`
-	GroupPlatform   string    `json:"group_platform,omitempty"`
-	GroupName       string    `json:"group_name,omitempty"`
-	RateMultiplier  float64   `json:"rate_multiplier,omitempty"`
-	DailyLimitUSD   *float64  `json:"daily_limit_usd,omitempty"`
-	WeeklyLimitUSD  *float64  `json:"weekly_limit_usd,omitempty"`
-	MonthlyLimitUSD *float64  `json:"monthly_limit_usd,omitempty"`
-	ModelScopes     []string  `json:"supported_model_scopes,omitempty"`
-	Name            string    `json:"name"`
-	Description     string    `json:"description"`
-	Price           float64   `json:"price"`
-	OriginalPrice   *float64  `json:"original_price,omitempty"`
-	Currency        string    `json:"currency,omitempty"`
-	ValidityDays    int       `json:"validity_days"`
-	ValidityUnit    string    `json:"validity_unit"`
-	Features        string    `json:"features"`
-	ProductName     string    `json:"product_name"`
-	ForSale         bool      `json:"for_sale"`
-	SortOrder       int       `json:"sort_order"`
-	CreatedAt       time.Time `json:"created_at,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+	ID             int64   `json:"id"`
+	GroupID        int64   `json:"group_id"`
+	GroupPlatform  string  `json:"group_platform,omitempty"`
+	GroupName      string  `json:"group_name,omitempty"`
+	RateMultiplier float64 `json:"rate_multiplier,omitempty"`
+	// 以下三列读的是 groups 表自身的日/周/月限额配置（分组级限流），
+	// 与订阅钱包无关，仅用于展示分组自身配置（契约第 5 条保留）。
+	DailyLimitUSD   *float64 `json:"daily_limit_usd,omitempty"`
+	WeeklyLimitUSD  *float64 `json:"weekly_limit_usd,omitempty"`
+	MonthlyLimitUSD *float64 `json:"monthly_limit_usd,omitempty"`
+	ModelScopes     []string `json:"supported_model_scopes,omitempty"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	Price           float64  `json:"price"`
+	OriginalPrice   *float64 `json:"original_price,omitempty"`
+	// TotalLimitUSD 套餐额度（USD）：nil / 缺失 = 不限额。
+	// 发放时作为快照写入 user_subscriptions.total_limit_usd，供前端套餐编辑器读写。
+	TotalLimitUSD *float64  `json:"total_limit_usd,omitempty"`
+	Currency      string    `json:"currency,omitempty"`
+	ValidityDays  int       `json:"validity_days"`
+	ValidityUnit  string    `json:"validity_unit"`
+	Features      string    `json:"features"`
+	ProductName   string    `json:"product_name"`
+	ForSale       bool      `json:"for_sale"`
+	SortOrder     int       `json:"sort_order"`
+	CreatedAt     time.Time `json:"created_at,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 }
 
 func adminSubscriptionPlansForResponse(plans []*dbent.SubscriptionPlan, groupInfo map[int64]service.PlanGroupInfo) []AdminSubscriptionPlanResult {
@@ -333,6 +338,7 @@ func adminSubscriptionPlansForResponse(plans []*dbent.SubscriptionPlan, groupInf
 			Description:     p.Description,
 			Price:           p.Price,
 			OriginalPrice:   p.OriginalPrice,
+			TotalLimitUSD:   p.TotalLimitUsd,
 			Currency:        p.Currency,
 			ValidityDays:    p.ValidityDays,
 			ValidityUnit:    p.ValidityUnit,

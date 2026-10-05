@@ -11,8 +11,8 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
@@ -71,17 +71,23 @@ func (_u *UserSubscriptionUpdate) SetNillableUserID(v *int64) *UserSubscriptionU
 	return _u
 }
 
-// SetGroupID sets the "group_id" field.
-func (_u *UserSubscriptionUpdate) SetGroupID(v int64) *UserSubscriptionUpdate {
-	_u.mutation.SetGroupID(v)
+// SetPlanID sets the "plan_id" field.
+func (_u *UserSubscriptionUpdate) SetPlanID(v int64) *UserSubscriptionUpdate {
+	_u.mutation.SetPlanID(v)
 	return _u
 }
 
-// SetNillableGroupID sets the "group_id" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableGroupID(v *int64) *UserSubscriptionUpdate {
+// SetNillablePlanID sets the "plan_id" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillablePlanID(v *int64) *UserSubscriptionUpdate {
 	if v != nil {
-		_u.SetGroupID(*v)
+		_u.SetPlanID(*v)
 	}
+	return _u
+}
+
+// ClearPlanID clears the value of the "plan_id" field.
+func (_u *UserSubscriptionUpdate) ClearPlanID() *UserSubscriptionUpdate {
+	_u.mutation.ClearPlanID()
 	return _u
 }
 
@@ -127,207 +133,51 @@ func (_u *UserSubscriptionUpdate) SetNillableStatus(v *string) *UserSubscription
 	return _u
 }
 
-// SetDailyWindowStart sets the "daily_window_start" field.
-func (_u *UserSubscriptionUpdate) SetDailyWindowStart(v time.Time) *UserSubscriptionUpdate {
-	_u.mutation.SetDailyWindowStart(v)
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (_u *UserSubscriptionUpdate) SetTotalLimitUsd(v float64) *UserSubscriptionUpdate {
+	_u.mutation.ResetTotalLimitUsd()
+	_u.mutation.SetTotalLimitUsd(v)
 	return _u
 }
 
-// SetNillableDailyWindowStart sets the "daily_window_start" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableDailyWindowStart(v *time.Time) *UserSubscriptionUpdate {
+// SetNillableTotalLimitUsd sets the "total_limit_usd" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableTotalLimitUsd(v *float64) *UserSubscriptionUpdate {
 	if v != nil {
-		_u.SetDailyWindowStart(*v)
+		_u.SetTotalLimitUsd(*v)
 	}
 	return _u
 }
 
-// ClearDailyWindowStart clears the value of the "daily_window_start" field.
-func (_u *UserSubscriptionUpdate) ClearDailyWindowStart() *UserSubscriptionUpdate {
-	_u.mutation.ClearDailyWindowStart()
+// AddTotalLimitUsd adds value to the "total_limit_usd" field.
+func (_u *UserSubscriptionUpdate) AddTotalLimitUsd(v float64) *UserSubscriptionUpdate {
+	_u.mutation.AddTotalLimitUsd(v)
 	return _u
 }
 
-// SetWeeklyWindowStart sets the "weekly_window_start" field.
-func (_u *UserSubscriptionUpdate) SetWeeklyWindowStart(v time.Time) *UserSubscriptionUpdate {
-	_u.mutation.SetWeeklyWindowStart(v)
+// ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
+func (_u *UserSubscriptionUpdate) ClearTotalLimitUsd() *UserSubscriptionUpdate {
+	_u.mutation.ClearTotalLimitUsd()
 	return _u
 }
 
-// SetNillableWeeklyWindowStart sets the "weekly_window_start" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableWeeklyWindowStart(v *time.Time) *UserSubscriptionUpdate {
+// SetTotalUsageUsd sets the "total_usage_usd" field.
+func (_u *UserSubscriptionUpdate) SetTotalUsageUsd(v float64) *UserSubscriptionUpdate {
+	_u.mutation.ResetTotalUsageUsd()
+	_u.mutation.SetTotalUsageUsd(v)
+	return _u
+}
+
+// SetNillableTotalUsageUsd sets the "total_usage_usd" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableTotalUsageUsd(v *float64) *UserSubscriptionUpdate {
 	if v != nil {
-		_u.SetWeeklyWindowStart(*v)
+		_u.SetTotalUsageUsd(*v)
 	}
 	return _u
 }
 
-// ClearWeeklyWindowStart clears the value of the "weekly_window_start" field.
-func (_u *UserSubscriptionUpdate) ClearWeeklyWindowStart() *UserSubscriptionUpdate {
-	_u.mutation.ClearWeeklyWindowStart()
-	return _u
-}
-
-// SetMonthlyWindowStart sets the "monthly_window_start" field.
-func (_u *UserSubscriptionUpdate) SetMonthlyWindowStart(v time.Time) *UserSubscriptionUpdate {
-	_u.mutation.SetMonthlyWindowStart(v)
-	return _u
-}
-
-// SetNillableMonthlyWindowStart sets the "monthly_window_start" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableMonthlyWindowStart(v *time.Time) *UserSubscriptionUpdate {
-	if v != nil {
-		_u.SetMonthlyWindowStart(*v)
-	}
-	return _u
-}
-
-// ClearMonthlyWindowStart clears the value of the "monthly_window_start" field.
-func (_u *UserSubscriptionUpdate) ClearMonthlyWindowStart() *UserSubscriptionUpdate {
-	_u.mutation.ClearMonthlyWindowStart()
-	return _u
-}
-
-// SetDailyUsageUsd sets the "daily_usage_usd" field.
-func (_u *UserSubscriptionUpdate) SetDailyUsageUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.ResetDailyUsageUsd()
-	_u.mutation.SetDailyUsageUsd(v)
-	return _u
-}
-
-// SetNillableDailyUsageUsd sets the "daily_usage_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableDailyUsageUsd(v *float64) *UserSubscriptionUpdate {
-	if v != nil {
-		_u.SetDailyUsageUsd(*v)
-	}
-	return _u
-}
-
-// AddDailyUsageUsd adds value to the "daily_usage_usd" field.
-func (_u *UserSubscriptionUpdate) AddDailyUsageUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.AddDailyUsageUsd(v)
-	return _u
-}
-
-// SetWeeklyUsageUsd sets the "weekly_usage_usd" field.
-func (_u *UserSubscriptionUpdate) SetWeeklyUsageUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.ResetWeeklyUsageUsd()
-	_u.mutation.SetWeeklyUsageUsd(v)
-	return _u
-}
-
-// SetNillableWeeklyUsageUsd sets the "weekly_usage_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableWeeklyUsageUsd(v *float64) *UserSubscriptionUpdate {
-	if v != nil {
-		_u.SetWeeklyUsageUsd(*v)
-	}
-	return _u
-}
-
-// AddWeeklyUsageUsd adds value to the "weekly_usage_usd" field.
-func (_u *UserSubscriptionUpdate) AddWeeklyUsageUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.AddWeeklyUsageUsd(v)
-	return _u
-}
-
-// SetMonthlyUsageUsd sets the "monthly_usage_usd" field.
-func (_u *UserSubscriptionUpdate) SetMonthlyUsageUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.ResetMonthlyUsageUsd()
-	_u.mutation.SetMonthlyUsageUsd(v)
-	return _u
-}
-
-// SetNillableMonthlyUsageUsd sets the "monthly_usage_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableMonthlyUsageUsd(v *float64) *UserSubscriptionUpdate {
-	if v != nil {
-		_u.SetMonthlyUsageUsd(*v)
-	}
-	return _u
-}
-
-// AddMonthlyUsageUsd adds value to the "monthly_usage_usd" field.
-func (_u *UserSubscriptionUpdate) AddMonthlyUsageUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.AddMonthlyUsageUsd(v)
-	return _u
-}
-
-// SetDailyLimitUsd sets the "daily_limit_usd" field.
-func (_u *UserSubscriptionUpdate) SetDailyLimitUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.ResetDailyLimitUsd()
-	_u.mutation.SetDailyLimitUsd(v)
-	return _u
-}
-
-// SetNillableDailyLimitUsd sets the "daily_limit_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableDailyLimitUsd(v *float64) *UserSubscriptionUpdate {
-	if v != nil {
-		_u.SetDailyLimitUsd(*v)
-	}
-	return _u
-}
-
-// AddDailyLimitUsd adds value to the "daily_limit_usd" field.
-func (_u *UserSubscriptionUpdate) AddDailyLimitUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.AddDailyLimitUsd(v)
-	return _u
-}
-
-// ClearDailyLimitUsd clears the value of the "daily_limit_usd" field.
-func (_u *UserSubscriptionUpdate) ClearDailyLimitUsd() *UserSubscriptionUpdate {
-	_u.mutation.ClearDailyLimitUsd()
-	return _u
-}
-
-// SetWeeklyLimitUsd sets the "weekly_limit_usd" field.
-func (_u *UserSubscriptionUpdate) SetWeeklyLimitUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.ResetWeeklyLimitUsd()
-	_u.mutation.SetWeeklyLimitUsd(v)
-	return _u
-}
-
-// SetNillableWeeklyLimitUsd sets the "weekly_limit_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableWeeklyLimitUsd(v *float64) *UserSubscriptionUpdate {
-	if v != nil {
-		_u.SetWeeklyLimitUsd(*v)
-	}
-	return _u
-}
-
-// AddWeeklyLimitUsd adds value to the "weekly_limit_usd" field.
-func (_u *UserSubscriptionUpdate) AddWeeklyLimitUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.AddWeeklyLimitUsd(v)
-	return _u
-}
-
-// ClearWeeklyLimitUsd clears the value of the "weekly_limit_usd" field.
-func (_u *UserSubscriptionUpdate) ClearWeeklyLimitUsd() *UserSubscriptionUpdate {
-	_u.mutation.ClearWeeklyLimitUsd()
-	return _u
-}
-
-// SetMonthlyLimitUsd sets the "monthly_limit_usd" field.
-func (_u *UserSubscriptionUpdate) SetMonthlyLimitUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.ResetMonthlyLimitUsd()
-	_u.mutation.SetMonthlyLimitUsd(v)
-	return _u
-}
-
-// SetNillableMonthlyLimitUsd sets the "monthly_limit_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdate) SetNillableMonthlyLimitUsd(v *float64) *UserSubscriptionUpdate {
-	if v != nil {
-		_u.SetMonthlyLimitUsd(*v)
-	}
-	return _u
-}
-
-// AddMonthlyLimitUsd adds value to the "monthly_limit_usd" field.
-func (_u *UserSubscriptionUpdate) AddMonthlyLimitUsd(v float64) *UserSubscriptionUpdate {
-	_u.mutation.AddMonthlyLimitUsd(v)
-	return _u
-}
-
-// ClearMonthlyLimitUsd clears the value of the "monthly_limit_usd" field.
-func (_u *UserSubscriptionUpdate) ClearMonthlyLimitUsd() *UserSubscriptionUpdate {
-	_u.mutation.ClearMonthlyLimitUsd()
+// AddTotalUsageUsd adds value to the "total_usage_usd" field.
+func (_u *UserSubscriptionUpdate) AddTotalUsageUsd(v float64) *UserSubscriptionUpdate {
+	_u.mutation.AddTotalUsageUsd(v)
 	return _u
 }
 
@@ -390,9 +240,9 @@ func (_u *UserSubscriptionUpdate) SetUser(v *User) *UserSubscriptionUpdate {
 	return _u.SetUserID(v.ID)
 }
 
-// SetGroup sets the "group" edge to the Group entity.
-func (_u *UserSubscriptionUpdate) SetGroup(v *Group) *UserSubscriptionUpdate {
-	return _u.SetGroupID(v.ID)
+// SetPlan sets the "plan" edge to the SubscriptionPlan entity.
+func (_u *UserSubscriptionUpdate) SetPlan(v *SubscriptionPlan) *UserSubscriptionUpdate {
+	return _u.SetPlanID(v.ID)
 }
 
 // SetAssignedByUserID sets the "assigned_by_user" edge to the User entity by ID.
@@ -440,9 +290,9 @@ func (_u *UserSubscriptionUpdate) ClearUser() *UserSubscriptionUpdate {
 	return _u
 }
 
-// ClearGroup clears the "group" edge to the Group entity.
-func (_u *UserSubscriptionUpdate) ClearGroup() *UserSubscriptionUpdate {
-	_u.mutation.ClearGroup()
+// ClearPlan clears the "plan" edge to the SubscriptionPlan entity.
+func (_u *UserSubscriptionUpdate) ClearPlan() *UserSubscriptionUpdate {
+	_u.mutation.ClearPlan()
 	return _u
 }
 
@@ -525,9 +375,6 @@ func (_u *UserSubscriptionUpdate) check() error {
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UserSubscription.user"`)
 	}
-	if _u.mutation.GroupCleared() && len(_u.mutation.GroupIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "UserSubscription.group"`)
-	}
 	return nil
 }
 
@@ -561,68 +408,20 @@ func (_u *UserSubscriptionUpdate) sqlSave(ctx context.Context) (_node int, err e
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(usersubscription.FieldStatus, field.TypeString, value)
 	}
-	if value, ok := _u.mutation.DailyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldDailyWindowStart, field.TypeTime, value)
+	if value, ok := _u.mutation.TotalLimitUsd(); ok {
+		_spec.SetField(usersubscription.FieldTotalLimitUsd, field.TypeFloat64, value)
 	}
-	if _u.mutation.DailyWindowStartCleared() {
-		_spec.ClearField(usersubscription.FieldDailyWindowStart, field.TypeTime)
+	if value, ok := _u.mutation.AddedTotalLimitUsd(); ok {
+		_spec.AddField(usersubscription.FieldTotalLimitUsd, field.TypeFloat64, value)
 	}
-	if value, ok := _u.mutation.WeeklyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyWindowStart, field.TypeTime, value)
+	if _u.mutation.TotalLimitUsdCleared() {
+		_spec.ClearField(usersubscription.FieldTotalLimitUsd, field.TypeFloat64)
 	}
-	if _u.mutation.WeeklyWindowStartCleared() {
-		_spec.ClearField(usersubscription.FieldWeeklyWindowStart, field.TypeTime)
+	if value, ok := _u.mutation.TotalUsageUsd(); ok {
+		_spec.SetField(usersubscription.FieldTotalUsageUsd, field.TypeFloat64, value)
 	}
-	if value, ok := _u.mutation.MonthlyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyWindowStart, field.TypeTime, value)
-	}
-	if _u.mutation.MonthlyWindowStartCleared() {
-		_spec.ClearField(usersubscription.FieldMonthlyWindowStart, field.TypeTime)
-	}
-	if value, ok := _u.mutation.DailyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldDailyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedDailyUsageUsd(); ok {
-		_spec.AddField(usersubscription.FieldDailyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.WeeklyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedWeeklyUsageUsd(); ok {
-		_spec.AddField(usersubscription.FieldWeeklyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.MonthlyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedMonthlyUsageUsd(); ok {
-		_spec.AddField(usersubscription.FieldMonthlyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.DailyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldDailyLimitUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedDailyLimitUsd(); ok {
-		_spec.AddField(usersubscription.FieldDailyLimitUsd, field.TypeFloat64, value)
-	}
-	if _u.mutation.DailyLimitUsdCleared() {
-		_spec.ClearField(usersubscription.FieldDailyLimitUsd, field.TypeFloat64)
-	}
-	if value, ok := _u.mutation.WeeklyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyLimitUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedWeeklyLimitUsd(); ok {
-		_spec.AddField(usersubscription.FieldWeeklyLimitUsd, field.TypeFloat64, value)
-	}
-	if _u.mutation.WeeklyLimitUsdCleared() {
-		_spec.ClearField(usersubscription.FieldWeeklyLimitUsd, field.TypeFloat64)
-	}
-	if value, ok := _u.mutation.MonthlyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyLimitUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedMonthlyLimitUsd(); ok {
-		_spec.AddField(usersubscription.FieldMonthlyLimitUsd, field.TypeFloat64, value)
-	}
-	if _u.mutation.MonthlyLimitUsdCleared() {
-		_spec.ClearField(usersubscription.FieldMonthlyLimitUsd, field.TypeFloat64)
+	if value, ok := _u.mutation.AddedTotalUsageUsd(); ok {
+		_spec.AddField(usersubscription.FieldTotalUsageUsd, field.TypeFloat64, value)
 	}
 	if value, ok := _u.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)
@@ -662,28 +461,28 @@ func (_u *UserSubscriptionUpdate) sqlSave(ctx context.Context) (_node int, err e
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
-	if _u.mutation.GroupCleared() {
+	if _u.mutation.PlanCleared() {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   usersubscription.GroupTable,
-			Columns: []string{usersubscription.GroupColumn},
+			Table:   usersubscription.PlanTable,
+			Columns: []string{usersubscription.PlanColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(subscriptionplan.FieldID, field.TypeInt64),
 			},
 		}
 		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
 	}
-	if nodes := _u.mutation.GroupIDs(); len(nodes) > 0 {
+	if nodes := _u.mutation.PlanIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   usersubscription.GroupTable,
-			Columns: []string{usersubscription.GroupColumn},
+			Table:   usersubscription.PlanTable,
+			Columns: []string{usersubscription.PlanColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(subscriptionplan.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -825,17 +624,23 @@ func (_u *UserSubscriptionUpdateOne) SetNillableUserID(v *int64) *UserSubscripti
 	return _u
 }
 
-// SetGroupID sets the "group_id" field.
-func (_u *UserSubscriptionUpdateOne) SetGroupID(v int64) *UserSubscriptionUpdateOne {
-	_u.mutation.SetGroupID(v)
+// SetPlanID sets the "plan_id" field.
+func (_u *UserSubscriptionUpdateOne) SetPlanID(v int64) *UserSubscriptionUpdateOne {
+	_u.mutation.SetPlanID(v)
 	return _u
 }
 
-// SetNillableGroupID sets the "group_id" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableGroupID(v *int64) *UserSubscriptionUpdateOne {
+// SetNillablePlanID sets the "plan_id" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillablePlanID(v *int64) *UserSubscriptionUpdateOne {
 	if v != nil {
-		_u.SetGroupID(*v)
+		_u.SetPlanID(*v)
 	}
+	return _u
+}
+
+// ClearPlanID clears the value of the "plan_id" field.
+func (_u *UserSubscriptionUpdateOne) ClearPlanID() *UserSubscriptionUpdateOne {
+	_u.mutation.ClearPlanID()
 	return _u
 }
 
@@ -881,207 +686,51 @@ func (_u *UserSubscriptionUpdateOne) SetNillableStatus(v *string) *UserSubscript
 	return _u
 }
 
-// SetDailyWindowStart sets the "daily_window_start" field.
-func (_u *UserSubscriptionUpdateOne) SetDailyWindowStart(v time.Time) *UserSubscriptionUpdateOne {
-	_u.mutation.SetDailyWindowStart(v)
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (_u *UserSubscriptionUpdateOne) SetTotalLimitUsd(v float64) *UserSubscriptionUpdateOne {
+	_u.mutation.ResetTotalLimitUsd()
+	_u.mutation.SetTotalLimitUsd(v)
 	return _u
 }
 
-// SetNillableDailyWindowStart sets the "daily_window_start" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableDailyWindowStart(v *time.Time) *UserSubscriptionUpdateOne {
+// SetNillableTotalLimitUsd sets the "total_limit_usd" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableTotalLimitUsd(v *float64) *UserSubscriptionUpdateOne {
 	if v != nil {
-		_u.SetDailyWindowStart(*v)
+		_u.SetTotalLimitUsd(*v)
 	}
 	return _u
 }
 
-// ClearDailyWindowStart clears the value of the "daily_window_start" field.
-func (_u *UserSubscriptionUpdateOne) ClearDailyWindowStart() *UserSubscriptionUpdateOne {
-	_u.mutation.ClearDailyWindowStart()
+// AddTotalLimitUsd adds value to the "total_limit_usd" field.
+func (_u *UserSubscriptionUpdateOne) AddTotalLimitUsd(v float64) *UserSubscriptionUpdateOne {
+	_u.mutation.AddTotalLimitUsd(v)
 	return _u
 }
 
-// SetWeeklyWindowStart sets the "weekly_window_start" field.
-func (_u *UserSubscriptionUpdateOne) SetWeeklyWindowStart(v time.Time) *UserSubscriptionUpdateOne {
-	_u.mutation.SetWeeklyWindowStart(v)
+// ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
+func (_u *UserSubscriptionUpdateOne) ClearTotalLimitUsd() *UserSubscriptionUpdateOne {
+	_u.mutation.ClearTotalLimitUsd()
 	return _u
 }
 
-// SetNillableWeeklyWindowStart sets the "weekly_window_start" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableWeeklyWindowStart(v *time.Time) *UserSubscriptionUpdateOne {
+// SetTotalUsageUsd sets the "total_usage_usd" field.
+func (_u *UserSubscriptionUpdateOne) SetTotalUsageUsd(v float64) *UserSubscriptionUpdateOne {
+	_u.mutation.ResetTotalUsageUsd()
+	_u.mutation.SetTotalUsageUsd(v)
+	return _u
+}
+
+// SetNillableTotalUsageUsd sets the "total_usage_usd" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableTotalUsageUsd(v *float64) *UserSubscriptionUpdateOne {
 	if v != nil {
-		_u.SetWeeklyWindowStart(*v)
+		_u.SetTotalUsageUsd(*v)
 	}
 	return _u
 }
 
-// ClearWeeklyWindowStart clears the value of the "weekly_window_start" field.
-func (_u *UserSubscriptionUpdateOne) ClearWeeklyWindowStart() *UserSubscriptionUpdateOne {
-	_u.mutation.ClearWeeklyWindowStart()
-	return _u
-}
-
-// SetMonthlyWindowStart sets the "monthly_window_start" field.
-func (_u *UserSubscriptionUpdateOne) SetMonthlyWindowStart(v time.Time) *UserSubscriptionUpdateOne {
-	_u.mutation.SetMonthlyWindowStart(v)
-	return _u
-}
-
-// SetNillableMonthlyWindowStart sets the "monthly_window_start" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableMonthlyWindowStart(v *time.Time) *UserSubscriptionUpdateOne {
-	if v != nil {
-		_u.SetMonthlyWindowStart(*v)
-	}
-	return _u
-}
-
-// ClearMonthlyWindowStart clears the value of the "monthly_window_start" field.
-func (_u *UserSubscriptionUpdateOne) ClearMonthlyWindowStart() *UserSubscriptionUpdateOne {
-	_u.mutation.ClearMonthlyWindowStart()
-	return _u
-}
-
-// SetDailyUsageUsd sets the "daily_usage_usd" field.
-func (_u *UserSubscriptionUpdateOne) SetDailyUsageUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.ResetDailyUsageUsd()
-	_u.mutation.SetDailyUsageUsd(v)
-	return _u
-}
-
-// SetNillableDailyUsageUsd sets the "daily_usage_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableDailyUsageUsd(v *float64) *UserSubscriptionUpdateOne {
-	if v != nil {
-		_u.SetDailyUsageUsd(*v)
-	}
-	return _u
-}
-
-// AddDailyUsageUsd adds value to the "daily_usage_usd" field.
-func (_u *UserSubscriptionUpdateOne) AddDailyUsageUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.AddDailyUsageUsd(v)
-	return _u
-}
-
-// SetWeeklyUsageUsd sets the "weekly_usage_usd" field.
-func (_u *UserSubscriptionUpdateOne) SetWeeklyUsageUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.ResetWeeklyUsageUsd()
-	_u.mutation.SetWeeklyUsageUsd(v)
-	return _u
-}
-
-// SetNillableWeeklyUsageUsd sets the "weekly_usage_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableWeeklyUsageUsd(v *float64) *UserSubscriptionUpdateOne {
-	if v != nil {
-		_u.SetWeeklyUsageUsd(*v)
-	}
-	return _u
-}
-
-// AddWeeklyUsageUsd adds value to the "weekly_usage_usd" field.
-func (_u *UserSubscriptionUpdateOne) AddWeeklyUsageUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.AddWeeklyUsageUsd(v)
-	return _u
-}
-
-// SetMonthlyUsageUsd sets the "monthly_usage_usd" field.
-func (_u *UserSubscriptionUpdateOne) SetMonthlyUsageUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.ResetMonthlyUsageUsd()
-	_u.mutation.SetMonthlyUsageUsd(v)
-	return _u
-}
-
-// SetNillableMonthlyUsageUsd sets the "monthly_usage_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableMonthlyUsageUsd(v *float64) *UserSubscriptionUpdateOne {
-	if v != nil {
-		_u.SetMonthlyUsageUsd(*v)
-	}
-	return _u
-}
-
-// AddMonthlyUsageUsd adds value to the "monthly_usage_usd" field.
-func (_u *UserSubscriptionUpdateOne) AddMonthlyUsageUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.AddMonthlyUsageUsd(v)
-	return _u
-}
-
-// SetDailyLimitUsd sets the "daily_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) SetDailyLimitUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.ResetDailyLimitUsd()
-	_u.mutation.SetDailyLimitUsd(v)
-	return _u
-}
-
-// SetNillableDailyLimitUsd sets the "daily_limit_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableDailyLimitUsd(v *float64) *UserSubscriptionUpdateOne {
-	if v != nil {
-		_u.SetDailyLimitUsd(*v)
-	}
-	return _u
-}
-
-// AddDailyLimitUsd adds value to the "daily_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) AddDailyLimitUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.AddDailyLimitUsd(v)
-	return _u
-}
-
-// ClearDailyLimitUsd clears the value of the "daily_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) ClearDailyLimitUsd() *UserSubscriptionUpdateOne {
-	_u.mutation.ClearDailyLimitUsd()
-	return _u
-}
-
-// SetWeeklyLimitUsd sets the "weekly_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) SetWeeklyLimitUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.ResetWeeklyLimitUsd()
-	_u.mutation.SetWeeklyLimitUsd(v)
-	return _u
-}
-
-// SetNillableWeeklyLimitUsd sets the "weekly_limit_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableWeeklyLimitUsd(v *float64) *UserSubscriptionUpdateOne {
-	if v != nil {
-		_u.SetWeeklyLimitUsd(*v)
-	}
-	return _u
-}
-
-// AddWeeklyLimitUsd adds value to the "weekly_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) AddWeeklyLimitUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.AddWeeklyLimitUsd(v)
-	return _u
-}
-
-// ClearWeeklyLimitUsd clears the value of the "weekly_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) ClearWeeklyLimitUsd() *UserSubscriptionUpdateOne {
-	_u.mutation.ClearWeeklyLimitUsd()
-	return _u
-}
-
-// SetMonthlyLimitUsd sets the "monthly_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) SetMonthlyLimitUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.ResetMonthlyLimitUsd()
-	_u.mutation.SetMonthlyLimitUsd(v)
-	return _u
-}
-
-// SetNillableMonthlyLimitUsd sets the "monthly_limit_usd" field if the given value is not nil.
-func (_u *UserSubscriptionUpdateOne) SetNillableMonthlyLimitUsd(v *float64) *UserSubscriptionUpdateOne {
-	if v != nil {
-		_u.SetMonthlyLimitUsd(*v)
-	}
-	return _u
-}
-
-// AddMonthlyLimitUsd adds value to the "monthly_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) AddMonthlyLimitUsd(v float64) *UserSubscriptionUpdateOne {
-	_u.mutation.AddMonthlyLimitUsd(v)
-	return _u
-}
-
-// ClearMonthlyLimitUsd clears the value of the "monthly_limit_usd" field.
-func (_u *UserSubscriptionUpdateOne) ClearMonthlyLimitUsd() *UserSubscriptionUpdateOne {
-	_u.mutation.ClearMonthlyLimitUsd()
+// AddTotalUsageUsd adds value to the "total_usage_usd" field.
+func (_u *UserSubscriptionUpdateOne) AddTotalUsageUsd(v float64) *UserSubscriptionUpdateOne {
+	_u.mutation.AddTotalUsageUsd(v)
 	return _u
 }
 
@@ -1144,9 +793,9 @@ func (_u *UserSubscriptionUpdateOne) SetUser(v *User) *UserSubscriptionUpdateOne
 	return _u.SetUserID(v.ID)
 }
 
-// SetGroup sets the "group" edge to the Group entity.
-func (_u *UserSubscriptionUpdateOne) SetGroup(v *Group) *UserSubscriptionUpdateOne {
-	return _u.SetGroupID(v.ID)
+// SetPlan sets the "plan" edge to the SubscriptionPlan entity.
+func (_u *UserSubscriptionUpdateOne) SetPlan(v *SubscriptionPlan) *UserSubscriptionUpdateOne {
+	return _u.SetPlanID(v.ID)
 }
 
 // SetAssignedByUserID sets the "assigned_by_user" edge to the User entity by ID.
@@ -1194,9 +843,9 @@ func (_u *UserSubscriptionUpdateOne) ClearUser() *UserSubscriptionUpdateOne {
 	return _u
 }
 
-// ClearGroup clears the "group" edge to the Group entity.
-func (_u *UserSubscriptionUpdateOne) ClearGroup() *UserSubscriptionUpdateOne {
-	_u.mutation.ClearGroup()
+// ClearPlan clears the "plan" edge to the SubscriptionPlan entity.
+func (_u *UserSubscriptionUpdateOne) ClearPlan() *UserSubscriptionUpdateOne {
+	_u.mutation.ClearPlan()
 	return _u
 }
 
@@ -1292,9 +941,6 @@ func (_u *UserSubscriptionUpdateOne) check() error {
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UserSubscription.user"`)
 	}
-	if _u.mutation.GroupCleared() && len(_u.mutation.GroupIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "UserSubscription.group"`)
-	}
 	return nil
 }
 
@@ -1345,68 +991,20 @@ func (_u *UserSubscriptionUpdateOne) sqlSave(ctx context.Context) (_node *UserSu
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(usersubscription.FieldStatus, field.TypeString, value)
 	}
-	if value, ok := _u.mutation.DailyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldDailyWindowStart, field.TypeTime, value)
+	if value, ok := _u.mutation.TotalLimitUsd(); ok {
+		_spec.SetField(usersubscription.FieldTotalLimitUsd, field.TypeFloat64, value)
 	}
-	if _u.mutation.DailyWindowStartCleared() {
-		_spec.ClearField(usersubscription.FieldDailyWindowStart, field.TypeTime)
+	if value, ok := _u.mutation.AddedTotalLimitUsd(); ok {
+		_spec.AddField(usersubscription.FieldTotalLimitUsd, field.TypeFloat64, value)
 	}
-	if value, ok := _u.mutation.WeeklyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyWindowStart, field.TypeTime, value)
+	if _u.mutation.TotalLimitUsdCleared() {
+		_spec.ClearField(usersubscription.FieldTotalLimitUsd, field.TypeFloat64)
 	}
-	if _u.mutation.WeeklyWindowStartCleared() {
-		_spec.ClearField(usersubscription.FieldWeeklyWindowStart, field.TypeTime)
+	if value, ok := _u.mutation.TotalUsageUsd(); ok {
+		_spec.SetField(usersubscription.FieldTotalUsageUsd, field.TypeFloat64, value)
 	}
-	if value, ok := _u.mutation.MonthlyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyWindowStart, field.TypeTime, value)
-	}
-	if _u.mutation.MonthlyWindowStartCleared() {
-		_spec.ClearField(usersubscription.FieldMonthlyWindowStart, field.TypeTime)
-	}
-	if value, ok := _u.mutation.DailyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldDailyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedDailyUsageUsd(); ok {
-		_spec.AddField(usersubscription.FieldDailyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.WeeklyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedWeeklyUsageUsd(); ok {
-		_spec.AddField(usersubscription.FieldWeeklyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.MonthlyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedMonthlyUsageUsd(); ok {
-		_spec.AddField(usersubscription.FieldMonthlyUsageUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.DailyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldDailyLimitUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedDailyLimitUsd(); ok {
-		_spec.AddField(usersubscription.FieldDailyLimitUsd, field.TypeFloat64, value)
-	}
-	if _u.mutation.DailyLimitUsdCleared() {
-		_spec.ClearField(usersubscription.FieldDailyLimitUsd, field.TypeFloat64)
-	}
-	if value, ok := _u.mutation.WeeklyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyLimitUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedWeeklyLimitUsd(); ok {
-		_spec.AddField(usersubscription.FieldWeeklyLimitUsd, field.TypeFloat64, value)
-	}
-	if _u.mutation.WeeklyLimitUsdCleared() {
-		_spec.ClearField(usersubscription.FieldWeeklyLimitUsd, field.TypeFloat64)
-	}
-	if value, ok := _u.mutation.MonthlyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyLimitUsd, field.TypeFloat64, value)
-	}
-	if value, ok := _u.mutation.AddedMonthlyLimitUsd(); ok {
-		_spec.AddField(usersubscription.FieldMonthlyLimitUsd, field.TypeFloat64, value)
-	}
-	if _u.mutation.MonthlyLimitUsdCleared() {
-		_spec.ClearField(usersubscription.FieldMonthlyLimitUsd, field.TypeFloat64)
+	if value, ok := _u.mutation.AddedTotalUsageUsd(); ok {
+		_spec.AddField(usersubscription.FieldTotalUsageUsd, field.TypeFloat64, value)
 	}
 	if value, ok := _u.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)
@@ -1446,28 +1044,28 @@ func (_u *UserSubscriptionUpdateOne) sqlSave(ctx context.Context) (_node *UserSu
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
-	if _u.mutation.GroupCleared() {
+	if _u.mutation.PlanCleared() {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   usersubscription.GroupTable,
-			Columns: []string{usersubscription.GroupColumn},
+			Table:   usersubscription.PlanTable,
+			Columns: []string{usersubscription.PlanColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(subscriptionplan.FieldID, field.TypeInt64),
 			},
 		}
 		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
 	}
-	if nodes := _u.mutation.GroupIDs(); len(nodes) > 0 {
+	if nodes := _u.mutation.PlanIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   usersubscription.GroupTable,
-			Columns: []string{usersubscription.GroupColumn},
+			Table:   usersubscription.PlanTable,
+			Columns: []string{usersubscription.PlanColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(subscriptionplan.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

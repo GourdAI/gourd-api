@@ -44,11 +44,8 @@ export function prepareBulkSubscriptionOperation(input: SubscriptionBulkActionRe
     action: input.action
   }
   if (input.action === 'extend') request.days = input.days
-  if (input.action === 'reset_quota') {
-    request.daily = !!input.daily
-    request.weekly = !!input.weekly
-    request.monthly = !!input.monthly
-  }
+  // reset_quota 不带窗口参数：总额池只有一份，就是把 total_usage_usd 归零，
+  // 因此规范化后的 payload 仅由 ids + action 参决定，旧数据里的 daily/weekly/monthly 一律丢弃。
   const adminId = currentAdminId()
   const storageKey = adminId ? `sub2api:admin:subscription-bulk:${adminId}:${JSON.stringify(request)}` : null
   let key = storageKey ? pendingKeys.get(storageKey) ?? readStoredKey(storageKey) : null

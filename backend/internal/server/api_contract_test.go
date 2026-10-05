@@ -408,22 +408,21 @@ func TestAPIContracts(t *testing.T) {
 			setup: func(t *testing.T, deps *contractDeps) {
 				t.Helper()
 				// 普通用户订阅接口不应包含 assigned_* / notes 等管理员字段。
+				// 订阅 = 个人额度钱包：不携带分组信息，额度只有一份总额池。
 				deps.userSubRepo.SetByUserID(1, []service.UserSubscription{
 					{
-						ID:              501,
-						UserID:          1,
-						GroupID:         10,
-						StartsAt:        deps.now,
-						ExpiresAt:       time.Date(2099, 1, 2, 3, 4, 5, 0, time.UTC), // 使用未来日期避免 normalizeSubscriptionStatus 标记为过期
-						Status:          service.SubscriptionStatusActive,
-						DailyUsageUSD:   1.23,
-						WeeklyUsageUSD:  2.34,
-						MonthlyUsageUSD: 3.45,
-						AssignedBy:      ptr(int64(999)),
-						AssignedAt:      deps.now,
-						Notes:           "admin-note",
-						CreatedAt:       deps.now,
-						UpdatedAt:       deps.now,
+						ID:            501,
+						UserID:        1,
+						StartsAt:      deps.now,
+						ExpiresAt:     time.Date(2099, 1, 2, 3, 4, 5, 0, time.UTC), // 使用未来日期避免 normalizeSubscriptionStatus 标记为过期
+						Status:        service.SubscriptionStatusActive,
+						TotalLimitUSD: ptr(float64(10)),
+						TotalUsageUSD: 4,
+						AssignedBy:    ptr(int64(999)),
+						AssignedAt:    deps.now,
+						Notes:         "admin-note",
+						CreatedAt:     deps.now,
+						UpdatedAt:     deps.now,
 					},
 				})
 			},
@@ -437,19 +436,14 @@ func TestAPIContracts(t *testing.T) {
 					{
 						"id": 501,
 						"user_id": 1,
-						"group_id": 10,
+						"plan_id": null,
 						"starts_at": "2025-01-02T03:04:05Z",
 						"expires_at": "2099-01-02T03:04:05Z",
 						"status": "active",
-						"daily_window_start": null,
-						"weekly_window_start": null,
-						"monthly_window_start": null,
-						"daily_usage_usd": 1.23,
-						"weekly_usage_usd": 2.34,
-						"monthly_usage_usd": 3.45,
-						"daily_limit_usd": null,
-						"weekly_limit_usd": null,
-						"monthly_limit_usd": null,
+						"total_limit_usd": 10,
+						"total_usage_usd": 4,
+						"remaining_usd": 6,
+						"unlimited": false,
 						"created_at": "2025-01-02T03:04:05Z",
 						"updated_at": "2025-01-02T03:04:05Z"
 					}
@@ -2035,6 +2029,10 @@ func (s *stubAccountRepo) ClearModelRateLimits(ctx context.Context, id int64) er
 	return errors.New("not implemented")
 }
 
+func (s *stubAccountRepo) ClearModelRateLimitScopes(ctx context.Context, id int64, scopes []string) error {
+	return errors.New("not implemented")
+}
+
 func (s *stubAccountRepo) UpdateSessionWindow(ctx context.Context, id int64, start, end *time.Time, status string) error {
 	return errors.New("not implemented")
 }
@@ -2239,12 +2237,6 @@ func (stubUserSubscriptionRepo) GetByIDForUpdate(ctx context.Context, id int64) 
 func (stubUserSubscriptionRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }
-func (stubUserSubscriptionRepo) GetByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
-	return nil, errors.New("not implemented")
-}
-func (stubUserSubscriptionRepo) GetActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {
-	return nil, errors.New("not implemented")
-}
 func (stubUserSubscriptionRepo) Update(ctx context.Context, sub *service.UserSubscription) error {
 	return errors.New("not implemented")
 }
@@ -2266,19 +2258,13 @@ func (r *stubUserSubscriptionRepo) ListActiveByUserID(ctx context.Context, userI
 	}
 	return append([]service.UserSubscription(nil), r.activeByUser[userID]...), nil
 }
-func (stubUserSubscriptionRepo) ListByGroupID(ctx context.Context, groupID int64, params pagination.PaginationParams) ([]service.UserSubscription, *pagination.PaginationResult, error) {
+func (stubUserSubscriptionRepo) List(ctx context.Context, params pagination.PaginationParams, userID, planID *int64, status, sortBy, sortOrder string) ([]service.UserSubscription, *pagination.PaginationResult, error) {
 	return nil, nil, errors.New("not implemented")
 }
-func (stubUserSubscriptionRepo) List(ctx context.Context, params pagination.PaginationParams, userID, groupID *int64, status, platform, sortBy, sortOrder string) ([]service.UserSubscription, *pagination.PaginationResult, error) {
-	return nil, nil, errors.New("not implemented")
-}
-func (stubUserSubscriptionRepo) ExistsByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (bool, error) {
+func (stubUserSubscriptionRepo) ExistsActiveByUserID(ctx context.Context, userID int64) (bool, error) {
 	return false, errors.New("not implemented")
 }
-func (stubUserSubscriptionRepo) ExistsActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (bool, error) {
-	return false, errors.New("not implemented")
-}
-func (stubUserSubscriptionRepo) UpdateAssignedLimits(ctx context.Context, id int64, daily, weekly, monthly *float64) error {
+func (stubUserSubscriptionRepo) UpdateAssignedLimit(ctx context.Context, id int64, total *float64) error {
 	return errors.New("not implemented")
 }
 func (stubUserSubscriptionRepo) ExtendExpiry(ctx context.Context, subscriptionID int64, newExpiresAt time.Time) error {
@@ -2290,19 +2276,7 @@ func (stubUserSubscriptionRepo) UpdateStatus(ctx context.Context, subscriptionID
 func (stubUserSubscriptionRepo) UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error {
 	return errors.New("not implemented")
 }
-func (stubUserSubscriptionRepo) ActivateWindows(ctx context.Context, id int64, dailyStart, periodicStart time.Time) error {
-	return errors.New("not implemented")
-}
-func (stubUserSubscriptionRepo) ResetUsageWindows(ctx context.Context, id int64, resetDaily, resetWeekly, resetMonthly bool, dailyStart, periodicStart time.Time) error {
-	return errors.New("not implemented")
-}
-func (stubUserSubscriptionRepo) ResetDailyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
-	return errors.New("not implemented")
-}
-func (stubUserSubscriptionRepo) ResetWeeklyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
-	return errors.New("not implemented")
-}
-func (stubUserSubscriptionRepo) ResetMonthlyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
+func (stubUserSubscriptionRepo) ResetUsage(ctx context.Context, id int64) error {
 	return errors.New("not implemented")
 }
 func (stubUserSubscriptionRepo) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {

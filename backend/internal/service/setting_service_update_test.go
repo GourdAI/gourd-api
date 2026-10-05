@@ -180,12 +180,6 @@ func (s *settingAntigravityUARepoStub) Delete(ctx context.Context, key string) e
 	panic("unexpected Delete call")
 }
 
-type defaultSubGroupReaderStub struct {
-	byID  map[int64]*Group
-	errBy map[int64]error
-	calls []int64
-}
-
 func TestSettingService_AffiliateAdminRechargeSetting(t *testing.T) {
 	t.Run("missing value defaults to disabled", func(t *testing.T) {
 		svc := NewSettingService(&settingGetAllRepoStub{values: map[string]string{}}, &config.Config{})
@@ -217,17 +211,6 @@ func TestSettingService_AffiliateAdminRechargeSetting(t *testing.T) {
 	})
 }
 
-func (s *defaultSubGroupReaderStub) GetByID(ctx context.Context, id int64) (*Group, error) {
-	s.calls = append(s.calls, id)
-	if err, ok := s.errBy[id]; ok {
-		return nil, err
-	}
-	if g, ok := s.byID[id]; ok {
-		return g, nil
-	}
-	return nil, ErrGroupNotFound
-}
-
 func TestSettingService_UpdateSettings_PersistsCompactHomeEnabled(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
 	svc := NewSettingService(repo, &config.Config{})
@@ -238,111 +221,88 @@ func TestSettingService_UpdateSettings_PersistsCompactHomeEnabled(t *testing.T) 
 	require.Equal(t, "true", repo.updates[SettingKeyCompactHomeEnabled])
 }
 
-func TestSettingService_UpdateSettings_DefaultSubscriptions_ValidGroup(t *testing.T) {
+// 订阅钱包化重构：默认发放配置只校「额度 + 有效期」，不再引用分组，
+// 因此不再需要 groupReader，也不存在分组类型/存在性/去重校验。
+func TestSettingService_UpdateSettings_DefaultSubscriptions_ValidWallet(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
-	groupReader := &defaultSubGroupReaderStub{
-		byID: map[int64]*Group{
-			11: {ID: 11, SubscriptionType: SubscriptionTypeSubscription},
-		},
-	}
 	svc := NewSettingService(repo, &config.Config{})
-	svc.SetDefaultSubscriptionGroupReader(groupReader)
 
 	err := svc.UpdateSettings(context.Background(), &SystemSettings{
 		DefaultSubscriptions: []DefaultSubscriptionSetting{
-			{GroupID: 11, ValidityDays: 30},
+			{TotalLimitUSD: testPtrFloat64(11), ValidityDays: 30},
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, []int64{11}, groupReader.calls)
 
 	raw, ok := repo.updates[SettingKeyDefaultSubscriptions]
 	require.True(t, ok)
 
 	var got []DefaultSubscriptionSetting
 	require.NoError(t, json.Unmarshal([]byte(raw), &got))
-	require.Equal(t, []DefaultSubscriptionSetting{
-		{GroupID: 11, ValidityDays: 30},
-	}, got)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].TotalLimitUSD)
+	require.InDelta(t, 11, *got[0].TotalLimitUSD, 0.0001)
+	require.Equal(t, 30, got[0].ValidityDays)
 }
 
-func TestSettingService_UpdateSettings_DefaultSubscriptions_RejectsNonSubscriptionGroup(t *testing.T) {
-	repo := &settingUpdateRepoStub{}
-	groupReader := &defaultSubGroupReaderStub{
-		byID: map[int64]*Group{
-			12: {ID: 12, SubscriptionType: SubscriptionTypeStandard},
-		},
-	}
-	svc := NewSettingService(repo, &config.Config{})
-	svc.SetDefaultSubscriptionGroupReader(groupReader)
-
-	err := svc.UpdateSettings(context.Background(), &SystemSettings{
-		DefaultSubscriptions: []DefaultSubscriptionSetting{
-			{GroupID: 12, ValidityDays: 7},
-		},
-	})
-	require.Error(t, err)
-	require.Equal(t, "DEFAULT_SUBSCRIPTION_GROUP_INVALID", infraerrors.Reason(err))
-	require.Nil(t, repo.updates)
-}
-
-func TestSettingService_UpdateSettings_DefaultSubscriptions_RejectsNotFoundGroup(t *testing.T) {
-	repo := &settingUpdateRepoStub{}
-	groupReader := &defaultSubGroupReaderStub{
-		errBy: map[int64]error{
-			13: ErrGroupNotFound,
-		},
-	}
-	svc := NewSettingService(repo, &config.Config{})
-	svc.SetDefaultSubscriptionGroupReader(groupReader)
-
-	err := svc.UpdateSettings(context.Background(), &SystemSettings{
-		DefaultSubscriptions: []DefaultSubscriptionSetting{
-			{GroupID: 13, ValidityDays: 7},
-		},
-	})
-	require.Error(t, err)
-	require.Equal(t, "DEFAULT_SUBSCRIPTION_GROUP_INVALID", infraerrors.Reason(err))
-	require.Equal(t, "13", infraerrors.FromError(err).Metadata["group_id"])
-	require.Nil(t, repo.updates)
-}
-
-func TestSettingService_UpdateSettings_DefaultSubscriptions_RejectsDuplicateGroup(t *testing.T) {
-	repo := &settingUpdateRepoStub{}
-	groupReader := &defaultSubGroupReaderStub{
-		byID: map[int64]*Group{
-			11: {ID: 11, SubscriptionType: SubscriptionTypeSubscription},
-		},
-	}
-	svc := NewSettingService(repo, &config.Config{})
-	svc.SetDefaultSubscriptionGroupReader(groupReader)
-
-	err := svc.UpdateSettings(context.Background(), &SystemSettings{
-		DefaultSubscriptions: []DefaultSubscriptionSetting{
-			{GroupID: 11, ValidityDays: 30},
-			{GroupID: 11, ValidityDays: 60},
-		},
-	})
-	require.Error(t, err)
-	require.Equal(t, "DEFAULT_SUBSCRIPTION_GROUP_DUPLICATE", infraerrors.Reason(err))
-	require.Equal(t, "11", infraerrors.FromError(err).Metadata["group_id"])
-	require.Nil(t, repo.updates)
-}
-
-func TestSettingService_UpdateSettings_DefaultSubscriptions_RejectsDuplicateGroupWithoutGroupReader(t *testing.T) {
+// 标准分组不再是拦截理由：配置里已无分组概念，只有额度必须合法。
+func TestSettingService_UpdateSettings_DefaultSubscriptions_AcceptsAnyWalletWithoutGroupReader(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
 	svc := NewSettingService(repo, &config.Config{})
 
 	err := svc.UpdateSettings(context.Background(), &SystemSettings{
 		DefaultSubscriptions: []DefaultSubscriptionSetting{
-			{GroupID: 11, ValidityDays: 30},
-			{GroupID: 11, ValidityDays: 60},
+			{TotalLimitUSD: testPtrFloat64(12), ValidityDays: 7},
+		},
+	})
+	require.NoError(t, err)
+	require.Contains(t, repo.updates, SettingKeyDefaultSubscriptions)
+}
+
+func TestSettingService_UpdateSettings_DefaultSubscriptions_RejectsMissingLimit(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		DefaultSubscriptions: []DefaultSubscriptionSetting{
+			{TotalLimitUSD: testPtrFloat64(0), ValidityDays: 7},
 		},
 	})
 	require.Error(t, err)
-	require.Equal(t, "DEFAULT_SUBSCRIPTION_GROUP_DUPLICATE", infraerrors.Reason(err))
-	require.Equal(t, "11", infraerrors.FromError(err).Metadata["group_id"])
+	require.Equal(t, "DEFAULT_SUBSCRIPTION_INVALID", infraerrors.Reason(err))
 	require.Nil(t, repo.updates)
+}
+
+func TestSettingService_UpdateSettings_DefaultSubscriptions_RejectsInvalidValidityDays(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		DefaultSubscriptions: []DefaultSubscriptionSetting{
+			{TotalLimitUSD: testPtrFloat64(13), ValidityDays: 0},
+		},
+	})
+	require.Error(t, err)
+	require.Equal(t, "DEFAULT_SUBSCRIPTION_INVALID", infraerrors.Reason(err))
+	require.Equal(t, "0", infraerrors.FromError(err).Metadata["validity_days"])
+	require.Nil(t, repo.updates)
+}
+
+// 旧行为：同一分组重复条目会被拒（一个分组只能一份钱包）。
+// 新语义：钱包不再按分组定位，同一额度可配多份不同有效期的钱包（叠加发放），
+// 因此分组去重校验随分组一并退役。
+func TestSettingService_UpdateSettings_DefaultSubscriptions_AllowsDuplicateWallets(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		DefaultSubscriptions: []DefaultSubscriptionSetting{
+			{TotalLimitUSD: testPtrFloat64(11), ValidityDays: 30},
+			{TotalLimitUSD: testPtrFloat64(11), ValidityDays: 60},
+		},
+	})
+	require.NoError(t, err)
+	require.Contains(t, repo.updates, SettingKeyDefaultSubscriptions)
 }
 
 func TestSettingService_UpdateSettings_RegistrationEmailSuffixWhitelist_Normalized(t *testing.T) {
@@ -368,12 +328,23 @@ func TestSettingService_UpdateSettings_RegistrationEmailSuffixWhitelist_Invalid(
 }
 
 func TestParseDefaultSubscriptions_NormalizesValues(t *testing.T) {
-	got := parseDefaultSubscriptions(`[{"group_id":11,"validity_days":30},{"group_id":11,"validity_days":60},{"group_id":0,"validity_days":10},{"group_id":12,"validity_days":99999}]`)
-	require.Equal(t, []DefaultSubscriptionSetting{
-		{GroupID: 11, ValidityDays: 30},
-		{GroupID: 11, ValidityDays: 60},
-		{GroupID: 12, ValidityDays: MaxValidityDays},
-	}, got)
+	got := parseDefaultSubscriptions(`[{"total_limit_usd":11,"validity_days":30},{"total_limit_usd":11,"validity_days":60},{"total_limit_usd":0,"validity_days":10},{"total_limit_usd":12,"validity_days":99999}]`)
+	require.Len(t, got, 3)
+	require.NotNil(t, got[0].TotalLimitUSD)
+	require.InDelta(t, 11, *got[0].TotalLimitUSD, 0.0001)
+	require.Equal(t, 30, got[0].ValidityDays)
+	require.NotNil(t, got[1].TotalLimitUSD)
+	require.InDelta(t, 11, *got[1].TotalLimitUSD, 0.0001)
+	require.Equal(t, 60, got[1].ValidityDays)
+	require.NotNil(t, got[2].TotalLimitUSD)
+	require.InDelta(t, 12, *got[2].TotalLimitUSD, 0.0001)
+	require.Equal(t, MaxValidityDays, got[2].ValidityDays)
+}
+
+// 旧格式（仅 group_id、无额度）必须被丢弃：无额度钱包不接管扣费，
+// 发放它等于发一条永不生效的记录（防资损闸门）。
+func TestParseDefaultSubscriptions_DropsLegacyGroupOnlyEntries(t *testing.T) {
+	require.Empty(t, parseDefaultSubscriptions(`[{"group_id":11,"validity_days":30}]`))
 }
 
 func TestSettingService_UpdateSettings_TablePreferences(t *testing.T) {

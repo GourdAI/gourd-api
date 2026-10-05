@@ -150,7 +150,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		defer userReleaseFunc()
 	}
 
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscriptionsForEligibility(c), service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		reqLog.Info("grok_media.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
@@ -722,6 +722,8 @@ func recordGrokMediaUsage(
 			payloadForHash = []byte(videoTaskID)
 		}
 	}
+	// 全量钱包必须在提交异步计费任务前同步取好：闭包运行时请求已结束，c 不可再用。
+	subscriptions := subscriptionsForEligibility(c)
 	h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 		if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 			Result:             result,
@@ -729,6 +731,7 @@ func recordGrokMediaUsage(
 			User:               apiKey.User,
 			Account:            account,
 			Subscription:       subscription,
+			Subscriptions:      subscriptions,
 			InboundEndpoint:    inboundEndpoint,
 			UpstreamEndpoint:   upstreamEndpoint,
 			UserAgent:          userAgent,

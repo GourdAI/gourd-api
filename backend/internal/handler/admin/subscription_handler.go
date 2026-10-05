@@ -39,30 +39,28 @@ func NewSubscriptionHandler(subscriptionService *service.SubscriptionService) *S
 	}
 }
 
-// AssignSubscriptionRequest represents assign subscription request
-// GroupID 传 0（或缺省）表示「个人订阅」：不绑定分组、全部模型通用，
-// 额度由下面的 daily/weekly/monthly_limit_usd 定义。
+// AssignSubscriptionRequest 表示给单个用户发放一份「额度钱包」订阅。
+//
+// 订阅不绑定分组、不授予任何分组准入：Key 用哪个分组就按哪个分组的倍率计价，
+// 只是钱从钱包里扣。PlanID 仅标识来源额度快照（可空：管理员手工发放）；
+// TotalLimitUSD 缺省（nil 或 <=0）= 不限额。
 type AssignSubscriptionRequest struct {
 	UserID       int64  `json:"user_id" binding:"required"`
-	GroupID      int64  `json:"group_id" binding:"omitempty,gte=0"`
+	PlanID       *int64 `json:"plan_id" binding:"omitempty,gt=0"`
 	ValidityDays int    `json:"validity_days" binding:"omitempty,max=36500"` // max 100 years
 	Notes        string `json:"notes"`
 
-	DailyLimitUSD   *float64 `json:"daily_limit_usd" binding:"omitempty,gte=0"`
-	WeeklyLimitUSD  *float64 `json:"weekly_limit_usd" binding:"omitempty,gte=0"`
-	MonthlyLimitUSD *float64 `json:"monthly_limit_usd" binding:"omitempty,gte=0"`
+	TotalLimitUSD *float64 `json:"total_limit_usd" binding:"omitempty,gte=0"`
 }
 
 // BulkAssignSubscriptionRequest represents bulk assign subscription request
 type BulkAssignSubscriptionRequest struct {
 	UserIDs      []int64 `json:"user_ids" binding:"required,min=1,max=100,dive,gt=0"`
-	GroupID      int64   `json:"group_id" binding:"omitempty,gte=0"`
+	PlanID       *int64  `json:"plan_id" binding:"omitempty,gt=0"`
 	ValidityDays int     `json:"validity_days" binding:"omitempty,max=36500"` // max 100 years
 	Notes        string  `json:"notes"`
 
-	DailyLimitUSD   *float64 `json:"daily_limit_usd" binding:"omitempty,gte=0"`
-	WeeklyLimitUSD  *float64 `json:"weekly_limit_usd" binding:"omitempty,gte=0"`
-	MonthlyLimitUSD *float64 `json:"monthly_limit_usd" binding:"omitempty,gte=0"`
+	TotalLimitUSD *float64 `json:"total_limit_usd" binding:"omitempty,gte=0"`
 }
 
 // AdjustSubscriptionRequest represents adjust subscription request (extend or shorten)
@@ -76,25 +74,24 @@ func (h *SubscriptionHandler) List(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
 
 	// Parse optional filters
-	var userID, groupID *int64
+	var userID, planID *int64
 	if userIDStr := c.Query("user_id"); userIDStr != "" {
 		if id, err := strconv.ParseInt(userIDStr, 10, 64); err == nil {
 			userID = &id
 		}
 	}
-	if groupIDStr := c.Query("group_id"); groupIDStr != "" {
-		if id, err := strconv.ParseInt(groupIDStr, 10, 64); err == nil {
-			groupID = &id
+	if planIDStr := c.Query("plan_id"); planIDStr != "" {
+		if id, err := strconv.ParseInt(planIDStr, 10, 64); err == nil {
+			planID = &id
 		}
 	}
 	status := c.Query("status")
-	platform := c.Query("platform")
 
 	// Parse sorting parameters
 	sortBy := c.DefaultQuery("sort_by", "created_at")
 	sortOrder := c.DefaultQuery("sort_order", "desc")
 
-	subscriptions, pagination, err := h.subscriptionService.List(c.Request.Context(), page, pageSize, userID, groupID, status, platform, sortBy, sortOrder)
+	subscriptions, pagination, err := h.subscriptionService.List(c.Request.Context(), page, pageSize, userID, planID, status, sortBy, sortOrder)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -156,14 +153,12 @@ func (h *SubscriptionHandler) Assign(c *gin.Context) {
 	adminID := getAdminIDFromContext(c)
 
 	subscription, err := h.subscriptionService.AssignSubscription(c.Request.Context(), &service.AssignSubscriptionInput{
-		UserID:          req.UserID,
-		GroupID:         req.GroupID,
-		ValidityDays:    req.ValidityDays,
-		AssignedBy:      adminID,
-		Notes:           req.Notes,
-		DailyLimitUSD:   req.DailyLimitUSD,
-		WeeklyLimitUSD:  req.WeeklyLimitUSD,
-		MonthlyLimitUSD: req.MonthlyLimitUSD,
+		UserID:        req.UserID,
+		PlanID:        req.PlanID,
+		ValidityDays:  req.ValidityDays,
+		AssignedBy:    adminID,
+		Notes:         req.Notes,
+		TotalLimitUSD: req.TotalLimitUSD,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -186,14 +181,12 @@ func (h *SubscriptionHandler) BulkAssign(c *gin.Context) {
 	adminID := getAdminIDFromContext(c)
 
 	result, err := h.subscriptionService.BulkAssignSubscription(c.Request.Context(), &service.BulkAssignSubscriptionInput{
-		UserIDs:         req.UserIDs,
-		GroupID:         req.GroupID,
-		ValidityDays:    req.ValidityDays,
-		AssignedBy:      adminID,
-		Notes:           req.Notes,
-		DailyLimitUSD:   req.DailyLimitUSD,
-		WeeklyLimitUSD:  req.WeeklyLimitUSD,
-		MonthlyLimitUSD: req.MonthlyLimitUSD,
+		UserIDs:       req.UserIDs,
+		PlanID:        req.PlanID,
+		ValidityDays:  req.ValidityDays,
+		AssignedBy:    adminID,
+		Notes:         req.Notes,
+		TotalLimitUSD: req.TotalLimitUSD,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -251,31 +244,18 @@ func (h *SubscriptionHandler) Extend(c *gin.Context) {
 	})
 }
 
-// ResetSubscriptionQuotaRequest represents the reset quota request
-type ResetSubscriptionQuotaRequest struct {
-	Daily   bool `json:"daily"`
-	Weekly  bool `json:"weekly"`
-	Monthly bool `json:"monthly"`
-}
-
-// ResetQuota resets daily, weekly, and/or monthly usage for a subscription.
+// ResetQuota clears the used amount of a subscription's total quota pool.
 // POST /api/v1/admin/subscriptions/:id/reset-quota
+//
+// 总额池只有一份，不存在日/周/月分档重置，因此请求体已无参数；
+// 为了旧前端不中断，这里忽略请求体内容。
 func (h *SubscriptionHandler) ResetQuota(c *gin.Context) {
 	subscriptionID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid subscription ID")
 		return
 	}
-	var req ResetSubscriptionQuotaRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
-		return
-	}
-	if !req.Daily && !req.Weekly && !req.Monthly {
-		response.BadRequest(c, "At least one of 'daily', 'weekly', or 'monthly' must be true")
-		return
-	}
-	sub, err := h.subscriptionService.AdminResetQuota(c.Request.Context(), subscriptionID, req.Daily, req.Weekly, req.Monthly)
+	sub, err := h.subscriptionService.AdminResetQuota(c.Request.Context(), subscriptionID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -318,32 +298,6 @@ func (h *SubscriptionHandler) Restore(c *gin.Context) {
 	}
 
 	response.Success(c, dto.UserSubscriptionFromServiceAdmin(subscription))
-}
-
-// ListByGroup handles listing subscriptions for a specific group
-// GET /api/v1/admin/groups/:id/subscriptions
-func (h *SubscriptionHandler) ListByGroup(c *gin.Context) {
-	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || groupID <= 0 {
-		// groupID<=0 必须拒绝：group_id=0 是全平台「个人订阅」槽位，
-		// 不拦住会把所有用户的个人订阅当成某分组的成员返回。
-		response.BadRequest(c, "Invalid group ID")
-		return
-	}
-
-	page, pageSize := response.ParsePagination(c)
-
-	subscriptions, pagination, err := h.subscriptionService.ListGroupSubscriptions(c.Request.Context(), groupID, page, pageSize)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	out := make([]dto.AdminUserSubscription, 0, len(subscriptions))
-	for i := range subscriptions {
-		out = append(out, *dto.UserSubscriptionFromServiceAdmin(&subscriptions[i]))
-	}
-	response.PaginatedWithResult(c, out, toResponsePagination(pagination))
 }
 
 // ListByUser handles listing subscriptions for a specific user

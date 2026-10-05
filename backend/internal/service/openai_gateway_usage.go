@@ -20,10 +20,13 @@ import (
 
 // OpenAIRecordUsageInput input for recording usage
 type OpenAIRecordUsageInput struct {
-	Result             *OpenAIForwardResult
-	APIKey             *APIKey
-	User               *User
-	Account            *Account
+	Result  *OpenAIForwardResult
+	APIKey  *APIKey
+	User    *User
+	Account *Account
+	// Subscriptions 为该用户当前全部生效订阅钱包（expires_at 升序 = 先到期先消耗）。
+	Subscriptions []*UserSubscription
+	// Deprecated: 单份订阅遗留字段，仅供尚未迁移的调用方使用；会被并入 Subscriptions。
 	Subscription       *UserSubscription
 	InboundEndpoint    string
 	UpstreamEndpoint   string
@@ -50,8 +53,11 @@ type OpenAIRecordUsageInput struct {
 // 用量按上游真实 token 计费，与 WS cyber 及正常请求口径一致（InputTokens/OutputTokens
 // 取自上游 response.failed 报告的 usage，即 mark.UpstreamInTok/OutTok）。
 type CyberPolicyUsageInput struct {
-	APIKey       *APIKey
-	Account      *Account
+	APIKey  *APIKey
+	Account *Account
+	// Subscriptions 为该用户当前全部生效订阅钱包（expires_at 升序）。
+	Subscriptions []*UserSubscription
+	// Deprecated: 单份订阅遗留字段，仅供尚未迁移的调用方使用；会被并入 Subscriptions。
 	Subscription *UserSubscription
 	RequestID    string
 	Model        string
@@ -95,7 +101,7 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		APIKey:             in.APIKey,
 		User:               in.APIKey.User,
 		Account:            in.Account,
-		Subscription:       in.Subscription,
+		Subscriptions:      resolveBillingSubscriptions(in.Subscriptions, in.Subscription),
 		InboundEndpoint:    in.InboundEndpoint,
 		UpstreamEndpoint:   in.UpstreamEndpoint,
 		UserAgent:          in.UserAgent,
@@ -170,7 +176,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	apiKey := input.APIKey
 	user := input.User
 	account := input.Account
-	subscription := input.Subscription
+	// 订阅钱包集合（多份），归一化与 Anthropic 主干完全一致。
+	subscriptions := resolveBillingSubscriptions(input.Subscriptions, input.Subscription)
 	billingAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
 	if err != nil {
 		return err
@@ -327,11 +334,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	// Determine billing type
-	// 个人订阅（GroupID=0）不依赖分组类型：普通分组下同样走订阅扣费；
-	// 但必须至少有一项额度才接管，否则计入余额模式（与计费前置校验同源，避免日志口径分叉）。
-	isSubscriptionBilling := subscription != nil &&
-		((apiKey.Group != nil && apiKey.Group.IsSubscriptionType()) ||
-			(subscription.GroupID == 0 && subscription.HasEffectiveLimit(apiKey.Group)))
+	// 不再参考分组 subscription_type（订阅不绑分组）：统一用 SubscriptionWalletTakesOver
+	//（至少一份钱包设了额度才接管扣费），与 CheckBillingEligibility / 展示口径同源；
+	// 全部不限额时静默退回余额计费（防「空额度 = 全平台免费」的资损，不得放宽）。
+	isSubscriptionBilling := SubscriptionWalletTakesOver(subscriptions)
 	billingType := BillingTypeBalance
 	if isSubscriptionBilling {
 		billingType = BillingTypeSubscription
@@ -481,9 +487,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if apiKey.GroupID != nil {
 		usageLog.GroupID = apiKey.GroupID
 	}
-	if subscription != nil {
-		usageLog.SubscriptionID = &subscription.ID
-	}
+	usageLog.SubscriptionID = primarySubscriptionID(subscriptions)
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
 	if apiKey.GroupID != nil {
@@ -513,7 +517,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			User:                  user,
 			APIKey:                apiKey,
 			Account:               account,
-			Subscription:          subscription,
+			Subscriptions:         subscriptions,
 			RequestPayloadHash:    resolveUsageBillingPayloadFingerprint(ctx, input.RequestPayloadHash),
 			IsSubscriptionBill:    isSubscriptionBilling,
 			AccountRateMultiplier: accountRateMultiplier,

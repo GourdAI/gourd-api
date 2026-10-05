@@ -32,14 +32,6 @@ func (r *subscriptionExpiryRepoStub) GetByIDIncludeDeleted(context.Context, int6
 	return nil, ErrSubscriptionNotFound
 }
 
-func (r *subscriptionExpiryRepoStub) GetByUserIDAndGroupID(context.Context, int64, int64) (*UserSubscription, error) {
-	return nil, ErrSubscriptionNotFound
-}
-
-func (r *subscriptionExpiryRepoStub) GetActiveByUserIDAndGroupID(context.Context, int64, int64) (*UserSubscription, error) {
-	return nil, ErrSubscriptionNotFound
-}
-
 func (r *subscriptionExpiryRepoStub) Update(context.Context, *UserSubscription) error {
 	return nil
 }
@@ -60,25 +52,17 @@ func (r *subscriptionExpiryRepoStub) ListActiveByUserID(context.Context, int64) 
 	return nil, nil
 }
 
-func (r *subscriptionExpiryRepoStub) ListByGroupID(context.Context, int64, pagination.PaginationParams) ([]UserSubscription, *pagination.PaginationResult, error) {
-	return nil, nil, nil
-}
-
-func (r *subscriptionExpiryRepoStub) List(context.Context, pagination.PaginationParams, *int64, *int64, string, string, string, string) ([]UserSubscription, *pagination.PaginationResult, error) {
+func (r *subscriptionExpiryRepoStub) List(context.Context, pagination.PaginationParams, *int64, *int64, string, string, string) ([]UserSubscription, *pagination.PaginationResult, error) {
 	r.listCalls++
 	return nil, &pagination.PaginationResult{Page: 1, Pages: 1}, nil
 }
 
-func (r *subscriptionExpiryRepoStub) ExistsByUserIDAndGroupID(context.Context, int64, int64) (bool, error) {
-	return false, nil
+func (r *subscriptionExpiryRepoStub) ExistsActiveByUserID(context.Context, int64) (bool, error) {
+	panic("unexpected ExistsActiveByUserID call")
 }
 
-func (r *subscriptionExpiryRepoStub) ExistsActiveByUserIDAndGroupID(context.Context, int64, int64) (bool, error) {
-	return false, nil
-}
-
-func (r *subscriptionExpiryRepoStub) UpdateAssignedLimits(context.Context, int64, *float64, *float64, *float64) error {
-	return nil
+func (r *subscriptionExpiryRepoStub) UpdateAssignedLimit(context.Context, int64, *float64) error {
+	panic("unexpected UpdateAssignedLimit call")
 }
 
 func (r *subscriptionExpiryRepoStub) ExtendExpiry(context.Context, int64, time.Time) error {
@@ -93,24 +77,8 @@ func (r *subscriptionExpiryRepoStub) UpdateNotes(context.Context, int64, string)
 	return nil
 }
 
-func (r *subscriptionExpiryRepoStub) ActivateWindows(context.Context, int64, time.Time, time.Time) error {
-	return nil
-}
-
-func (r *subscriptionExpiryRepoStub) ResetUsageWindows(context.Context, int64, bool, bool, bool, time.Time, time.Time) error {
-	return nil
-}
-
-func (r *subscriptionExpiryRepoStub) ResetDailyUsage(context.Context, int64, *time.Time, time.Time) error {
-	return nil
-}
-
-func (r *subscriptionExpiryRepoStub) ResetWeeklyUsage(context.Context, int64, *time.Time, time.Time) error {
-	return nil
-}
-
-func (r *subscriptionExpiryRepoStub) ResetMonthlyUsage(context.Context, int64, *time.Time, time.Time) error {
-	return nil
+func (r *subscriptionExpiryRepoStub) ResetUsage(context.Context, int64) error {
+	panic("unexpected ResetUsage call")
 }
 
 func (r *subscriptionExpiryRepoStub) IncrementUsage(context.Context, int64, float64) error {

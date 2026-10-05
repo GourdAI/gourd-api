@@ -131,15 +131,17 @@ func TestAvailableAPIKeyGroups_KeepsPublicGroupForUnrestrictedUser(t *testing.T)
 	require.Equal(t, publicID, got[0].ID)
 }
 
-// 订阅型分组不在决议层复查授权（订阅有效性由运行期订阅校验负责），
-// 与鉴权层 validateAPIKeyGroupAllowed 对订阅型候选无条件放行的口径一致。
-func TestAvailableAPIKeyGroups_SubscriptionGroupNotFilteredByCanBind(t *testing.T) {
+// 订阅型分组在决议层不再获得任何豁免（契约第 6 节，2026-10-03 定案）：
+// 订阅只是额度钱包，不授予分组准入，所以它与普通专属分组一样受
+// user.CanBindGroup 复查；未授权的订阅型分组必须被过滤出候选集。
+// （旧行为是「无条件保留、由运行期订阅校验兜底」，那正是额度越权的面）
+func TestAvailableAPIKeyGroups_SubscriptionGroupNoLongerExemptFromCanBind(t *testing.T) {
 	subID := int64(8)
 	sub := testGroup(subID, StatusActive)
 	sub.SubscriptionType = SubscriptionTypeSubscription
 	sub.IsExclusive = true
 
-	// 用户 AllowedGroups 为空，但订阅型分组仍应保留在候选集。
+	// 用户 AllowedGroups 为空：订阅型专属分组同样不得进入候选集。
 	user := &User{ID: 42, Status: StatusActive, RestrictPublicGroups: true}
 	apiKey := &APIKey{
 		ID:       7,
@@ -151,7 +153,12 @@ func TestAvailableAPIKeyGroups_SubscriptionGroupNotFilteredByCanBind(t *testing.
 	}
 
 	got := availableAPIKeyGroups(apiKey)
-	require.Len(t, got, 1, "订阅型分组的有效性由运行期订阅校验负责，决议层不按 CanBindGroup 过滤")
+	require.Empty(t, got, "订阅型分组不再享有决议层豁免：未授权就是不可用")
+
+	// 正向能力保留：被明确授权后，同一个订阅型分组仍须正常进入候选集。
+	user.AllowedGroups = []int64{subID}
+	got = availableAPIKeyGroups(apiKey)
+	require.Len(t, got, 1, "分组授权仍须生效（不能误删正向能力）")
 	require.Equal(t, subID, got[0].ID)
 }
 

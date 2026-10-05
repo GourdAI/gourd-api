@@ -614,13 +614,15 @@ func (r *userRepository) ListWithFilters(ctx context.Context, params pagination.
 
 	shouldLoadSubscriptions := filters.IncludeSubscriptions == nil || *filters.IncludeSubscriptions
 	if shouldLoadSubscriptions {
-		// Batch load active subscriptions with groups to avoid N+1.
+		// Batch load active subscriptions to avoid N+1.
+		// eager-load 改为 WithPlan：订阅已与分组解绑（契约第 6 节），ent 侧 Group 边不存在；
+		// 领域转换只读 Edges.Plan（用于展示来源套餐名）。
 		subs, err := r.client.UserSubscription.Query().
 			Where(
 				usersubscription.UserIDIn(userIDs...),
 				usersubscription.StatusEQ(service.SubscriptionStatusActive),
 			).
-			WithGroup().
+			WithPlan().
 			All(ctx)
 		if err != nil {
 			return nil, nil, err

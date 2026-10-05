@@ -82,11 +82,17 @@ type extraUpdateCall struct {
 	updates   map[string]any
 }
 
+type clearScopeCall struct {
+	accountID int64
+	scopes    []string
+}
+
 type stubAntigravityAccountRepo struct {
 	AccountRepository
 	rateCalls           []rateLimitCall
 	modelRateLimitCalls []modelRateLimitCall
 	extraUpdateCalls    []extraUpdateCall
+	clearScopeCalls     []clearScopeCall
 }
 
 func (s *stubAntigravityAccountRepo) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
@@ -101,6 +107,12 @@ func (s *stubAntigravityAccountRepo) SetModelRateLimit(ctx context.Context, id i
 
 func (s *stubAntigravityAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	s.extraUpdateCalls = append(s.extraUpdateCalls, extraUpdateCall{accountID: id, updates: updates})
+	return nil
+}
+
+// ClearModelRateLimitScopes 记录按键删除调用（不写回整个 map）。
+func (s *stubAntigravityAccountRepo) ClearModelRateLimitScopes(_ context.Context, id int64, scopes []string) error {
+	s.clearScopeCalls = append(s.clearScopeCalls, clearScopeCall{accountID: id, scopes: append([]string(nil), scopes...)})
 	return nil
 }
 
@@ -1120,8 +1132,15 @@ func (s *stubSchedulerCache) SetAccount(ctx context.Context, account *Account) e
 	return s.setAccountErr
 }
 
-// TestUpdateAccountModelRateLimitInCache_UpdatesExtraAndCallsCache 测试模型限流后更新缓存
-func TestUpdateAccountModelRateLimitInCache_UpdatesExtraAndCallsCache(t *testing.T) {
+// TestUpdateAccountModelRateLimitInCache_UpdatesExtraWithoutOverwritingSnapshot 验证：
+// 本函数只更新**请求内存对象**，不得用陈旧对象整体覆写调度快照。
+//
+// 回归背景：曾经这里会调用 UpdateAccountInCache，而 schedulerCache.SetAccount 是
+// `pipe.Set(accountKey, fullPayload)`（scheduler_cache.go:810）——整体替换、不合并。
+// 时序上它排在 repo.SetModelRateLimit 之后，会把权威同步（DB 重读全量 Extra）的结果
+// 反向覆盖，抹掉 DB 里已有的其它冷却。那恰好会抵消「限流写入不再丢」的修复，
+// 并重新引入「限流了还被调、反复 404」。
+func TestUpdateAccountModelRateLimitInCache_UpdatesExtraWithoutOverwritingSnapshot(t *testing.T) {
 	cache := &stubSchedulerCache{}
 	snapshotService := &SchedulerSnapshotService{cache: cache}
 	svc := &AntigravityGatewayService{
@@ -1138,7 +1157,7 @@ func TestUpdateAccountModelRateLimitInCache_UpdatesExtraAndCallsCache(t *testing
 
 	svc.updateAccountModelRateLimitInCache(context.Background(), account, modelKey, resetAt)
 
-	// 验证 Extra 字段被正确更新
+	// 验证内存 Extra 被正确更新（同一请求内后续判定需要看到它）
 	require.NotNil(t, account.Extra)
 	limits, ok := account.Extra["model_rate_limits"].(map[string]any)
 	require.True(t, ok)
@@ -1147,13 +1166,16 @@ func TestUpdateAccountModelRateLimitInCache_UpdatesExtraAndCallsCache(t *testing
 	require.NotEmpty(t, modelLimit["rate_limited_at"])
 	require.NotEmpty(t, modelLimit["rate_limit_reset_at"])
 
-	// 验证 cache.SetAccount 被调用
-	require.Len(t, cache.setAccountCalls, 1)
-	require.Equal(t, account.ID, cache.setAccountCalls[0].ID)
+	// 关键断言：**不得**用陈旧对象覆写调度快照
+	require.Empty(t, cache.setAccountCalls,
+		"不得用陈旧内存对象整体覆写调度快照：权威同步已由 SetModelRateLimit 内部完成")
 }
 
-// TestUpdateAccountModelRateLimitInCache_NilSchedulerSnapshot 测试 schedulerSnapshot 为 nil 时不 panic
-func TestUpdateAccountModelRateLimitInCache_NilSchedulerSnapshot(t *testing.T) {
+// TestUpdateAccountModelRateLimitInCache_WorksWithoutSchedulerSnapshot 验证本函数
+// 不再依赖 schedulerSnapshot：它只应写内存对象。
+// （旧实现会在 snapshot 为 nil 时直接返回、不更新 Extra，导致同一请求内
+// isCreditsExhausted 看不到刚写的键——该依赖已随着快照覆写一同移除。）
+func TestUpdateAccountModelRateLimitInCache_WorksWithoutSchedulerSnapshot(t *testing.T) {
 	svc := &AntigravityGatewayService{
 		schedulerSnapshot: nil,
 	}
@@ -1163,8 +1185,11 @@ func TestUpdateAccountModelRateLimitInCache_NilSchedulerSnapshot(t *testing.T) {
 	// 不应 panic
 	svc.updateAccountModelRateLimitInCache(context.Background(), account, "claude-sonnet-4-5", time.Now().Add(30*time.Second))
 
-	// Extra 不应被更新（因为函数提前返回）
-	require.Nil(t, account.Extra)
+	// Extra 应被更新：内存对象上的键与 schedulerSnapshot 是否存在无关
+	require.NotNil(t, account.Extra)
+	limits, ok := account.Extra["model_rate_limits"].(map[string]any)
+	require.True(t, ok)
+	require.NotNil(t, limits["claude-sonnet-4-5"])
 }
 
 // TestUpdateAccountModelRateLimitInCache_PreservesExistingExtra 测试保留已有的 Extra 数据

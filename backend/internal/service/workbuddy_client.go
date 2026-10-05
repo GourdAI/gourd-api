@@ -186,7 +186,9 @@ func (s *OpenAIGatewayService) sendWorkbuddyUpstreamRequest(ctx context.Context,
 	// 6) <400 成功路径。
 	if clientStream {
 		// 流式：包装为规范化 SSE 流（Content-Type 提示下游按 SSE 透传）。
-		resp.Body = io.NopCloser(newWorkbuddySSEReader(resp.Body))
+		// 注入错误帧处置回调：WorkBuddy 的主要拒绝形态是 HTTP 200 + 流内 error 帧，
+		// 不进这里的话，账号被上游限额后面板仍显示「正常」、调度持续选用。
+		resp.Body = io.NopCloser(newWorkbuddySSEReaderWithHook(resp.Body, s.workbuddyStreamErrorHandler(ctx, c, account)))
 		resp.Header.Set("Content-Type", "text/event-stream")
 		return resp, nil
 	}
@@ -196,7 +198,9 @@ func (s *OpenAIGatewayService) sendWorkbuddyUpstreamRequest(ctx context.Context,
 	if readErr != nil {
 		return nil, fmt.Errorf("read workbuddy upstream stream: %w", readErr)
 	}
-	aggregated, usage, aggErr := aggregateWorkbuddySSE(bytes.NewReader(raw))
+	// 与流式共用同一个处置回调：非流式客户端只能在这条路上看到上游的流内 error 帧，
+	// 不接就会出现「流式能冷却、非流式不能」的不对称半成品。
+	aggregated, usage, aggErr := aggregateWorkbuddySSEWithHook(bytes.NewReader(raw), s.workbuddyStreamErrorHandler(ctx, c, account))
 	if aggErr != nil {
 		return nil, aggErr
 	}

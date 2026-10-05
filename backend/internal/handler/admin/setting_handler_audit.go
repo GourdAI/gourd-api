@@ -664,13 +664,15 @@ func appendAuthSourceDefaultChanges(changed []string, before *service.AuthSource
 	return changed
 }
 
+// normalizeDefaultSubscriptions 保留含合法额度与天数的条目。
+// 额度缺失（旧 {group_id} 格式）的条目不能发放：无额度钱包不接管扣费。
 func normalizeDefaultSubscriptions(input []dto.DefaultSubscriptionSetting) []dto.DefaultSubscriptionSetting {
 	if len(input) == 0 {
 		return nil
 	}
 	normalized := make([]dto.DefaultSubscriptionSetting, 0, len(input))
 	for _, item := range input {
-		if item.GroupID <= 0 || item.ValidityDays <= 0 {
+		if item.ValidityDays <= 0 || item.TotalLimitUSD == nil || *item.TotalLimitUSD <= 0 {
 			continue
 		}
 		if item.ValidityDays > service.MaxValidityDays {
@@ -717,8 +719,8 @@ func defaultSubscriptionsValueOrDefault(input *[]dto.DefaultSubscriptionSetting,
 	result := make([]service.DefaultSubscriptionSetting, 0, len(*input))
 	for _, item := range *input {
 		result = append(result, service.DefaultSubscriptionSetting{
-			GroupID:      item.GroupID,
-			ValidityDays: item.ValidityDays,
+			TotalLimitUSD: item.TotalLimitUSD,
+			ValidityDays:  item.ValidityDays,
 		})
 	}
 	return result
@@ -752,7 +754,7 @@ func equalDefaultSubscriptions(a, b []service.DefaultSubscriptionSetting) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].GroupID != b[i].GroupID || a[i].ValidityDays != b[i].ValidityDays {
+		if a[i].ValidityDays != b[i].ValidityDays || !equalNullableFloat(a[i].TotalLimitUSD, b[i].TotalLimitUSD) {
 			return false
 		}
 	}

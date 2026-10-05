@@ -11,8 +11,15 @@ import type {
   NotifyEmailEntry,
 } from "@/types";
 
+// DefaultSubscriptionSetting 是「新用户默认发放订阅钱包」的配置项。
+//
+// 订阅 = 个人额度钱包，不绑定分组、不授予任何分组准入（与后端
+// service.DefaultSubscriptionSetting / dto.DefaultSubscriptionSetting 同构）：
+// 原先的 group_id 字段已退役，这里配的是一份额度总额池 + 一个有效期。
+// total_limit_usd 为 null 表示「未填」——未填（或 <=0）的条目不会发给用户，
+// 因为无额度钱包不接管扣费（发它等于发一条永不起作用的记录）。
 export interface DefaultSubscriptionSetting {
-  group_id: number;
+  total_limit_usd: number | null;
   validity_days: number;
 }
 
@@ -261,20 +268,39 @@ const WECHAT_CONNECT_MODE_ALIASES: Record<string, WeChatConnectMode> = {
   native_app: "mobile",
 };
 
+// normalizeDefaultSubscriptionSettings 只保留「额度为正且有效期为正」的条目。
+//
+// 与后端 parseDefaultSubscriptions 完全同口径：额度缺失（null/undefined）、
+// 非数字、<=0 或 NaN/Infinity 的条目一律丢弃 —— 无额度钱包不接管扣费，
+// 发放它等于给用户一条永不起作用的记录。旧格式数据（{group_id, validity_days}）
+// 读进来后额度为 null，因此也会在此统一丢弃，需管理员重新配一次额度。
+// 不再按 group_id 去重：多条 {额度, 天数} 发放多份独立钱包是合法语义。
 export function normalizeDefaultSubscriptionSettings(
   subscriptions: DefaultSubscriptionSetting[] | null | undefined,
 ): DefaultSubscriptionSetting[] {
   if (!Array.isArray(subscriptions)) return [];
 
   return subscriptions
-    .filter((item) => item.group_id > 0 && item.validity_days > 0)
+    .filter((item) => {
+      const limit = toPositiveAmount(item?.total_limit_usd);
+      return limit !== null && Number(item?.validity_days) > 0;
+    })
     .map((item) => ({
-      group_id: Math.floor(item.group_id),
+      total_limit_usd: toPositiveAmount(item.total_limit_usd),
       validity_days: Math.min(
         36500,
-        Math.max(1, Math.floor(item.validity_days)),
+        Math.max(1, Math.floor(Number(item.validity_days))),
       ),
     }));
+}
+
+// toPositiveAmount 把输入框的值归一为「生效额度」：
+// null / 空字符串 / 非正数 / NaN / Infinity 统一返回 null（= 无效条目，会被丢弃）。
+function toPositiveAmount(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return amount;
 }
 
 export function buildAuthSourceDefaultsState(

@@ -448,19 +448,15 @@ func (s *APIKeyService) incrementAPIKeyErrorCount(ctx context.Context, userID in
 	_ = s.cache.IncrementCreateAttemptCount(ctx, userID)
 }
 
-// canUserBindGroup 检查用户是否可以绑定指定分组
-// 对于订阅类型分组：检查用户是否有该分组的有效订阅
-// 对于标准类型分组：使用原有的 AllowedGroups 和 IsExclusive 逻辑
+// canUserBindGroup 检查用户是否可以绑定指定分组。
 //
-// 订阅是「额度钱包」而不是「分组通行证」：个人订阅（group_id=0）在此不获得任何准入，
-// 否则任何持有个人额度的用户都能绕开管理员的分组授权与 restrict_public_groups 限制。
-func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group *Group) bool {
-	// 订阅类型分组：需要该分组的专属订阅
-	if group.IsSubscriptionType() {
-		_, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, user.ID, group.ID)
-		return err == nil // 有有效订阅则允许
+// 准入只看分组权限（公开分组 / user_allowed_groups 授权）：订阅是「额度钱包」
+// 而不是「分组通行证」（契约第 6 节），不得因持有订阅而放行，否则任何持额度的
+// 用户都能绕开管理员的分组授权与 restrict_public_groups 限制。
+func (s *APIKeyService) canUserBindGroup(_ context.Context, user *User, group *Group) bool {
+	if user == nil || group == nil {
+		return false
 	}
-	// 标准类型分组：使用原有逻辑
 	return user.CanBindGroup(group.ID, group.IsExclusive)
 }
 
@@ -521,11 +517,10 @@ func normalizeAPIKeyGroupIDsForService(groupIDs []int64) []int64 {
 // validateBindableGroups 校验集合内每个分组：存在、状态 active、当前用户可绑定，
 // 且整个集合的订阅类型必须一致（全订阅型或全标准型）。
 //
-// 订阅类型一致性（P1③，用户拍板：写入期禁止混合）：鉴权中间件按**主分组**的
-// IsSubscriptionType 决定是否加载订阅与走订阅限额校验（api_key_auth.go），而生效分组
-// 由请求期决议产生。若同一 key 的候选分组订阅类型不一致，生效分组切到另一类型时，
-// 订阅限额校验会被整体跳过（主=标准/生效=订阅 → subscription==nil → 按余额扣费），
-// 造成订阅日/周/月限额形同虚设。因此在写入期就禁止混合，从根上消除该缺口。
+// 订阅类型一致性（保留：与订阅钱包改造无关的批量操作约束）：分组类型仍决定
+// 「高峰时段倍率」的启用条件（PeakMultiplierAt / ValidatePeakRateConfig），
+// 且分组级计费行为依赖同构的候选集；若同一 key 混装两种类型会造成倍率与组级
+// 策略语义分叉，因此在写入期继续禁止混合。注意：此校验不再涉及准入与额度。
 //
 // 不合法时返回带违规 group id 的明确错误（冻结契约要求）。
 func (s *APIKeyService) validateBindableGroups(ctx context.Context, user *User, groupIDs []int64) error {
@@ -1139,9 +1134,9 @@ func (s *APIKeyService) IncrementUsage(ctx context.Context, keyID int64) error {
 }
 
 // GetAvailableGroups 获取用户有权限绑定的分组列表
-// 返回用户可以选择的分组：
-// - 标准类型分组：公开的（非专属）或用户被明确允许的
-// - 订阅类型分组：用户有有效订阅的
+// 返回用户可以选择的分组：公开的（非专属）或用户被明确授权的。
+//
+// 订阅不再参与分组可见性/准入判定（契约第 6 节）：它只是额度钱包。
 func (s *APIKeyService) GetAvailableGroups(ctx context.Context, userID int64) ([]Group, error) {
 	// 获取用户信息
 	user, err := s.userRepo.GetByID(ctx, userID)
@@ -1155,40 +1150,16 @@ func (s *APIKeyService) GetAvailableGroups(ctx context.Context, userID int64) ([
 		return nil, fmt.Errorf("list active groups: %w", err)
 	}
 
-	// 获取用户的所有有效订阅
-	activeSubscriptions, err := s.userSubRepo.ListActiveByUserID(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("list active subscriptions: %w", err)
-	}
-
-	// 构建订阅分组 ID 集合（严格分组归属；个人订阅 group_id=0 不授予任何分组）
-	subscribedGroupIDs := make(map[int64]bool)
-	for _, sub := range activeSubscriptions {
-		if sub.GroupID == 0 {
-			continue
-		}
-		subscribedGroupIDs[sub.GroupID] = true
-	}
-
 	// 过滤出用户有权限的分组
 	availableGroups := make([]Group, 0)
-	for _, group := range allGroups {
-		if s.canUserBindGroupInternal(user, &group, subscribedGroupIDs) {
+	for i := range allGroups {
+		group := allGroups[i]
+		if s.canUserBindGroup(ctx, user, &group) {
 			availableGroups = append(availableGroups, group)
 		}
 	}
 
 	return availableGroups, nil
-}
-
-// canUserBindGroupInternal 内部方法，检查用户是否可以绑定分组（使用预加载的订阅数据）
-func (s *APIKeyService) canUserBindGroupInternal(user *User, group *Group, subscribedGroupIDs map[int64]bool) bool {
-	// 订阅类型分组：需要有效订阅
-	if group.IsSubscriptionType() {
-		return subscribedGroupIDs[group.ID]
-	}
-	// 标准类型分组：使用原有逻辑
-	return user.CanBindGroup(group.ID, group.IsExclusive)
 }
 
 func (s *APIKeyService) SearchAPIKeys(ctx context.Context, userID int64, keyword string, limit int) ([]APIKey, error) {
@@ -1199,11 +1170,13 @@ func (s *APIKeyService) SearchAPIKeys(ctx context.Context, userID int64, keyword
 	return keys, nil
 }
 
-// GetUserGroupVisibility 返回 user_allowed_groups 授权及有效订阅的分组 ID 集合，
+// GetUserGroupVisibility 返回 user_allowed_groups 授权的分组 ID 集合，
 // 以及该用户是否开启了公开分组限制。开启时公开分组的可见性也要落在该集合内。
 //
 // 与 GetAvailableGroups 的区别：这里保留普通授权分组的「橱窗」语义，不检查
-// 分组是否活跃；有效订阅也授予对应分组的可见性。返回值恒非 nil。
+// 分组是否活跃。返回值恒非 nil。
+//
+// 订阅不再授予任何分组可见性（契约第 6 节）：订阅行已无分组。
 func (s *APIKeyService) GetUserGroupVisibility(ctx context.Context, userID int64) (map[int64]struct{}, bool, error) {
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -1212,18 +1185,6 @@ func (s *APIKeyService) GetUserGroupVisibility(ctx context.Context, userID int64
 	allowed := make(map[int64]struct{}, len(user.AllowedGroups))
 	for _, id := range user.AllowedGroups {
 		allowed[id] = struct{}{}
-	}
-	subscriptions, err := s.userSubRepo.ListActiveByUserID(ctx, userID)
-	if err != nil {
-		return nil, false, fmt.Errorf("list active subscriptions: %w", err)
-	}
-	for _, sub := range subscriptions {
-		// 个人订阅（group_id=0）是额度钱包，不属于任何分组，不得计入可见分组集合
-		//（否则会被当成「拥有分组 0」的伪准入，与广场/绑定层的分组判定撞车）。
-		if sub.GroupID == 0 {
-			continue
-		}
-		allowed[sub.GroupID] = struct{}{}
 	}
 	return allowed, user.RestrictPublicGroups, nil
 }

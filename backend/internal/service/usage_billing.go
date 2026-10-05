@@ -168,6 +168,13 @@ type UsageBillingApplyResult struct {
 	NewBalance           *float64           // post-deduction balance (nil = no balance deduction)
 	BalanceOverdrafted   bool               // true when the sufficient-balance guard missed and debt was still recorded
 	QuotaState           *AccountQuotaState // post-increment quota state (nil = no quota increment)
+	// SubscriptionFallbackAmount：订阅钱包未能记账、已改扣余额的金额。
+	// 调用侧必须据此分叉缓存（订阅用量只累加真正落库的那部分，否则预检会看到
+	// 虚高用量而提前 429），不能拿 ActualCost 当作全额。
+	SubscriptionFallbackAmount float64
+	// DeductedBalanceAmount：本事务内**实际**从余额扣掉的金额（含订阅回落部分）。
+	// 缓存必须用它而非 ActualCost，否则回落场景下会双扣缓存。
+	DeductedBalanceAmount float64
 }
 
 // BatchImageBalanceHoldCommand describes an idempotent balance hold operation.

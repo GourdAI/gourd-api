@@ -36,7 +36,9 @@ func (s *emailBindDefaultSubAssignerStub) AssignOrExtendSubscription(
 ) (*service.UserSubscription, bool, error) {
 	cloned := *input
 	s.calls = append(s.calls, &cloned)
-	return &service.UserSubscription{UserID: input.UserID, GroupID: input.GroupID}, false, nil
+	// 钱包化后分配不再携带分组坐标（AssignSubscriptionInput 已无 GroupID），
+	// 这里只回写 user 定位信息。
+	return &service.UserSubscription{UserID: input.UserID}, false, nil
 }
 
 type flakyEmailBindDefaultSubAssignerStub struct {
@@ -129,7 +131,7 @@ func TestAuthServiceBindEmailIdentity_UpdatesEmailAndAppliesFirstBindDefaults(t 
 	svc, _, client := newAuthServiceForEmailBind(t, map[string]string{
 		service.SettingKeyAuthSourceDefaultEmailBalance:          "8.5",
 		service.SettingKeyAuthSourceDefaultEmailConcurrency:      "4",
-		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"group_id":11,"validity_days":30}]`,
+		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"total_limit_usd":11,"validity_days":30}]`,
 		service.SettingKeyAuthSourceDefaultEmailGrantOnFirstBind: "true",
 	}, cache, assigner)
 
@@ -170,7 +172,10 @@ func TestAuthServiceBindEmailIdentity_UpdatesEmailAndAppliesFirstBindDefaults(t 
 
 	require.Len(t, assigner.calls, 1)
 	require.Equal(t, user.ID, assigner.calls[0].UserID)
-	require.Equal(t, int64(11), assigner.calls[0].GroupID)
+	// 默认发放现在就是一份额度钱包：额度来自 setting 的 total_limit_usd（旧 group_id 已废除）。
+	require.NotNil(t, assigner.calls[0].TotalLimitUSD, "默认订阅必须携带额度（无额度的钱包不会接管扣费）")
+	require.Equal(t, 11.0, *assigner.calls[0].TotalLimitUSD)
+	require.Nil(t, assigner.calls[0].PlanID, "默认发放不绑定任何套餐/分组")
 	require.Equal(t, 30, assigner.calls[0].ValidityDays)
 	require.Equal(t, 1, countProviderGrantRecords(t, client, user.ID, "email", "first_bind"))
 }
@@ -366,7 +371,7 @@ func TestAuthServiceBindEmailIdentity_RollsBackWhenFirstBindDefaultsFail(t *test
 	svc, _, client := newAuthServiceForEmailBind(t, map[string]string{
 		service.SettingKeyAuthSourceDefaultEmailBalance:          "8.5",
 		service.SettingKeyAuthSourceDefaultEmailConcurrency:      "4",
-		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"group_id":11,"validity_days":30}]`,
+		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"total_limit_usd":11,"validity_days":30}]`,
 		service.SettingKeyAuthSourceDefaultEmailGrantOnFirstBind: "true",
 	}, cache, assigner)
 
@@ -449,7 +454,7 @@ func TestAuthServiceBindEmailIdentity_ReplacesBoundEmailAndSkipsFirstBindDefault
 	svc, _, client := newAuthServiceForEmailBind(t, map[string]string{
 		service.SettingKeyAuthSourceDefaultEmailBalance:          "8.5",
 		service.SettingKeyAuthSourceDefaultEmailConcurrency:      "4",
-		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"group_id":11,"validity_days":30}]`,
+		service.SettingKeyAuthSourceDefaultEmailSubscriptions:    `[{"total_limit_usd":11,"validity_days":30}]`,
 		service.SettingKeyAuthSourceDefaultEmailGrantOnFirstBind: "true",
 	}, cache, assigner)
 

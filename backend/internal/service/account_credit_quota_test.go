@@ -306,6 +306,39 @@ func TestCreditSnapshotThresholdCandidateUsesSnapshotUsage(t *testing.T) {
 	require.False(t, decision.ShouldPause)
 }
 
+// 【误杀回归】Trae 有两个独立的钱袋子：权益包池（size/remain/used）与 status 口径
+// 的总积分（credits）。used/size 只描述前者。
+//
+// 修复前：积分还剩 5000、权益包用光（remain=0/size=200）→ used/size = 100% →
+// 管理员设 85% 阈值就把一个完全健康的号停调；同时硬闸门 creditSnapshotExhausted
+// 因 `Credits > 0 → 放行` 认为它没耗尽。两条通道对同一账号给出矛盾结论，
+// 而阈值通道还会把结论真的落盘成 TempUnschedulable（见 ratelimit_service.go）。
+func TestCreditSnapshotThresholdCandidateSkipsAccountWithRemainingCredits(t *testing.T) {
+	now := time.Now()
+	// 积分 5000（正数），权益包池已用光
+	account := creditTraeAccount(traeCreditExtra(0, 200, 5000, 1, now.Unix()))
+
+	require.Nil(t, creditSnapshotThresholdCandidates(account, now),
+		"积分未耗尽时 used/size=100% 不得进阈值通道（否则误杀健康号）")
+	snapshot, ok := readAccountCreditSnapshot(account)
+	require.True(t, ok)
+	require.False(t, creditSnapshotUtilizationIsReliable(snapshot),
+		"Credits>0 时占比必须判为不可信")
+
+	decision := EvaluateAccountSchedulingThreshold(account, map[string]int{PlatformTrae: 85}, now)
+	require.False(t, decision.ShouldPause, "85% 阈值不得停掉还有 5000 积分的账号")
+
+	// 与硬闸门保持同结论（两条通道不得矛盾）： Credits>0 → 不算耗尽 → 不停调。
+	paused, _ := shouldAutoPauseAccountByCredits(account, now)
+	require.False(t, paused, "硬闸门与阈值通道必须对同一账号给出一致结论")
+
+	// 反向验证闸门本身不是恒 false：积分归零后，同一额度池形状必须重新产出候选。
+	exhausted := creditTraeAccount(traeCreditExtra(0, 200, 0, 1, now.Unix()))
+	candidates := creditSnapshotThresholdCandidates(exhausted, now)
+	require.Len(t, candidates, 1, "Credits 归零后占比通道必须恢复工作（闸门不是永久屏蔽）")
+	require.Equal(t, 100.0, candidates[0].usedPercent)
+}
+
 func TestCreditSnapshotThresholdCandidateIgnoresStaleSnapshot(t *testing.T) {
 	stale := time.Now().Add(-30 * time.Hour).Unix()
 	account := creditTraeAccount(traeCreditExtra(20, 200, 0, 1, stale))

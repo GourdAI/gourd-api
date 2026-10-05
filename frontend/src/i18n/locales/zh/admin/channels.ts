@@ -700,21 +700,10 @@ export default {
       revokeSubscription: '撤销订阅',
       restoreSubscription: '恢复订阅',
       allStatus: '全部状态',
-      allGroups: '全部分组',
-      allPlatforms: '全部平台',
-      daily: '每日',
-      weekly: '每周',
-      monthly: '每月',
-      noLimits: '未配置限额',
       unlimited: '无限制',
-      resetNow: '即将重置',
-      windowNotActive: '窗口未激活',
-      resetInMinutes: '{minutes} 分钟后重置',
-      resetInHoursMinutes: '{hours} 小时 {minutes} 分钟后重置',
-      resetInDaysHours: '{days} 天 {hours} 小时后重置',
-      quotaEndsInMinutes: '额度将在 {minutes} 分钟后结束',
-      quotaEndsInHoursMinutes: '额度将在 {hours} 小时 {minutes} 分钟后结束',
-      quotaEndsInDaysHours: '额度将在 {days} 天 {hours} 小时后结束',
+      total: '总额',
+      remaining: '剩余',
+      manualAssignment: '手工发放',
       daysRemaining: '剩余 {days} 天',
       hoursMinutesRemaining: '剩余 {hours} 小时 {minutes} 分钟',
       minutesRemaining: '剩余 {minutes} 分钟',
@@ -726,9 +715,12 @@ export default {
         revoked: '已撤销',
         suspended: '已暂停'
       },
+      daily: '每日',
+      weekly: '每周',
+      monthly: '每月',
       columns: {
         user: '用户',
-        group: '分组',
+        plan: '来源套餐',
         usage: '用量',
         expires: '到期时间',
         status: '状态',
@@ -736,20 +728,14 @@ export default {
       },
       form: {
         user: '用户',
-        group: '订阅分组',
         validityDays: '有效期（天）',
         adjustDays: '调整天数',
-        dailyLimit: '每日额度（USD）',
-        weeklyLimit: '每周额度（USD）',
-        monthlyLimit: '每月额度（USD）'
+        totalLimit: '总额度（USD）'
       },
       selectUser: '选择用户',
-      selectGroup: '选择订阅分组',
-    personalSubscription: '个人订阅（不绑分组，只管理额度）',
-    personalGroupHint: '不绑定分组：这份额度在该用户已可用的分组与模型内通用。订阅只是钱包，不会额外授予任何分组权限。',
-      groupHint: '仅显示订阅计费类型的分组',
-    quotaHint: '新建订阅时留空即不限额；给已有订阅改额度时，留空表示不改动，输 0 才是改回不限额。此处额度仅对当前用户生效，并优先于分组额度。',
-    quotaPlaceholder: '0 = 不限额',
+      personalSubscription: '个人订阅（不绑分组，只管理额度）',
+      quotaHint: '一份订阅 = 一个一次性总额池：花完为止，到期后剩余作废，不随日/周/月滚动重置。新建时留空即不限额；改额度时留空表示不改动，输 0 才是改回不限额。',
+      quotaPlaceholder: '0 = 不限额',
       quotaInvalid: '额度必须为非负数字',
       validityHint: '订阅的有效天数',
       adjustingFor: '为以下用户调整订阅',
@@ -764,7 +750,7 @@ export default {
       restore: '恢复',
       resetQuota: '重置配额',
       resetQuotaTitle: '重置用量配额',
-      resetQuotaConfirm: "确定要重置 '{user}' 的每日、每周和每月用量配额吗？用量将归零并从今天开始重新计算。",
+      resetQuotaConfirm: "确定要重置 '{user}' 的订阅已用额度吗？总额池的已用金额将归零（总额度与到期时间不变）。",
       quotaResetSuccess: '配额重置成功',
       failedToResetQuota: '重置配额失败',
       noSubscriptionsYet: '暂无订阅',
@@ -781,26 +767,25 @@ export default {
       adjustWouldExpire: '调整后剩余天数必须大于0',
       adjustOutOfRange: '调整天数必须在 -36500 到 36500 之间',
       pleaseSelectUser: '请选择用户',
-      pleaseSelectGroup: '请选择分组',
       validityDaysRequired: '请输入有效的天数（至少1天）',
       revokeConfirm: "确定要撤销 '{user}' 的订阅吗？可稍后在已撤销列表中恢复。",
       restoreConfirm: "确定要恢复 '{user}' 的订阅吗？如果原订阅已过期，恢复后将显示为已过期。",
       guide: {
         title: '订阅管理教程',
-        subtitle: '订阅模式允许你按时间周期为用户分配使用额度，支持日/周/月配额限制。按照以下步骤即可完成配置。',
+        subtitle: '订阅是一个「个人额度钱包」：一份额定的总额度 + 一个有效期。按照以下步骤即可完成发放与管理。',
         showGuide: '使用指南',
         step1: {
-          title: '创建订阅分组',
-          line1: '前往「分组管理」页面，点击「创建分组」',
-          line2: '将计费类型设为「订阅」，配置日/周/月额度限制',
-          line3: '保存分组，确保状态为「正常」',
+          title: '确定发放额度与有效期',
+          line1: '发放前先定好这份钱包的总额度（USD）与有效期天数',
+          line2: '总额度是一次性的：花完为止，到期后剩余作废，不随日/周/月重置',
+          line3: '留空或输 0 = 不限额；不限额钱包不会接管扣费，仍走余额计费',
           link: '前往分组管理'
         },
         step2: {
           title: '分配订阅给用户',
           line1: '点击本页右上角「分配订阅」按钮',
           line2: '在弹窗中搜索用户邮箱并选择目标用户',
-          line3: '选择订阅分组、设置有效期天数，点击「分配」'
+          line3: '填写总额度（USD）与有效期天数，点击「分配」'
         },
         step3: {
           title: '管理已有订阅'
@@ -809,11 +794,11 @@ export default {
           adjust: '调整',
           adjustDesc: '延长或缩短订阅有效期',
           resetQuota: '重置配额',
-          resetQuotaDesc: '将日/周/月用量归零，重新开始计算',
+          resetQuotaDesc: '将总额池的已用金额归零，重新开始计数',
           revoke: '撤销',
           revokeDesc: '立即终止该用户的订阅，可在已撤销列表中恢复'
         },
-        tip: '提示：订阅分组下拉列表中只会显示计费类型为「订阅」且状态为「正常」的分组。如果没有可选项，请先到分组管理中创建。'
+        tip: '提示：订阅只管理额度，不授予任何分组准入。Key 属于哪个分组就按那个分组的倍率计价，只是钱从钱包里扣。'
       }
     },
 

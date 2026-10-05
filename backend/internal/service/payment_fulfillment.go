@@ -483,17 +483,14 @@ func (s *PaymentService) sendSubscriptionPurchaseSuccessNotification(ctx context
 	if o.SubscriptionDays != nil {
 		variables["subscription_days"] = strconv.Itoa(*o.SubscriptionDays)
 	}
-	if o.SubscriptionGroupID != nil {
-		if s.groupRepo != nil {
-			if group, err := s.groupRepo.GetByID(ctx, *o.SubscriptionGroupID); err == nil && group != nil && strings.TrimSpace(group.Name) != "" {
-				variables["subscription_group"] = group.Name
-			}
-		}
-		if s.subscriptionSvc != nil {
-			if sub, err := s.subscriptionSvc.GetActiveSubscription(ctx, o.UserID, *o.SubscriptionGroupID); err == nil && sub != nil {
-				variables["expiry_time"] = sub.ExpiresAt.Format("2006-01-02 15:04")
-			}
-		}
+	// 展示优先级：套餐名 > 交付目标分组名。订阅已不再绑定分组（产品定案 1），
+	// 套餐名才是用户实际买到的东西；旧订单没有 plan_id 或套餐已下架时回落分组名。
+	if name := s.subscriptionPlanDisplayName(ctx, o); name != "" {
+		variables["subscription_group"] = name
+	}
+	// 失效订阅按 (user, 订单备注) 精确定位本订单发放的那一份钱包，不再按分组寻址。
+	if sub, err := s.locatePaymentSubscriptionForOrder(ctx, o.UserID, o.ID); err == nil && sub != nil {
+		variables["expiry_time"] = sub.ExpiresAt.Format("2006-01-02 15:04")
 	}
 	return s.notificationEmailService.Send(ctx, NotificationEmailSendInput{
 		Event:          NotificationEmailEventSubscriptionPurchaseSuccess,
@@ -520,7 +517,9 @@ func (s *PaymentService) ExecuteSubscriptionFulfillment(ctx context.Context, oid
 	if o.Status != OrderStatusPaid && o.Status != OrderStatusFailed && o.Status != OrderStatusRecharging {
 		return infraerrors.BadRequest("INVALID_STATUS", "order cannot fulfill in status "+o.Status)
 	}
-	if o.SubscriptionGroupID == nil || o.SubscriptionDays == nil {
+	// 发放只依赖有效期与套餐快照；subscription_group_id 自本次改造起仅作展示/对账字段，
+	// 旧数据缺失该列也不得阻挡已收款订单的发放。
+	if o.SubscriptionDays == nil {
 		return infraerrors.BadRequest("INVALID_STATUS", "missing subscription info")
 	}
 	lease, err := s.acquirePaymentFulfillmentLease(ctx, o)
@@ -537,14 +536,14 @@ func (s *PaymentService) ExecuteSubscriptionFulfillment(ctx context.Context, oid
 	return nil
 }
 
+// doSub 发放订阅钱包。
+//
+// 不再按分组寻址：payment_orders.subscription_group_id 仅保留为展示/对账字段。
+// 交付目标分组在用户付款之后被删除或停用，也不能拒绝发放（纪律：用户付了钱
+// 一定能拿到对应额度的钱包）；额度快照在 ensurePaymentSubscriptionAssigned 内读套餐。
 func (s *PaymentService) doSub(ctx context.Context, o *dbent.PaymentOrder, lease *paymentFulfillmentLease) error {
-	gid := *o.SubscriptionGroupID
 	days := *o.SubscriptionDays
-	g, err := s.groupRepo.GetByID(ctx, gid)
-	if err != nil || g.Status != payment.EntityStatusActive {
-		return fmt.Errorf("group %d no longer exists or inactive", gid)
-	}
-	if err := s.ensurePaymentSubscriptionAssigned(ctx, o, gid, days); err != nil {
+	if err := s.ensurePaymentSubscriptionAssigned(ctx, o, days); err != nil {
 		return err
 	}
 	if err := s.applyAffiliateRebateForOrder(ctx, o); err != nil {
@@ -553,9 +552,25 @@ func (s *PaymentService) doSub(ctx context.Context, o *dbent.PaymentOrder, lease
 	return s.markCompleted(ctx, o, lease, "SUBSCRIPTION_SUCCESS")
 }
 
-func (s *PaymentService) ensurePaymentSubscriptionAssigned(ctx context.Context, o *dbent.PaymentOrder, groupID int64, days int) error {
+// ensurePaymentSubscriptionAssigned 为已支付的订阅订单发放一份「额度钱包」订阅。
+//
+// 2026-10-03 订阅钱包改造（契约第 7 节 + 产品定案 5）：
+//   - 不再按分组寻址：group_id 已从 user_subscriptions 删除，订阅不授予分组准入；
+//   - 额度来自 subscription_plans.total_limit_usd 的**发放时快照**（写入订阅行，
+//     后续改套餐不回溯）；绝不把“实时读套餐”当作额度依据；
+//   - 同一套餐重复购买 = 新增一份独立订阅（所以不再查 (user,plan) 复用续费）；
+//     幂等仅靠两道防线：订单维度的 SUBSCRIPTION_ASSIGNED 审计记录 + 订阅备注里的订单号。
+func (s *PaymentService) ensurePaymentSubscriptionAssigned(ctx context.Context, o *dbent.PaymentOrder, days int) error {
 	if s.subscriptionSvc == nil {
 		return errors.New("subscription service is unavailable")
+	}
+
+	// 额度快照必须在开启事务之前读取失败处理：读不到套餐 = 无法确定应给多少钱，
+	// 不能默认为“不限额”放行（纪律：不得造成资损）。
+	planID := o.PlanID
+	limitUSD, err := s.subscriptionPlanQuotaSnapshot(ctx, planID)
+	if err != nil {
+		return err
 	}
 
 	tx, err := s.entClient.Tx(ctx)
@@ -574,27 +589,35 @@ func (s *PaymentService) ensurePaymentSubscriptionAssigned(ctx context.Context, 
 	recoveredFromNote := false
 	if !alreadyAssigned {
 		orderNote := paymentSubscriptionOrderNote(o.ID)
-		existing, lookupErr := s.subscriptionSvc.userSubRepo.GetByUserIDAndGroupID(txCtx, o.UserID, groupID)
+		// 幂等兜底：审计表写入失败/丢失但订阅已落库时，按备注里的订单号识别，绝不重复发钱。
+		existing, lookupErr := s.locatePaymentSubscriptionForOrder(txCtx, o.UserID, o.ID)
 		switch {
-		case lookupErr == nil && existing != nil && hasPaymentSubscriptionOrderNote(existing.Notes, orderNote):
-			recoveredFromNote = true
-		case lookupErr != nil && !errors.Is(lookupErr, ErrSubscriptionNotFound):
+		case lookupErr != nil:
 			return fmt.Errorf("check existing subscription assignment: %w", lookupErr)
+		case existing != nil:
+			recoveredFromNote = true
 		default:
-			if _, _, err := s.subscriptionSvc.assignOrExtendSubscription(txCtx, &AssignSubscriptionInput{
-				UserID:       o.UserID,
-				GroupID:      groupID,
-				ValidityDays: days,
-				AssignedBy:   0,
-				Notes:        orderNote,
-			}, true); err != nil {
+			input := &AssignSubscriptionInput{
+				UserID:        o.UserID,
+				PlanID:        planID,
+				ValidityDays:  days,
+				AssignedBy:    0,
+				Notes:         orderNote,
+				TotalLimitUSD: limitUSD,
+			}
+			// createSubscription：总是新建一份钱包（产品定案 5）。
+			// 不能用 assignOrExtendSubscription：那是「同位续费」语义，会把两份购买
+			// 当作一份而累加天数，既不符合定案、也会把上一份未用完的额度被覆盖重置。
+			if _, err := s.subscriptionSvc.createSubscription(txCtx, input); err != nil {
 				return fmt.Errorf("assign subscription: %w", err)
 			}
 		}
 
 		detail, _ := json.Marshal(map[string]any{
-			"groupID":           groupID,
+			"planID":            int64OrZero(planID),
+			"groupID":           int64OrZero(o.SubscriptionGroupID),
 			"validityDays":      days,
+			"totalLimitUSD":     limitUSD,
 			"recoveredFromNote": recoveredFromNote,
 		})
 		if _, err := txClient.PaymentAuditLog.Create().
@@ -607,13 +630,13 @@ func (s *PaymentService) ensurePaymentSubscriptionAssigned(ctx context.Context, 
 				_ = tx.Rollback()
 				claimed, checkErr := hasPaymentSubscriptionAssignmentAudit(ctx, s.entClient, o.ID)
 				if checkErr == nil && claimed {
-					return s.subscriptionSvc.invalidateSubscriptionCaches(o.UserID, groupID)
+					return s.subscriptionSvc.invalidateSubscriptionCaches(o.UserID)
 				}
 			}
 			return fmt.Errorf("record subscription assignment audit: %w", err)
 		}
 	} else {
-		slog.Info("subscription already assigned for order, skipping", "orderID", o.ID, "groupID", groupID)
+		slog.Info("subscription already assigned for order, skipping", "orderID", o.ID, "planID", int64OrZero(planID))
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -621,10 +644,78 @@ func (s *PaymentService) ensurePaymentSubscriptionAssigned(ctx context.Context, 
 	}
 	// Assignment cache invalidation is deferred while this transaction is open,
 	// then performed synchronously against the committed subscription.
-	if err := s.subscriptionSvc.invalidateSubscriptionCaches(o.UserID, groupID); err != nil {
+	if err := s.subscriptionSvc.invalidateSubscriptionCaches(o.UserID); err != nil {
 		return fmt.Errorf("invalidate subscription cache after fulfillment: %w", err)
 	}
 	return nil
+}
+
+// subscriptionPlanQuotaSnapshot 读取套餐额度快照（写入订阅行的唯一合法额度来源）。
+//
+// 语义对齐 normalizeSubLimit：nil / <=0 均为「本套餐未设额度」，落库保持 NULL。
+// NULL 钱包不会接管扣费（契约第 2 节 SubscriptionWalletTakesOver），因此这里刻意
+// 不把“读不到额度”兜底成不限额：
+//   - 订单没有 plan_id（早期遗留单）：无快照可取，只给有效期（nil）并记 WARN；
+//   - 套餐行已不存在（硬删）：直接报错使发放失败，由人工介入，绝不静默发出不限额钱包。
+func (s *PaymentService) subscriptionPlanQuotaSnapshot(ctx context.Context, planID *int64) (*float64, error) {
+	if planID == nil || *planID <= 0 {
+		slog.Warn("subscription order without plan_id: granting wallet without quota snapshot", "planID", int64OrZero(planID))
+		return nil, nil
+	}
+	plan, err := s.entClient.SubscriptionPlan.Get(ctx, *planID)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, infraerrors.BadRequest("PLAN_NOT_FOUND",
+				fmt.Sprintf("cannot snapshot quota: subscription plan %d no longer exists", *planID))
+		}
+		return nil, fmt.Errorf("load subscription plan %d for quota snapshot: %w", *planID, err)
+	}
+	return normalizeSubLimit(plan.TotalLimitUsd), nil
+}
+
+// locatePaymentSubscriptionForOrder 按订单备注定位本订单已发放的那份钱包（幂等检查专用）。
+// 不再按 (user, group) 寻址：一个用户可持多份订阅，只有备注里的订单号能确认归属。
+func (s *PaymentService) locatePaymentSubscriptionForOrder(ctx context.Context, userID int64, orderID int64) (*UserSubscription, error) {
+	if s.subscriptionSvc == nil || s.subscriptionSvc.userSubRepo == nil {
+		return nil, errors.New("subscription service is unavailable")
+	}
+	subs, err := s.subscriptionSvc.userSubRepo.ListByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	orderNote := paymentSubscriptionOrderNote(orderID)
+	for i := range subs {
+		if hasPaymentSubscriptionOrderNote(subs[i].Notes, orderNote) {
+			return &subs[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// subscriptionPlanDisplayName 发放成功通知的展示名：优先套餐名，取不到再回落交付目标分组名。
+func (s *PaymentService) subscriptionPlanDisplayName(ctx context.Context, o *dbent.PaymentOrder) string {
+	if o.PlanID != nil && *o.PlanID > 0 {
+		if plan, err := s.entClient.SubscriptionPlan.Get(ctx, *o.PlanID); err == nil && plan != nil {
+			if name := strings.TrimSpace(plan.Name); name != "" {
+				return name
+			}
+		}
+	}
+	if o.SubscriptionGroupID != nil && s.groupRepo != nil {
+		if group, err := s.groupRepo.GetByID(ctx, *o.SubscriptionGroupID); err == nil && group != nil {
+			if name := strings.TrimSpace(group.Name); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func int64OrZero(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 func hasPaymentSubscriptionAssignmentAudit(ctx context.Context, client *dbent.Client, orderID int64) (bool, error) {

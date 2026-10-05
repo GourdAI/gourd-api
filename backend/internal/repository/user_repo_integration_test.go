@@ -114,13 +114,13 @@ func (s *UserRepoSuite) mustCreateGroup(name string) *service.Group {
 	return groupEntityToService(g)
 }
 
-func (s *UserRepoSuite) mustCreateSubscription(userID, groupID int64, mutate func(*dbent.UserSubscriptionCreate)) *dbent.UserSubscription {
+// mustCreateSubscription 创建一份订阅钱包。2026-10-03 重构：订阅不再绑定分组。
+func (s *UserRepoSuite) mustCreateSubscription(userID int64, mutate func(*dbent.UserSubscriptionCreate)) *dbent.UserSubscription {
 	s.T().Helper()
 
 	now := time.Now()
 	create := s.client.UserSubscription.Create().
 		SetUserID(userID).
-		SetGroupID(groupID).
 		SetStartsAt(now.Add(-1 * time.Hour)).
 		SetExpiresAt(now.Add(24 * time.Hour)).
 		SetStatus(service.SubscriptionStatusActive).
@@ -376,14 +376,12 @@ func (s *UserRepoSuite) TestListWithFilters_SearchByUsername() {
 
 func (s *UserRepoSuite) TestListWithFilters_LoadsActiveSubscriptions() {
 	user := s.mustCreateUser(&service.User{Email: "sub@test.com", Status: service.StatusActive})
-	groupActive := s.mustCreateGroup("g-sub-active")
-	groupExpired := s.mustCreateGroup("g-sub-expired")
 
-	_ = s.mustCreateSubscription(user.ID, groupActive.ID, func(c *dbent.UserSubscriptionCreate) {
+	_ = s.mustCreateSubscription(user.ID, func(c *dbent.UserSubscriptionCreate) {
 		c.SetStatus(service.SubscriptionStatusActive)
 		c.SetExpiresAt(time.Now().Add(1 * time.Hour))
 	})
-	_ = s.mustCreateSubscription(user.ID, groupExpired.ID, func(c *dbent.UserSubscriptionCreate) {
+	_ = s.mustCreateSubscription(user.ID, func(c *dbent.UserSubscriptionCreate) {
 		c.SetStatus(service.SubscriptionStatusExpired)
 		c.SetExpiresAt(time.Now().Add(-1 * time.Hour))
 	})
@@ -392,8 +390,7 @@ func (s *UserRepoSuite) TestListWithFilters_LoadsActiveSubscriptions() {
 	s.Require().NoError(err, "ListWithFilters")
 	s.Require().Len(users, 1, "expected 1 user")
 	s.Require().Len(users[0].Subscriptions, 1, "expected 1 active subscription")
-	s.Require().NotNil(users[0].Subscriptions[0].Group, "expected subscription group preload")
-	s.Require().Equal(groupActive.ID, users[0].Subscriptions[0].Group.ID, "group ID mismatch")
+	s.Require().Equal(user.ID, users[0].Subscriptions[0].UserID)
 }
 
 func (s *UserRepoSuite) TestListWithFilters_CombinedFilters() {

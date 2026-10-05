@@ -29,11 +29,14 @@ describe('bulk subscription operation identity', () => {
   })
 
   it('reuses a stored pending key and clears both storage and memory after completion', () => {
-    const request = { action: 'reset_quota' as const, subscription_ids: [1], daily: true, weekly: false, monthly: false }
-    const scope = `sub2api:admin:subscription-bulk:${adminId}:${JSON.stringify({ subscription_ids: [1], action: 'reset_quota', daily: true, weekly: false, monthly: false })}`
+    // 总额池只有一份，reset_quota 不再携带 daily/weekly/monthly 窗口参数：
+    // 规范化 payload 仅由 ids + action 构成，因此幂等坐标也只包含这两项。
+    const request = { action: 'reset_quota' as const, subscription_ids: [1] }
+    const scope = `sub2api:admin:subscription-bulk:${adminId}:${JSON.stringify({ subscription_ids: [1], action: 'reset_quota' })}`
     sessionStorage.setItem(scope, 'saved-operation-key')
     const resumed = prepareBulkSubscriptionOperation(request)
     expect(resumed.key).toBe('saved-operation-key')
+    expect(resumed.request).toEqual({ subscription_ids: [1], action: 'reset_quota' })
     completeBulkSubscriptionOperation(resumed)
     expect(sessionStorage.getItem(scope)).toBeNull()
     expect(prepareBulkSubscriptionOperation(request).key).not.toBe(resumed.key)

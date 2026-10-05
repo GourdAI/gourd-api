@@ -107,6 +107,10 @@ type AccountRepository interface {
 	ClearRateLimit(ctx context.Context, id int64) error
 	ClearAntigravityQuotaScopes(ctx context.Context, id int64) error
 	ClearModelRateLimits(ctx context.Context, id int64) error
+	// ClearModelRateLimitScopes 仅删除指定的几个冷却键，不动其它键。
+	// 用于“清一个键”的场景：绝不能拿 UpdateExtra 写回整个 model_rate_limits，
+	// 那是顶层整体替换，会把并发刚写入的其它冷却一并抹掉。
+	ClearModelRateLimitScopes(ctx context.Context, id int64, scopes []string) error
 	UpdateSessionWindow(ctx context.Context, id int64, start, end *time.Time, status string) error
 	// UpdateSessionWindowEnd 仅更新 5h 窗口的结束时间，不动 start / status。
 	// 用于 active poll 拿到新 ResetsAt 后回写，避免覆盖请求路径上记录的 status。

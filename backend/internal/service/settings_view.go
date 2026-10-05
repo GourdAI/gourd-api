@@ -317,9 +317,14 @@ type SystemSettings struct {
 	AllowUserViewErrorRequests bool
 }
 
+// DefaultSubscriptionSetting 是「新用户默认发放订阅钱包」的配置项。
+//
+// 2026-10-03 重构：订阅不再绑定分组，因此本配置从 {分组, 有效天数} 改为
+// {总额度 USD, 有效天数}——发放的就是一份额度钱包（Key 仍在用户自己选的分组上计费，
+// 只是钱从这份钱包扣）。旧的 group_id 字段连同「必须为订阅型分组」校验一并退役。
 type DefaultSubscriptionSetting struct {
-	GroupID      int64 `json:"group_id"`
-	ValidityDays int   `json:"validity_days"`
+	TotalLimitUSD *float64 `json:"total_limit_usd"`
+	ValidityDays  int      `json:"validity_days"`
 }
 
 type PublicSettings struct {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -25,8 +26,20 @@ func normalizePlanCurrency(raw string) (string, error) {
 	return currency, nil
 }
 
+// validatePlanTotalLimit 校验套餐总额度：nil 合法（不限量）；
+// 非 nil 时必须为有限非负数（<=0 在归一化后等价于不限量，因此不报错）。
+func validatePlanTotalLimit(v *float64) error {
+	if v == nil {
+		return nil
+	}
+	if math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0 {
+		return infraerrors.BadRequest("PLAN_TOTAL_LIMIT_INVALID", "total_limit_usd must be a finite non-negative number")
+	}
+	return nil
+}
+
 // validatePlanRequired checks that all required fields for a plan are provided.
-func validatePlanRequired(name string, groupID int64, price float64, validityDays int, validityUnit string, originalPrice *float64) error {
+func validatePlanRequired(name string, groupID int64, price float64, validityDays int, validityUnit string, originalPrice *float64, totalLimit *float64) error {
 	if strings.TrimSpace(name) == "" {
 		return infraerrors.BadRequest("PLAN_NAME_REQUIRED", "plan name is required")
 	}
@@ -44,6 +57,9 @@ func validatePlanRequired(name string, groupID int64, price float64, validityDay
 	}
 	if originalPrice != nil && *originalPrice < 0 {
 		return infraerrors.BadRequest("PLAN_ORIGINAL_PRICE_INVALID", "original price must be >= 0")
+	}
+	if err := validatePlanTotalLimit(totalLimit); err != nil {
+		return err
 	}
 	return nil
 }
@@ -68,12 +84,20 @@ func validatePlanPatch(req UpdatePlanRequest) error {
 	if req.OriginalPrice != nil && *req.OriginalPrice < 0 {
 		return infraerrors.BadRequest("PLAN_ORIGINAL_PRICE_INVALID", "original price must be >= 0")
 	}
+	if err := validatePlanTotalLimit(req.TotalLimitUSD); err != nil {
+		return err
+	}
 	return nil
 }
 
 // --- Plan CRUD ---
 
-// PlanGroupInfo holds the group details needed for subscription plan display.
+// PlanGroupInfo 描述套餐「交付目标分组」的自身配置（仅供展示/对账）。
+//
+// 注意：下面三个 Daily/Weekly/MonthlyLimitUSD 读的是 groups 表自身的日/周/月限额列
+// （分组级限流配置），与订阅钱包无关；2026-10-03 订阅钱包改造后，订阅额度改由
+// subscription_plans.total_limit_usd 提供（见 AdminSubscriptionPlanResult.total_limit_usd），
+// 这三列保留仅用于展示分组自身配置。GetGroupInfoMap 的取值已核对为 g.DailyLimitUsd 等 group 节点字段。
 type PlanGroupInfo struct {
 	Platform           string   `json:"platform"`
 	Name               string   `json:"name"`
@@ -133,7 +157,7 @@ func (s *PaymentConfigService) ListPlansForSale(ctx context.Context) ([]*dbent.S
 }
 
 func (s *PaymentConfigService) CreatePlan(ctx context.Context, req CreatePlanRequest) (*dbent.SubscriptionPlan, error) {
-	if err := validatePlanRequired(req.Name, req.GroupID, req.Price, req.ValidityDays, req.ValidityUnit, req.OriginalPrice); err != nil {
+	if err := validatePlanRequired(req.Name, req.GroupID, req.Price, req.ValidityDays, req.ValidityUnit, req.OriginalPrice, req.TotalLimitUSD); err != nil {
 		return nil, err
 	}
 	currency, err := normalizePlanCurrency(req.Currency)
@@ -147,6 +171,10 @@ func (s *PaymentConfigService) CreatePlan(ctx context.Context, req CreatePlanReq
 		SetForSale(req.ForSale).SetSortOrder(req.SortOrder)
 	if req.OriginalPrice != nil {
 		b.SetOriginalPrice(*req.OriginalPrice)
+	}
+	// 额度归一：<=0 与 nil 同义（不限量），不写列；避免库里落 0 后展示“$0”误导。
+	if limit := normalizeSubLimit(req.TotalLimitUSD); limit != nil {
+		b.SetTotalLimitUsd(*limit)
 	}
 	return b.Save(ctx)
 }
@@ -173,6 +201,15 @@ func (s *PaymentConfigService) UpdatePlan(ctx context.Context, id int64, req Upd
 	}
 	if req.OriginalPrice != nil {
 		u.SetOriginalPrice(*req.OriginalPrice)
+	}
+	// TotalLimitUSD 三态：nil = 不修改；>0 = 设为该额度；<=0 = 清空（改为不限量）。
+	// 不回溯已发放的订阅：那份额度是购买时写进订阅行的快照。
+	if req.TotalLimitUSD != nil {
+		if limit := normalizeSubLimit(req.TotalLimitUSD); limit != nil {
+			u.SetTotalLimitUsd(*limit)
+		} else {
+			u.ClearTotalLimitUsd()
+		}
 	}
 	if req.Currency != nil {
 		currency, err := normalizePlanCurrency(*req.Currency)

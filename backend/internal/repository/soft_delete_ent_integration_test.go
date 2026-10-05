@@ -1,4 +1,4 @@
-﻿//go:build integration
+//go:build integration
 
 package repository
 
@@ -116,7 +116,9 @@ func TestEntSoftDelete_ApiKey_HardDeleteViaSkipSoftDelete(t *testing.T) {
 
 // --- UserSubscription 软删除测试 ---
 
-func createEntGroup(t *testing.T, ctx context.Context, client *dbent.Client, name string) *dbent.Group {
+// createEntPlan 创建一份套餐供订阅引用（plan_id 可空，但这里需要验证关系）。
+// subscription_plans.group_id 仍为必填列，因此先建一个仅作占位的分组。
+func createEntPlan(t *testing.T, ctx context.Context, client *dbent.Client, name string) *dbent.SubscriptionPlan {
 	t.Helper()
 
 	g, err := client.Group.Create().
@@ -124,7 +126,15 @@ func createEntGroup(t *testing.T, ctx context.Context, client *dbent.Client, nam
 		SetStatus(service.StatusActive).
 		Save(ctx)
 	require.NoError(t, err, "create ent group")
-	return g
+
+	p, err := client.SubscriptionPlan.Create().
+		SetGroupID(g.ID).
+		SetName(name).
+		SetPrice(9.9).
+		SetTotalLimitUsd(100.0).
+		Save(ctx)
+	require.NoError(t, err, "create ent subscription plan")
+	return p
 }
 
 func TestEntSoftDelete_UserSubscription_DefaultFilterAndSkip(t *testing.T) {
@@ -132,12 +142,12 @@ func TestEntSoftDelete_UserSubscription_DefaultFilterAndSkip(t *testing.T) {
 	client := testEntClient(t)
 
 	u := createEntUser(t, ctx, client, uniqueSoftDeleteValue(t, "sd-sub-user")+"@example.com")
-	g := createEntGroup(t, ctx, client, uniqueSoftDeleteValue(t, "sd-sub-group"))
+	plan := createEntPlan(t, ctx, client, uniqueSoftDeleteValue(t, "sd-sub-plan"))
 
 	repo := NewUserSubscriptionRepository(client)
 	sub := &service.UserSubscription{
 		UserID:    u.ID,
-		GroupID:   g.ID,
+		PlanID:    &plan.ID,
 		Status:    service.SubscriptionStatusActive,
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
@@ -157,6 +167,13 @@ func TestEntSoftDelete_UserSubscription_DefaultFilterAndSkip(t *testing.T) {
 		Only(mixins.SkipSoftDelete(ctx))
 	require.NoError(t, err, "SkipSoftDelete should include soft-deleted rows")
 	require.NotNil(t, got.DeletedAt, "deleted_at should be set after soft delete")
+
+	// 软删除后的行经 repo 读取（IncludeDeleted）应能回溯来源套餐，
+	// 而不是回溯分组——订阅已与分组解绑。
+	snapshot, err := repo.GetByIDIncludeDeleted(ctx, sub.ID)
+	require.NoError(t, err, "GetByIDIncludeDeleted")
+	require.NotNil(t, snapshot.Plan, "expected plan relation, not group")
+	require.Equal(t, plan.ID, snapshot.Plan.ID)
 }
 
 func TestEntSoftDelete_UserSubscription_DeleteIdempotent(t *testing.T) {
@@ -164,12 +181,10 @@ func TestEntSoftDelete_UserSubscription_DeleteIdempotent(t *testing.T) {
 	client := testEntClient(t)
 
 	u := createEntUser(t, ctx, client, uniqueSoftDeleteValue(t, "sd-sub-user2")+"@example.com")
-	g := createEntGroup(t, ctx, client, uniqueSoftDeleteValue(t, "sd-sub-group2"))
 
 	repo := NewUserSubscriptionRepository(client)
 	sub := &service.UserSubscription{
 		UserID:    u.ID,
-		GroupID:   g.ID,
 		Status:    service.SubscriptionStatusActive,
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
@@ -184,24 +199,23 @@ func TestEntSoftDelete_UserSubscription_ListExcludesDeleted(t *testing.T) {
 	client := testEntClient(t)
 
 	u := createEntUser(t, ctx, client, uniqueSoftDeleteValue(t, "sd-sub-user3")+"@example.com")
-	g1 := createEntGroup(t, ctx, client, uniqueSoftDeleteValue(t, "sd-sub-group3a"))
-	g2 := createEntGroup(t, ctx, client, uniqueSoftDeleteValue(t, "sd-sub-group3b"))
 
 	repo := NewUserSubscriptionRepository(client)
 
+	// 同一用户的多份钱包（订阅不绑分组，不再靠 group 区分）
 	sub1 := &service.UserSubscription{
-		UserID:    u.ID,
-		GroupID:   g1.ID,
-		Status:    service.SubscriptionStatusActive,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		UserID:        u.ID,
+		Status:        service.SubscriptionStatusActive,
+		ExpiresAt:     time.Now().Add(24 * time.Hour),
+		TotalLimitUSD: func() *float64 { v := 10.0; return &v }(),
 	}
 	require.NoError(t, repo.Create(ctx, sub1), "create subscription 1")
 
 	sub2 := &service.UserSubscription{
-		UserID:    u.ID,
-		GroupID:   g2.ID,
-		Status:    service.SubscriptionStatusActive,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		UserID:        u.ID,
+		Status:        service.SubscriptionStatusActive,
+		ExpiresAt:     time.Now().Add(48 * time.Hour),
+		TotalLimitUSD: func() *float64 { v := 20.0; return &v }(),
 	}
 	require.NoError(t, repo.Create(ctx, sub2), "create subscription 2")
 

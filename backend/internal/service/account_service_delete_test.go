@@ -195,6 +195,10 @@ func (s *accountRepoStub) ClearModelRateLimits(ctx context.Context, id int64) er
 	panic("unexpected ClearModelRateLimits call")
 }
 
+func (s *accountRepoStub) ClearModelRateLimitScopes(ctx context.Context, id int64, scopes []string) error {
+	panic("unexpected ClearModelRateLimitScopes call")
+}
+
 func (s *accountRepoStub) UpdateSessionWindow(ctx context.Context, id int64, start, end *time.Time, status string) error {
 	panic("unexpected UpdateSessionWindow call")
 }

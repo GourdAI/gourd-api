@@ -11,7 +11,7 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
@@ -73,9 +73,17 @@ func (_c *UserSubscriptionCreate) SetUserID(v int64) *UserSubscriptionCreate {
 	return _c
 }
 
-// SetGroupID sets the "group_id" field.
-func (_c *UserSubscriptionCreate) SetGroupID(v int64) *UserSubscriptionCreate {
-	_c.mutation.SetGroupID(v)
+// SetPlanID sets the "plan_id" field.
+func (_c *UserSubscriptionCreate) SetPlanID(v int64) *UserSubscriptionCreate {
+	_c.mutation.SetPlanID(v)
+	return _c
+}
+
+// SetNillablePlanID sets the "plan_id" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillablePlanID(v *int64) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetPlanID(*v)
+	}
 	return _c
 }
 
@@ -105,128 +113,30 @@ func (_c *UserSubscriptionCreate) SetNillableStatus(v *string) *UserSubscription
 	return _c
 }
 
-// SetDailyWindowStart sets the "daily_window_start" field.
-func (_c *UserSubscriptionCreate) SetDailyWindowStart(v time.Time) *UserSubscriptionCreate {
-	_c.mutation.SetDailyWindowStart(v)
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (_c *UserSubscriptionCreate) SetTotalLimitUsd(v float64) *UserSubscriptionCreate {
+	_c.mutation.SetTotalLimitUsd(v)
 	return _c
 }
 
-// SetNillableDailyWindowStart sets the "daily_window_start" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableDailyWindowStart(v *time.Time) *UserSubscriptionCreate {
+// SetNillableTotalLimitUsd sets the "total_limit_usd" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableTotalLimitUsd(v *float64) *UserSubscriptionCreate {
 	if v != nil {
-		_c.SetDailyWindowStart(*v)
+		_c.SetTotalLimitUsd(*v)
 	}
 	return _c
 }
 
-// SetWeeklyWindowStart sets the "weekly_window_start" field.
-func (_c *UserSubscriptionCreate) SetWeeklyWindowStart(v time.Time) *UserSubscriptionCreate {
-	_c.mutation.SetWeeklyWindowStart(v)
+// SetTotalUsageUsd sets the "total_usage_usd" field.
+func (_c *UserSubscriptionCreate) SetTotalUsageUsd(v float64) *UserSubscriptionCreate {
+	_c.mutation.SetTotalUsageUsd(v)
 	return _c
 }
 
-// SetNillableWeeklyWindowStart sets the "weekly_window_start" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableWeeklyWindowStart(v *time.Time) *UserSubscriptionCreate {
+// SetNillableTotalUsageUsd sets the "total_usage_usd" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableTotalUsageUsd(v *float64) *UserSubscriptionCreate {
 	if v != nil {
-		_c.SetWeeklyWindowStart(*v)
-	}
-	return _c
-}
-
-// SetMonthlyWindowStart sets the "monthly_window_start" field.
-func (_c *UserSubscriptionCreate) SetMonthlyWindowStart(v time.Time) *UserSubscriptionCreate {
-	_c.mutation.SetMonthlyWindowStart(v)
-	return _c
-}
-
-// SetNillableMonthlyWindowStart sets the "monthly_window_start" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableMonthlyWindowStart(v *time.Time) *UserSubscriptionCreate {
-	if v != nil {
-		_c.SetMonthlyWindowStart(*v)
-	}
-	return _c
-}
-
-// SetDailyUsageUsd sets the "daily_usage_usd" field.
-func (_c *UserSubscriptionCreate) SetDailyUsageUsd(v float64) *UserSubscriptionCreate {
-	_c.mutation.SetDailyUsageUsd(v)
-	return _c
-}
-
-// SetNillableDailyUsageUsd sets the "daily_usage_usd" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableDailyUsageUsd(v *float64) *UserSubscriptionCreate {
-	if v != nil {
-		_c.SetDailyUsageUsd(*v)
-	}
-	return _c
-}
-
-// SetWeeklyUsageUsd sets the "weekly_usage_usd" field.
-func (_c *UserSubscriptionCreate) SetWeeklyUsageUsd(v float64) *UserSubscriptionCreate {
-	_c.mutation.SetWeeklyUsageUsd(v)
-	return _c
-}
-
-// SetNillableWeeklyUsageUsd sets the "weekly_usage_usd" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableWeeklyUsageUsd(v *float64) *UserSubscriptionCreate {
-	if v != nil {
-		_c.SetWeeklyUsageUsd(*v)
-	}
-	return _c
-}
-
-// SetMonthlyUsageUsd sets the "monthly_usage_usd" field.
-func (_c *UserSubscriptionCreate) SetMonthlyUsageUsd(v float64) *UserSubscriptionCreate {
-	_c.mutation.SetMonthlyUsageUsd(v)
-	return _c
-}
-
-// SetNillableMonthlyUsageUsd sets the "monthly_usage_usd" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableMonthlyUsageUsd(v *float64) *UserSubscriptionCreate {
-	if v != nil {
-		_c.SetMonthlyUsageUsd(*v)
-	}
-	return _c
-}
-
-// SetDailyLimitUsd sets the "daily_limit_usd" field.
-func (_c *UserSubscriptionCreate) SetDailyLimitUsd(v float64) *UserSubscriptionCreate {
-	_c.mutation.SetDailyLimitUsd(v)
-	return _c
-}
-
-// SetNillableDailyLimitUsd sets the "daily_limit_usd" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableDailyLimitUsd(v *float64) *UserSubscriptionCreate {
-	if v != nil {
-		_c.SetDailyLimitUsd(*v)
-	}
-	return _c
-}
-
-// SetWeeklyLimitUsd sets the "weekly_limit_usd" field.
-func (_c *UserSubscriptionCreate) SetWeeklyLimitUsd(v float64) *UserSubscriptionCreate {
-	_c.mutation.SetWeeklyLimitUsd(v)
-	return _c
-}
-
-// SetNillableWeeklyLimitUsd sets the "weekly_limit_usd" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableWeeklyLimitUsd(v *float64) *UserSubscriptionCreate {
-	if v != nil {
-		_c.SetWeeklyLimitUsd(*v)
-	}
-	return _c
-}
-
-// SetMonthlyLimitUsd sets the "monthly_limit_usd" field.
-func (_c *UserSubscriptionCreate) SetMonthlyLimitUsd(v float64) *UserSubscriptionCreate {
-	_c.mutation.SetMonthlyLimitUsd(v)
-	return _c
-}
-
-// SetNillableMonthlyLimitUsd sets the "monthly_limit_usd" field if the given value is not nil.
-func (_c *UserSubscriptionCreate) SetNillableMonthlyLimitUsd(v *float64) *UserSubscriptionCreate {
-	if v != nil {
-		_c.SetMonthlyLimitUsd(*v)
+		_c.SetTotalUsageUsd(*v)
 	}
 	return _c
 }
@@ -278,9 +188,9 @@ func (_c *UserSubscriptionCreate) SetUser(v *User) *UserSubscriptionCreate {
 	return _c.SetUserID(v.ID)
 }
 
-// SetGroup sets the "group" edge to the Group entity.
-func (_c *UserSubscriptionCreate) SetGroup(v *Group) *UserSubscriptionCreate {
-	return _c.SetGroupID(v.ID)
+// SetPlan sets the "plan" edge to the SubscriptionPlan entity.
+func (_c *UserSubscriptionCreate) SetPlan(v *SubscriptionPlan) *UserSubscriptionCreate {
+	return _c.SetPlanID(v.ID)
 }
 
 // SetAssignedByUserID sets the "assigned_by_user" edge to the User entity by ID.
@@ -372,17 +282,9 @@ func (_c *UserSubscriptionCreate) defaults() error {
 		v := usersubscription.DefaultStatus
 		_c.mutation.SetStatus(v)
 	}
-	if _, ok := _c.mutation.DailyUsageUsd(); !ok {
-		v := usersubscription.DefaultDailyUsageUsd
-		_c.mutation.SetDailyUsageUsd(v)
-	}
-	if _, ok := _c.mutation.WeeklyUsageUsd(); !ok {
-		v := usersubscription.DefaultWeeklyUsageUsd
-		_c.mutation.SetWeeklyUsageUsd(v)
-	}
-	if _, ok := _c.mutation.MonthlyUsageUsd(); !ok {
-		v := usersubscription.DefaultMonthlyUsageUsd
-		_c.mutation.SetMonthlyUsageUsd(v)
+	if _, ok := _c.mutation.TotalUsageUsd(); !ok {
+		v := usersubscription.DefaultTotalUsageUsd
+		_c.mutation.SetTotalUsageUsd(v)
 	}
 	if _, ok := _c.mutation.AssignedAt(); !ok {
 		if usersubscription.DefaultAssignedAt == nil {
@@ -405,9 +307,6 @@ func (_c *UserSubscriptionCreate) check() error {
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "UserSubscription.user_id"`)}
 	}
-	if _, ok := _c.mutation.GroupID(); !ok {
-		return &ValidationError{Name: "group_id", err: errors.New(`ent: missing required field "UserSubscription.group_id"`)}
-	}
 	if _, ok := _c.mutation.StartsAt(); !ok {
 		return &ValidationError{Name: "starts_at", err: errors.New(`ent: missing required field "UserSubscription.starts_at"`)}
 	}
@@ -422,23 +321,14 @@ func (_c *UserSubscriptionCreate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.status": %w`, err)}
 		}
 	}
-	if _, ok := _c.mutation.DailyUsageUsd(); !ok {
-		return &ValidationError{Name: "daily_usage_usd", err: errors.New(`ent: missing required field "UserSubscription.daily_usage_usd"`)}
-	}
-	if _, ok := _c.mutation.WeeklyUsageUsd(); !ok {
-		return &ValidationError{Name: "weekly_usage_usd", err: errors.New(`ent: missing required field "UserSubscription.weekly_usage_usd"`)}
-	}
-	if _, ok := _c.mutation.MonthlyUsageUsd(); !ok {
-		return &ValidationError{Name: "monthly_usage_usd", err: errors.New(`ent: missing required field "UserSubscription.monthly_usage_usd"`)}
+	if _, ok := _c.mutation.TotalUsageUsd(); !ok {
+		return &ValidationError{Name: "total_usage_usd", err: errors.New(`ent: missing required field "UserSubscription.total_usage_usd"`)}
 	}
 	if _, ok := _c.mutation.AssignedAt(); !ok {
 		return &ValidationError{Name: "assigned_at", err: errors.New(`ent: missing required field "UserSubscription.assigned_at"`)}
 	}
 	if len(_c.mutation.UserIDs()) == 0 {
 		return &ValidationError{Name: "user", err: errors.New(`ent: missing required edge "UserSubscription.user"`)}
-	}
-	if len(_c.mutation.GroupIDs()) == 0 {
-		return &ValidationError{Name: "group", err: errors.New(`ent: missing required edge "UserSubscription.group"`)}
 	}
 	return nil
 }
@@ -491,41 +381,13 @@ func (_c *UserSubscriptionCreate) createSpec() (*UserSubscription, *sqlgraph.Cre
 		_spec.SetField(usersubscription.FieldStatus, field.TypeString, value)
 		_node.Status = value
 	}
-	if value, ok := _c.mutation.DailyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldDailyWindowStart, field.TypeTime, value)
-		_node.DailyWindowStart = &value
+	if value, ok := _c.mutation.TotalLimitUsd(); ok {
+		_spec.SetField(usersubscription.FieldTotalLimitUsd, field.TypeFloat64, value)
+		_node.TotalLimitUsd = &value
 	}
-	if value, ok := _c.mutation.WeeklyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyWindowStart, field.TypeTime, value)
-		_node.WeeklyWindowStart = &value
-	}
-	if value, ok := _c.mutation.MonthlyWindowStart(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyWindowStart, field.TypeTime, value)
-		_node.MonthlyWindowStart = &value
-	}
-	if value, ok := _c.mutation.DailyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldDailyUsageUsd, field.TypeFloat64, value)
-		_node.DailyUsageUsd = value
-	}
-	if value, ok := _c.mutation.WeeklyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyUsageUsd, field.TypeFloat64, value)
-		_node.WeeklyUsageUsd = value
-	}
-	if value, ok := _c.mutation.MonthlyUsageUsd(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyUsageUsd, field.TypeFloat64, value)
-		_node.MonthlyUsageUsd = value
-	}
-	if value, ok := _c.mutation.DailyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldDailyLimitUsd, field.TypeFloat64, value)
-		_node.DailyLimitUsd = &value
-	}
-	if value, ok := _c.mutation.WeeklyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldWeeklyLimitUsd, field.TypeFloat64, value)
-		_node.WeeklyLimitUsd = &value
-	}
-	if value, ok := _c.mutation.MonthlyLimitUsd(); ok {
-		_spec.SetField(usersubscription.FieldMonthlyLimitUsd, field.TypeFloat64, value)
-		_node.MonthlyLimitUsd = &value
+	if value, ok := _c.mutation.TotalUsageUsd(); ok {
+		_spec.SetField(usersubscription.FieldTotalUsageUsd, field.TypeFloat64, value)
+		_node.TotalUsageUsd = value
 	}
 	if value, ok := _c.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)
@@ -552,21 +414,21 @@ func (_c *UserSubscriptionCreate) createSpec() (*UserSubscription, *sqlgraph.Cre
 		_node.UserID = nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
-	if nodes := _c.mutation.GroupIDs(); len(nodes) > 0 {
+	if nodes := _c.mutation.PlanIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
 			Inverse: true,
-			Table:   usersubscription.GroupTable,
-			Columns: []string{usersubscription.GroupColumn},
+			Table:   usersubscription.PlanTable,
+			Columns: []string{usersubscription.PlanColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(group.FieldID, field.TypeInt64),
+				IDSpec: sqlgraph.NewFieldSpec(subscriptionplan.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
-		_node.GroupID = nodes[0]
+		_node.PlanID = &nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := _c.mutation.AssignedByUserIDs(); len(nodes) > 0 {
@@ -696,15 +558,21 @@ func (u *UserSubscriptionUpsert) UpdateUserID() *UserSubscriptionUpsert {
 	return u
 }
 
-// SetGroupID sets the "group_id" field.
-func (u *UserSubscriptionUpsert) SetGroupID(v int64) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldGroupID, v)
+// SetPlanID sets the "plan_id" field.
+func (u *UserSubscriptionUpsert) SetPlanID(v int64) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldPlanID, v)
 	return u
 }
 
-// UpdateGroupID sets the "group_id" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateGroupID() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldGroupID)
+// UpdatePlanID sets the "plan_id" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdatePlanID() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldPlanID)
+	return u
+}
+
+// ClearPlanID clears the value of the "plan_id" field.
+func (u *UserSubscriptionUpsert) ClearPlanID() *UserSubscriptionUpsert {
+	u.SetNull(usersubscription.FieldPlanID)
 	return u
 }
 
@@ -744,183 +612,45 @@ func (u *UserSubscriptionUpsert) UpdateStatus() *UserSubscriptionUpsert {
 	return u
 }
 
-// SetDailyWindowStart sets the "daily_window_start" field.
-func (u *UserSubscriptionUpsert) SetDailyWindowStart(v time.Time) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldDailyWindowStart, v)
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (u *UserSubscriptionUpsert) SetTotalLimitUsd(v float64) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldTotalLimitUsd, v)
 	return u
 }
 
-// UpdateDailyWindowStart sets the "daily_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateDailyWindowStart() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldDailyWindowStart)
+// UpdateTotalLimitUsd sets the "total_limit_usd" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateTotalLimitUsd() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldTotalLimitUsd)
 	return u
 }
 
-// ClearDailyWindowStart clears the value of the "daily_window_start" field.
-func (u *UserSubscriptionUpsert) ClearDailyWindowStart() *UserSubscriptionUpsert {
-	u.SetNull(usersubscription.FieldDailyWindowStart)
+// AddTotalLimitUsd adds v to the "total_limit_usd" field.
+func (u *UserSubscriptionUpsert) AddTotalLimitUsd(v float64) *UserSubscriptionUpsert {
+	u.Add(usersubscription.FieldTotalLimitUsd, v)
 	return u
 }
 
-// SetWeeklyWindowStart sets the "weekly_window_start" field.
-func (u *UserSubscriptionUpsert) SetWeeklyWindowStart(v time.Time) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldWeeklyWindowStart, v)
+// ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
+func (u *UserSubscriptionUpsert) ClearTotalLimitUsd() *UserSubscriptionUpsert {
+	u.SetNull(usersubscription.FieldTotalLimitUsd)
 	return u
 }
 
-// UpdateWeeklyWindowStart sets the "weekly_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateWeeklyWindowStart() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldWeeklyWindowStart)
+// SetTotalUsageUsd sets the "total_usage_usd" field.
+func (u *UserSubscriptionUpsert) SetTotalUsageUsd(v float64) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldTotalUsageUsd, v)
 	return u
 }
 
-// ClearWeeklyWindowStart clears the value of the "weekly_window_start" field.
-func (u *UserSubscriptionUpsert) ClearWeeklyWindowStart() *UserSubscriptionUpsert {
-	u.SetNull(usersubscription.FieldWeeklyWindowStart)
+// UpdateTotalUsageUsd sets the "total_usage_usd" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateTotalUsageUsd() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldTotalUsageUsd)
 	return u
 }
 
-// SetMonthlyWindowStart sets the "monthly_window_start" field.
-func (u *UserSubscriptionUpsert) SetMonthlyWindowStart(v time.Time) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldMonthlyWindowStart, v)
-	return u
-}
-
-// UpdateMonthlyWindowStart sets the "monthly_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateMonthlyWindowStart() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldMonthlyWindowStart)
-	return u
-}
-
-// ClearMonthlyWindowStart clears the value of the "monthly_window_start" field.
-func (u *UserSubscriptionUpsert) ClearMonthlyWindowStart() *UserSubscriptionUpsert {
-	u.SetNull(usersubscription.FieldMonthlyWindowStart)
-	return u
-}
-
-// SetDailyUsageUsd sets the "daily_usage_usd" field.
-func (u *UserSubscriptionUpsert) SetDailyUsageUsd(v float64) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldDailyUsageUsd, v)
-	return u
-}
-
-// UpdateDailyUsageUsd sets the "daily_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateDailyUsageUsd() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldDailyUsageUsd)
-	return u
-}
-
-// AddDailyUsageUsd adds v to the "daily_usage_usd" field.
-func (u *UserSubscriptionUpsert) AddDailyUsageUsd(v float64) *UserSubscriptionUpsert {
-	u.Add(usersubscription.FieldDailyUsageUsd, v)
-	return u
-}
-
-// SetWeeklyUsageUsd sets the "weekly_usage_usd" field.
-func (u *UserSubscriptionUpsert) SetWeeklyUsageUsd(v float64) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldWeeklyUsageUsd, v)
-	return u
-}
-
-// UpdateWeeklyUsageUsd sets the "weekly_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateWeeklyUsageUsd() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldWeeklyUsageUsd)
-	return u
-}
-
-// AddWeeklyUsageUsd adds v to the "weekly_usage_usd" field.
-func (u *UserSubscriptionUpsert) AddWeeklyUsageUsd(v float64) *UserSubscriptionUpsert {
-	u.Add(usersubscription.FieldWeeklyUsageUsd, v)
-	return u
-}
-
-// SetMonthlyUsageUsd sets the "monthly_usage_usd" field.
-func (u *UserSubscriptionUpsert) SetMonthlyUsageUsd(v float64) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldMonthlyUsageUsd, v)
-	return u
-}
-
-// UpdateMonthlyUsageUsd sets the "monthly_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateMonthlyUsageUsd() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldMonthlyUsageUsd)
-	return u
-}
-
-// AddMonthlyUsageUsd adds v to the "monthly_usage_usd" field.
-func (u *UserSubscriptionUpsert) AddMonthlyUsageUsd(v float64) *UserSubscriptionUpsert {
-	u.Add(usersubscription.FieldMonthlyUsageUsd, v)
-	return u
-}
-
-// SetDailyLimitUsd sets the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsert) SetDailyLimitUsd(v float64) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldDailyLimitUsd, v)
-	return u
-}
-
-// UpdateDailyLimitUsd sets the "daily_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateDailyLimitUsd() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldDailyLimitUsd)
-	return u
-}
-
-// AddDailyLimitUsd adds v to the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsert) AddDailyLimitUsd(v float64) *UserSubscriptionUpsert {
-	u.Add(usersubscription.FieldDailyLimitUsd, v)
-	return u
-}
-
-// ClearDailyLimitUsd clears the value of the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsert) ClearDailyLimitUsd() *UserSubscriptionUpsert {
-	u.SetNull(usersubscription.FieldDailyLimitUsd)
-	return u
-}
-
-// SetWeeklyLimitUsd sets the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsert) SetWeeklyLimitUsd(v float64) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldWeeklyLimitUsd, v)
-	return u
-}
-
-// UpdateWeeklyLimitUsd sets the "weekly_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateWeeklyLimitUsd() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldWeeklyLimitUsd)
-	return u
-}
-
-// AddWeeklyLimitUsd adds v to the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsert) AddWeeklyLimitUsd(v float64) *UserSubscriptionUpsert {
-	u.Add(usersubscription.FieldWeeklyLimitUsd, v)
-	return u
-}
-
-// ClearWeeklyLimitUsd clears the value of the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsert) ClearWeeklyLimitUsd() *UserSubscriptionUpsert {
-	u.SetNull(usersubscription.FieldWeeklyLimitUsd)
-	return u
-}
-
-// SetMonthlyLimitUsd sets the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsert) SetMonthlyLimitUsd(v float64) *UserSubscriptionUpsert {
-	u.Set(usersubscription.FieldMonthlyLimitUsd, v)
-	return u
-}
-
-// UpdateMonthlyLimitUsd sets the "monthly_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsert) UpdateMonthlyLimitUsd() *UserSubscriptionUpsert {
-	u.SetExcluded(usersubscription.FieldMonthlyLimitUsd)
-	return u
-}
-
-// AddMonthlyLimitUsd adds v to the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsert) AddMonthlyLimitUsd(v float64) *UserSubscriptionUpsert {
-	u.Add(usersubscription.FieldMonthlyLimitUsd, v)
-	return u
-}
-
-// ClearMonthlyLimitUsd clears the value of the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsert) ClearMonthlyLimitUsd() *UserSubscriptionUpsert {
-	u.SetNull(usersubscription.FieldMonthlyLimitUsd)
+// AddTotalUsageUsd adds v to the "total_usage_usd" field.
+func (u *UserSubscriptionUpsert) AddTotalUsageUsd(v float64) *UserSubscriptionUpsert {
+	u.Add(usersubscription.FieldTotalUsageUsd, v)
 	return u
 }
 
@@ -1066,17 +796,24 @@ func (u *UserSubscriptionUpsertOne) UpdateUserID() *UserSubscriptionUpsertOne {
 	})
 }
 
-// SetGroupID sets the "group_id" field.
-func (u *UserSubscriptionUpsertOne) SetGroupID(v int64) *UserSubscriptionUpsertOne {
+// SetPlanID sets the "plan_id" field.
+func (u *UserSubscriptionUpsertOne) SetPlanID(v int64) *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetGroupID(v)
+		s.SetPlanID(v)
 	})
 }
 
-// UpdateGroupID sets the "group_id" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateGroupID() *UserSubscriptionUpsertOne {
+// UpdatePlanID sets the "plan_id" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdatePlanID() *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateGroupID()
+		s.UpdatePlanID()
+	})
+}
+
+// ClearPlanID clears the value of the "plan_id" field.
+func (u *UserSubscriptionUpsertOne) ClearPlanID() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.ClearPlanID()
 	})
 }
 
@@ -1122,213 +859,52 @@ func (u *UserSubscriptionUpsertOne) UpdateStatus() *UserSubscriptionUpsertOne {
 	})
 }
 
-// SetDailyWindowStart sets the "daily_window_start" field.
-func (u *UserSubscriptionUpsertOne) SetDailyWindowStart(v time.Time) *UserSubscriptionUpsertOne {
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (u *UserSubscriptionUpsertOne) SetTotalLimitUsd(v float64) *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetDailyWindowStart(v)
+		s.SetTotalLimitUsd(v)
 	})
 }
 
-// UpdateDailyWindowStart sets the "daily_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateDailyWindowStart() *UserSubscriptionUpsertOne {
+// AddTotalLimitUsd adds v to the "total_limit_usd" field.
+func (u *UserSubscriptionUpsertOne) AddTotalLimitUsd(v float64) *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateDailyWindowStart()
+		s.AddTotalLimitUsd(v)
 	})
 }
 
-// ClearDailyWindowStart clears the value of the "daily_window_start" field.
-func (u *UserSubscriptionUpsertOne) ClearDailyWindowStart() *UserSubscriptionUpsertOne {
+// UpdateTotalLimitUsd sets the "total_limit_usd" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateTotalLimitUsd() *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearDailyWindowStart()
+		s.UpdateTotalLimitUsd()
 	})
 }
 
-// SetWeeklyWindowStart sets the "weekly_window_start" field.
-func (u *UserSubscriptionUpsertOne) SetWeeklyWindowStart(v time.Time) *UserSubscriptionUpsertOne {
+// ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
+func (u *UserSubscriptionUpsertOne) ClearTotalLimitUsd() *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetWeeklyWindowStart(v)
+		s.ClearTotalLimitUsd()
 	})
 }
 
-// UpdateWeeklyWindowStart sets the "weekly_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateWeeklyWindowStart() *UserSubscriptionUpsertOne {
+// SetTotalUsageUsd sets the "total_usage_usd" field.
+func (u *UserSubscriptionUpsertOne) SetTotalUsageUsd(v float64) *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateWeeklyWindowStart()
+		s.SetTotalUsageUsd(v)
 	})
 }
 
-// ClearWeeklyWindowStart clears the value of the "weekly_window_start" field.
-func (u *UserSubscriptionUpsertOne) ClearWeeklyWindowStart() *UserSubscriptionUpsertOne {
+// AddTotalUsageUsd adds v to the "total_usage_usd" field.
+func (u *UserSubscriptionUpsertOne) AddTotalUsageUsd(v float64) *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearWeeklyWindowStart()
+		s.AddTotalUsageUsd(v)
 	})
 }
 
-// SetMonthlyWindowStart sets the "monthly_window_start" field.
-func (u *UserSubscriptionUpsertOne) SetMonthlyWindowStart(v time.Time) *UserSubscriptionUpsertOne {
+// UpdateTotalUsageUsd sets the "total_usage_usd" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateTotalUsageUsd() *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetMonthlyWindowStart(v)
-	})
-}
-
-// UpdateMonthlyWindowStart sets the "monthly_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateMonthlyWindowStart() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateMonthlyWindowStart()
-	})
-}
-
-// ClearMonthlyWindowStart clears the value of the "monthly_window_start" field.
-func (u *UserSubscriptionUpsertOne) ClearMonthlyWindowStart() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearMonthlyWindowStart()
-	})
-}
-
-// SetDailyUsageUsd sets the "daily_usage_usd" field.
-func (u *UserSubscriptionUpsertOne) SetDailyUsageUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetDailyUsageUsd(v)
-	})
-}
-
-// AddDailyUsageUsd adds v to the "daily_usage_usd" field.
-func (u *UserSubscriptionUpsertOne) AddDailyUsageUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddDailyUsageUsd(v)
-	})
-}
-
-// UpdateDailyUsageUsd sets the "daily_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateDailyUsageUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateDailyUsageUsd()
-	})
-}
-
-// SetWeeklyUsageUsd sets the "weekly_usage_usd" field.
-func (u *UserSubscriptionUpsertOne) SetWeeklyUsageUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetWeeklyUsageUsd(v)
-	})
-}
-
-// AddWeeklyUsageUsd adds v to the "weekly_usage_usd" field.
-func (u *UserSubscriptionUpsertOne) AddWeeklyUsageUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddWeeklyUsageUsd(v)
-	})
-}
-
-// UpdateWeeklyUsageUsd sets the "weekly_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateWeeklyUsageUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateWeeklyUsageUsd()
-	})
-}
-
-// SetMonthlyUsageUsd sets the "monthly_usage_usd" field.
-func (u *UserSubscriptionUpsertOne) SetMonthlyUsageUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetMonthlyUsageUsd(v)
-	})
-}
-
-// AddMonthlyUsageUsd adds v to the "monthly_usage_usd" field.
-func (u *UserSubscriptionUpsertOne) AddMonthlyUsageUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddMonthlyUsageUsd(v)
-	})
-}
-
-// UpdateMonthlyUsageUsd sets the "monthly_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateMonthlyUsageUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateMonthlyUsageUsd()
-	})
-}
-
-// SetDailyLimitUsd sets the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) SetDailyLimitUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetDailyLimitUsd(v)
-	})
-}
-
-// AddDailyLimitUsd adds v to the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) AddDailyLimitUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddDailyLimitUsd(v)
-	})
-}
-
-// UpdateDailyLimitUsd sets the "daily_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateDailyLimitUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateDailyLimitUsd()
-	})
-}
-
-// ClearDailyLimitUsd clears the value of the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) ClearDailyLimitUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearDailyLimitUsd()
-	})
-}
-
-// SetWeeklyLimitUsd sets the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) SetWeeklyLimitUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetWeeklyLimitUsd(v)
-	})
-}
-
-// AddWeeklyLimitUsd adds v to the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) AddWeeklyLimitUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddWeeklyLimitUsd(v)
-	})
-}
-
-// UpdateWeeklyLimitUsd sets the "weekly_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateWeeklyLimitUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateWeeklyLimitUsd()
-	})
-}
-
-// ClearWeeklyLimitUsd clears the value of the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) ClearWeeklyLimitUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearWeeklyLimitUsd()
-	})
-}
-
-// SetMonthlyLimitUsd sets the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) SetMonthlyLimitUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetMonthlyLimitUsd(v)
-	})
-}
-
-// AddMonthlyLimitUsd adds v to the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) AddMonthlyLimitUsd(v float64) *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddMonthlyLimitUsd(v)
-	})
-}
-
-// UpdateMonthlyLimitUsd sets the "monthly_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertOne) UpdateMonthlyLimitUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateMonthlyLimitUsd()
-	})
-}
-
-// ClearMonthlyLimitUsd clears the value of the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsertOne) ClearMonthlyLimitUsd() *UserSubscriptionUpsertOne {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearMonthlyLimitUsd()
+		s.UpdateTotalUsageUsd()
 	})
 }
 
@@ -1648,17 +1224,24 @@ func (u *UserSubscriptionUpsertBulk) UpdateUserID() *UserSubscriptionUpsertBulk 
 	})
 }
 
-// SetGroupID sets the "group_id" field.
-func (u *UserSubscriptionUpsertBulk) SetGroupID(v int64) *UserSubscriptionUpsertBulk {
+// SetPlanID sets the "plan_id" field.
+func (u *UserSubscriptionUpsertBulk) SetPlanID(v int64) *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetGroupID(v)
+		s.SetPlanID(v)
 	})
 }
 
-// UpdateGroupID sets the "group_id" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateGroupID() *UserSubscriptionUpsertBulk {
+// UpdatePlanID sets the "plan_id" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdatePlanID() *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateGroupID()
+		s.UpdatePlanID()
+	})
+}
+
+// ClearPlanID clears the value of the "plan_id" field.
+func (u *UserSubscriptionUpsertBulk) ClearPlanID() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.ClearPlanID()
 	})
 }
 
@@ -1704,213 +1287,52 @@ func (u *UserSubscriptionUpsertBulk) UpdateStatus() *UserSubscriptionUpsertBulk 
 	})
 }
 
-// SetDailyWindowStart sets the "daily_window_start" field.
-func (u *UserSubscriptionUpsertBulk) SetDailyWindowStart(v time.Time) *UserSubscriptionUpsertBulk {
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (u *UserSubscriptionUpsertBulk) SetTotalLimitUsd(v float64) *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetDailyWindowStart(v)
+		s.SetTotalLimitUsd(v)
 	})
 }
 
-// UpdateDailyWindowStart sets the "daily_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateDailyWindowStart() *UserSubscriptionUpsertBulk {
+// AddTotalLimitUsd adds v to the "total_limit_usd" field.
+func (u *UserSubscriptionUpsertBulk) AddTotalLimitUsd(v float64) *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateDailyWindowStart()
+		s.AddTotalLimitUsd(v)
 	})
 }
 
-// ClearDailyWindowStart clears the value of the "daily_window_start" field.
-func (u *UserSubscriptionUpsertBulk) ClearDailyWindowStart() *UserSubscriptionUpsertBulk {
+// UpdateTotalLimitUsd sets the "total_limit_usd" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateTotalLimitUsd() *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearDailyWindowStart()
+		s.UpdateTotalLimitUsd()
 	})
 }
 
-// SetWeeklyWindowStart sets the "weekly_window_start" field.
-func (u *UserSubscriptionUpsertBulk) SetWeeklyWindowStart(v time.Time) *UserSubscriptionUpsertBulk {
+// ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
+func (u *UserSubscriptionUpsertBulk) ClearTotalLimitUsd() *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetWeeklyWindowStart(v)
+		s.ClearTotalLimitUsd()
 	})
 }
 
-// UpdateWeeklyWindowStart sets the "weekly_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateWeeklyWindowStart() *UserSubscriptionUpsertBulk {
+// SetTotalUsageUsd sets the "total_usage_usd" field.
+func (u *UserSubscriptionUpsertBulk) SetTotalUsageUsd(v float64) *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateWeeklyWindowStart()
+		s.SetTotalUsageUsd(v)
 	})
 }
 
-// ClearWeeklyWindowStart clears the value of the "weekly_window_start" field.
-func (u *UserSubscriptionUpsertBulk) ClearWeeklyWindowStart() *UserSubscriptionUpsertBulk {
+// AddTotalUsageUsd adds v to the "total_usage_usd" field.
+func (u *UserSubscriptionUpsertBulk) AddTotalUsageUsd(v float64) *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearWeeklyWindowStart()
+		s.AddTotalUsageUsd(v)
 	})
 }
 
-// SetMonthlyWindowStart sets the "monthly_window_start" field.
-func (u *UserSubscriptionUpsertBulk) SetMonthlyWindowStart(v time.Time) *UserSubscriptionUpsertBulk {
+// UpdateTotalUsageUsd sets the "total_usage_usd" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateTotalUsageUsd() *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetMonthlyWindowStart(v)
-	})
-}
-
-// UpdateMonthlyWindowStart sets the "monthly_window_start" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateMonthlyWindowStart() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateMonthlyWindowStart()
-	})
-}
-
-// ClearMonthlyWindowStart clears the value of the "monthly_window_start" field.
-func (u *UserSubscriptionUpsertBulk) ClearMonthlyWindowStart() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearMonthlyWindowStart()
-	})
-}
-
-// SetDailyUsageUsd sets the "daily_usage_usd" field.
-func (u *UserSubscriptionUpsertBulk) SetDailyUsageUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetDailyUsageUsd(v)
-	})
-}
-
-// AddDailyUsageUsd adds v to the "daily_usage_usd" field.
-func (u *UserSubscriptionUpsertBulk) AddDailyUsageUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddDailyUsageUsd(v)
-	})
-}
-
-// UpdateDailyUsageUsd sets the "daily_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateDailyUsageUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateDailyUsageUsd()
-	})
-}
-
-// SetWeeklyUsageUsd sets the "weekly_usage_usd" field.
-func (u *UserSubscriptionUpsertBulk) SetWeeklyUsageUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetWeeklyUsageUsd(v)
-	})
-}
-
-// AddWeeklyUsageUsd adds v to the "weekly_usage_usd" field.
-func (u *UserSubscriptionUpsertBulk) AddWeeklyUsageUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddWeeklyUsageUsd(v)
-	})
-}
-
-// UpdateWeeklyUsageUsd sets the "weekly_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateWeeklyUsageUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateWeeklyUsageUsd()
-	})
-}
-
-// SetMonthlyUsageUsd sets the "monthly_usage_usd" field.
-func (u *UserSubscriptionUpsertBulk) SetMonthlyUsageUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetMonthlyUsageUsd(v)
-	})
-}
-
-// AddMonthlyUsageUsd adds v to the "monthly_usage_usd" field.
-func (u *UserSubscriptionUpsertBulk) AddMonthlyUsageUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddMonthlyUsageUsd(v)
-	})
-}
-
-// UpdateMonthlyUsageUsd sets the "monthly_usage_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateMonthlyUsageUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateMonthlyUsageUsd()
-	})
-}
-
-// SetDailyLimitUsd sets the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) SetDailyLimitUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetDailyLimitUsd(v)
-	})
-}
-
-// AddDailyLimitUsd adds v to the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) AddDailyLimitUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddDailyLimitUsd(v)
-	})
-}
-
-// UpdateDailyLimitUsd sets the "daily_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateDailyLimitUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateDailyLimitUsd()
-	})
-}
-
-// ClearDailyLimitUsd clears the value of the "daily_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) ClearDailyLimitUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearDailyLimitUsd()
-	})
-}
-
-// SetWeeklyLimitUsd sets the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) SetWeeklyLimitUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetWeeklyLimitUsd(v)
-	})
-}
-
-// AddWeeklyLimitUsd adds v to the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) AddWeeklyLimitUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddWeeklyLimitUsd(v)
-	})
-}
-
-// UpdateWeeklyLimitUsd sets the "weekly_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateWeeklyLimitUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateWeeklyLimitUsd()
-	})
-}
-
-// ClearWeeklyLimitUsd clears the value of the "weekly_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) ClearWeeklyLimitUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearWeeklyLimitUsd()
-	})
-}
-
-// SetMonthlyLimitUsd sets the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) SetMonthlyLimitUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.SetMonthlyLimitUsd(v)
-	})
-}
-
-// AddMonthlyLimitUsd adds v to the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) AddMonthlyLimitUsd(v float64) *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.AddMonthlyLimitUsd(v)
-	})
-}
-
-// UpdateMonthlyLimitUsd sets the "monthly_limit_usd" field to the value that was provided on create.
-func (u *UserSubscriptionUpsertBulk) UpdateMonthlyLimitUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.UpdateMonthlyLimitUsd()
-	})
-}
-
-// ClearMonthlyLimitUsd clears the value of the "monthly_limit_usd" field.
-func (u *UserSubscriptionUpsertBulk) ClearMonthlyLimitUsd() *UserSubscriptionUpsertBulk {
-	return u.Update(func(s *UserSubscriptionUpsert) {
-		s.ClearMonthlyLimitUsd()
+		s.UpdateTotalUsageUsd()
 	})
 }
 

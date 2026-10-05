@@ -1,45 +1,32 @@
-import type { Group, UserSubscription } from '@/types'
+import type { UserSubscription } from '@/types'
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
 /**
- * 订阅的生效额度（与后端 UserSubscription.EffectiveDailyLimit 同构）：
- * 1. 订阅自有额度（daily_limit_usd）优先，null/<=0 视为不限额；
- * 2. 仅当订阅确实归属该分组（group_id === group.id，且非个人订阅 0）时，才继承分组额度；
- * 3. 都不满足返回 null = 不限额。
+ * 订阅生效额度（与后端 UserSubscription.EffectiveTotalLimit 同构）：
+ * 总额度只长在钱包自身（发放时从套餐快照进订阅行），null / <=0 视为不限额。
  *
- * 注意：不可写成 `sub.daily_limit_usd ?? sub.group?.daily_limit_usd`，
- * 那会在「个人订阅挂在某个展示分组上」时错误继承分组额度。
+ * 订阅不绑定分组、不继承分组额度（2026-10-03 重构）：旧版的日/周/月三档
+ * 以及「回退继承分组额度」逻辑已全部退役，因此本函数不再接受 group 入参。
  */
-function effectiveSubLimit(
-  sub: Pick<UserSubscription, 'group_id' | 'daily_limit_usd' | 'weekly_limit_usd' | 'monthly_limit_usd'>,
-  group: Pick<Group, 'id' | 'daily_limit_usd' | 'weekly_limit_usd' | 'monthly_limit_usd'> | undefined | null,
-  field: 'daily_limit_usd' | 'weekly_limit_usd' | 'monthly_limit_usd'
+export function effectiveTotalLimit(
+  sub: Pick<UserSubscription, 'total_limit_usd'> | null | undefined
 ): number | null {
-  const own = sub?.[field]
-  if (own != null && own > 0) return own
-  // 个人订阅（group_id=0）不继承任何分组额度
-  if (!group || sub.group_id === 0 || sub.group_id !== group.id) return null
-  const inherited = group[field]
-  return inherited != null && inherited > 0 ? inherited : null
+  const own = sub?.total_limit_usd
+  return own != null && own > 0 ? own : null
 }
 
-export const effectiveDailyLimit = (sub: UserSubscription, group?: Group | null) =>
-  effectiveSubLimit(sub, group, 'daily_limit_usd')
+/** 订阅是否不限额（总额池未设有效额度） */
+export function subscriptionHasNoLimit(sub: UserSubscription): boolean {
+  return effectiveTotalLimit(sub) == null
+}
 
-export const effectiveWeeklyLimit = (sub: UserSubscription, group?: Group | null) =>
-  effectiveSubLimit(sub, group, 'weekly_limit_usd')
-
-export const effectiveMonthlyLimit = (sub: UserSubscription, group?: Group | null) =>
-  effectiveSubLimit(sub, group, 'monthly_limit_usd')
-
-/** 订阅是否不限额（三个窗口都没有生效额度） */
-export function subscriptionHasNoLimit(sub: UserSubscription, group?: Group | null): boolean {
-  return (
-    effectiveDailyLimit(sub, group) == null &&
-    effectiveWeeklyLimit(sub, group) == null &&
-    effectiveMonthlyLimit(sub, group) == null
-  )
+/** 订阅总额池已用占比（0~100）；不限额返回 0 */
+export function subscriptionUsagePercentage(sub: UserSubscription): number {
+  const limit = effectiveTotalLimit(sub)
+  if (!limit) return 0
+  const percentage = ((sub.total_usage_usd || 0) / limit) * 100
+  return Number.isFinite(percentage) ? percentage : 0
 }
 
 export type ExpirationDateRelation = 'expired' | 'today' | 'tomorrow' | 'later'

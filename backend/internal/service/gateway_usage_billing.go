@@ -37,11 +37,15 @@ func (s *GatewayService) ResolveUserGroupRateMultiplier(ctx context.Context, use
 // RecordUsageInput 记录使用量的输入参数。
 // 异步 worker 只接收计费所需快照，不能持有 ParsedRequest/RequestBodyRef 这类大请求体引用。
 type RecordUsageInput struct {
-	Result             *ForwardResult
-	APIKey             *APIKey
-	User               *User
-	Account            *Account
-	Subscription       *UserSubscription  // 可选：订阅信息
+	Result  *ForwardResult
+	APIKey  *APIKey
+	User    *User
+	Account *Account
+	// Subscriptions 为该用户当前全部生效订阅钱包（先到期先消耗顺序）。空切片 = 无钱包，按余额扣费。
+	Subscriptions []*UserSubscription
+	// Deprecated: 单份订阅遗留字段，仅供尚未迁移的调用方使用；会被并入 Subscriptions。
+	// 新调用方一律传 Subscriptions（见 middleware.GetSubscriptionsFromContext）。
+	Subscription       *UserSubscription
 	PricingAt          time.Time          // token 售价固定时刻；零值保持既有的记录时刻语义
 	InboundEndpoint    string             // 入站端点（客户端请求路径）
 	UpstreamEndpoint   string             // 上游端点（标准化后的上游路径）
@@ -72,10 +76,14 @@ type usageLogBestEffortWriter interface {
 
 // postUsageBillingParams 统一扣费所需的参数
 type postUsageBillingParams struct {
-	Cost                  *CostBreakdown
-	User                  *User
-	APIKey                *APIKey
-	Account               *Account
+	Cost    *CostBreakdown
+	User    *User
+	APIKey  *APIKey
+	Account *Account
+	// Subscriptions 为参与扣费的全部生效订阅钱包；IsSubscriptionBill 由
+	// SubscriptionWalletTakesOver(Subscriptions) 决定，两者必须同源。
+	Subscriptions []*UserSubscription
+	// Deprecated: 单份订阅遗留字段，仅供尚未迁移的调用方使用；会被并入 Subscriptions。
 	Subscription          *UserSubscription
 	RequestPayloadHash    string
 	IsSubscriptionBill    bool
@@ -129,10 +137,65 @@ func (p *postUsageBillingParams) shouldUpdateAccountQuota() bool {
 	return p.Cost.TotalCost > 0 && p.Account.IsAPIKeyOrBedrock() && p.Account.HasAnyQuotaLimit()
 }
 
+// normalize 统一扣费入口的钱包归一化：尚未迁移到多钱包字段的调用方仍只传
+// 已废弃的单份 Subscription，这里并入 Subscriptions，避免它们在钱包判定处被
+// 误读成「无钱包」而错走余额扣费（对已扣订阅额度的请求二次扣余额 = 乱扣费）。
+// 同时兜住只给 Subscriptions 不给 IsSubscriptionBill 的调用方：计费模式与钱包
+// 集合必须同源，不得靠调用方自己随手设一个 bool。
+func (p *postUsageBillingParams) normalize() {
+	if p == nil {
+		return
+	}
+	if len(p.Subscriptions) == 0 && p.Subscription != nil {
+		p.Subscriptions = append(p.Subscriptions, p.Subscription)
+	}
+	if !p.IsSubscriptionBill && SubscriptionWalletTakesOver(p.Subscriptions) {
+		p.IsSubscriptionBill = true
+	}
+}
+
+// resolveBillingSubscriptions 归一化调用方传入的订阅钱包集合：优先使用多份钱包
+// （Subscriptions），否则回退到已废弃的单份字段（Subscription）。返回的切片顺序
+// 保持调用方给定顺序（即 expires_at 升序 = 先到期先消耗）。
+func resolveBillingSubscriptions(subscriptions []*UserSubscription, legacy *UserSubscription) []*UserSubscription {
+	if len(subscriptions) > 0 {
+		out := make([]*UserSubscription, 0, len(subscriptions))
+		for _, sub := range subscriptions {
+			if sub != nil {
+				out = append(out, sub)
+			}
+		}
+		return out
+	}
+	if legacy != nil {
+		return []*UserSubscription{legacy}
+	}
+	return nil
+}
+
+// subscriptionsWithLimit 返回钱包中「至少设了额度」且应被优先消耗的那一份订阅。
+// 全部不限额时回退到任意一份生效订阅，保持用量至少有一个可追溯归属。
+//
+// 实现已收拢到 FirstBillableSubscription（service 层单一口径）：它与计费仓储
+// repo.Apply 的归属/拆分共用同一函数，避免两处「先到期先消耗」各自漂移。
+func subscriptionsWithLimit(subscriptions []*UserSubscription) *UserSubscription {
+	return FirstBillableSubscription(subscriptions)
+}
+
+// allocateSubscriptionRecordings 把一笔费用按「先到期先消耗」拆到多份订阅钱包上。
+//
+// 实现已收拢到 service.AllocateSubscriptionRecordings（与主计费路径同一口径）：
+// 装不下时把余量整笔记到首选钱包、让用量合法越界（后续请求被预检 429），
+// 而不是丢弃拆分——订阅扣费发生在请求完成之后，这笔钱用户已经欠下。
+func allocateSubscriptionRecordings(subscriptions []*UserSubscription, cost float64) []SubscriptionAllocation {
+	return AllocateSubscriptionRecordings(subscriptions, cost)
+}
+
 // postUsageBilling is the legacy fallback billing path used when the unified
 // billing repo is unavailable (nil). Production uses applyUsageBilling → repo.Apply
 // for atomic billing. This path only runs in tests or degraded mode.
 func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps) {
+	p.normalize()
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
 
@@ -141,9 +204,40 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
 	if p.IsSubscriptionBill {
 		// Subscription usage tracked by ActualCost so group rate multiplier
 		// consumes the quota at the expected speed.
-		if cost.ActualCost > 0 {
-			if err := deps.userSubRepo.IncrementUsage(billingCtx, p.Subscription.ID, cost.ActualCost); err != nil {
-				slog.Error("increment subscription usage failed", "subscription_id", p.Subscription.ID, "error", err)
+		// 多钱包逐行拆分记账（先到期先消耗）；本降级路径无原子事务，故逐行写库。
+		if cost.ActualCost > 0 && deps.userSubRepo != nil {
+			// 【不得拿 p.Subscriptions 做拆分依据】它是 L1 缓存里的陈旧用量。主路径
+			// （buildUsageBillingCommand :386-387）已明文禁止：“拿旧用量拆分会把钱记到一个
+			// 其实已花完的钱包上（该行超额、另一行有余量却被越过 = 双向错账）”。
+			// 降级路径没有行锁可依靠，至少要让拆分基于当下真实用量：直读 DB 取钱包。
+			// 读失败时退回传入切片（不阻断记账 —— 请求已发生，钱必须记）。
+			wallets := p.Subscriptions
+			if p.User != nil {
+				if fresh, err := deps.userSubRepo.ListActiveByUserID(billingCtx, p.User.ID); err != nil {
+					slog.Warn("degraded billing: reload subscription wallets failed, using cached slice",
+						"user_id", p.User.ID, "error", err)
+				} else if len(fresh) > 0 {
+					// ListActiveByUserID 返回值切片（与聚合侧 aggregateSubscriptionWallet 同一口径），
+					// 而拆分函数要指针切片；逐元素取址而不是直接 append 循环变量地址。
+					wallets = make([]*UserSubscription, 0, len(fresh))
+					for i := range fresh {
+						wallets = append(wallets, &fresh[i])
+					}
+				}
+			}
+			recorded := 0.0
+			for _, alloc := range allocateSubscriptionRecordings(wallets, cost.ActualCost) {
+				if err := deps.userSubRepo.IncrementUsage(billingCtx, alloc.SubscriptionID, alloc.Amount); err != nil {
+					slog.Error("increment subscription usage failed", "subscription_id", alloc.SubscriptionID, "amount", alloc.Amount, "error", err)
+					continue
+				}
+				recorded += alloc.Amount
+			}
+			// 【降级路径以前从不写缓存】DB 已累加，但 Redis 订阅用量没动；而
+			// GetSubscriptionStatus 命中缓存就返回、不回源 → 后续准入拿旧用量
+			// → 「额度已尽仍放行」直到 TTL 自然过期。与主路径 finalizePostUsageBilling 同源。
+			if recorded > 0 && deps.billingCacheService != nil && p.User != nil {
+				deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, recorded)
 			}
 		}
 	} else {
@@ -278,6 +372,7 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	if p == nil || p.Cost == nil || p.APIKey == nil || p.User == nil || p.Account == nil {
 		return nil
 	}
+	p.normalize()
 
 	cmd := &UsageBillingCommand{
 		RequestID:          requestID,
@@ -310,9 +405,28 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	// user-specific) rate multiplier consumes subscription quota at the expected
 	// speed. TotalCost remains the raw (pre-multiplier) value; downstream guards
 	// on "> 0" still correctly skip free subscriptions (RateMultiplier == 0).
-	if p.IsSubscriptionBill && p.Subscription != nil && p.Cost.TotalCost > 0 {
-		cmd.SubscriptionID = &p.Subscription.ID
-		cmd.SubscriptionCost = p.Cost.ActualCost
+	// 订阅钱包扣费：以 ActualCost 计量，使分组（及用户专属）倍率按预期速度消耗额度。
+	// TotalCost 仍是乘倍率前的原始值；下游对 "> 0" 的保护仍能正确跳过免费订阅。
+	//
+	// cmd.SubscriptionID 在此只作为**归属兑底**（usage_log 展示 + 锁不到行时的归行）；
+	// 真正的多行拆分在计费仓储事务内完成（repository.applySubscriptionCost：锁定读
+	// 该用户全部生效钱包后走 AllocateSubscriptionRecordings）。
+	// 拆分**不得**在此处预算：p.Subscriptions 可能是 L1 里的陈旧用量，拿旧用量拆分
+	// 会把钱记到一个其实已花完的钱包上（该行超额、另一行有余量却被越过 = 双向错账）。
+	if p.IsSubscriptionBill && p.Cost.TotalCost > 0 {
+		if primary := subscriptionsWithLimit(p.Subscriptions); primary != nil {
+			cmd.SubscriptionID = &primary.ID
+			cmd.SubscriptionCost = p.Cost.ActualCost
+		} else {
+			// 计费模式说「走订阅钱包」但一个钱包行都选不出来：预检已跳过余额检查，
+			// 这笔钱既不进钱包也不进余额 = 纯损失。保留告警让 ops 能根据 usage_log 对账。
+			slog.Warn("subscription billing mode but no wallet row available; cost not recorded",
+				"user_id", p.User.ID,
+				"request_id", requestID,
+				"actual_cost", p.Cost.ActualCost,
+				"wallet_count", len(p.Subscriptions),
+			)
+		}
 	} else if p.Cost.ActualCost > 0 {
 		cmd.BalanceCost = p.Cost.ActualCost
 	}
@@ -335,6 +449,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	if p == nil || deps == nil {
 		return false, nil
 	}
+	p.normalize()
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
 	if cmd == nil || cmd.RequestID == "" || repo == nil {
@@ -365,33 +480,30 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	return true, nil
 }
 
-// subscriptionUsageSlot 返回用量缓存应写入的 group_id 槽位：
-// 以订阅自身的 GroupID 为准（个人订阅=0），回退到 Key 的分组。
-// ok=false 表示无法确定槽位（调用方应跳过用量写入）。
-func subscriptionUsageSlot(p *postUsageBillingParams) (int64, bool) {
-	if p == nil {
-		return 0, false
-	}
-	if p.Subscription != nil {
-		return p.Subscription.GroupID, true
-	}
-	if p.APIKey != nil && p.APIKey.GroupID != nil {
-		return *p.APIKey.GroupID, true
-	}
-	return 0, false
-}
-
 func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
 	if p == nil || p.Cost == nil || deps == nil {
 		return
 	}
+	p.normalize()
 
-	if p.IsSubscriptionBill && p.Cost.ActualCost > 0 && p.User != nil {
-		// 用量写入的缓存槽位必须与资格检查读取的一致：个人订阅（GroupID=0）不落在请求分组上。
-		// 以订阅为优先，不依赖 Key 是否绑定了分组（未绑分组的 Key 同样不能漏记）。
-		usageSlotGroupID, ok := subscriptionUsageSlot(p)
-		if ok {
-			deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, usageSlotGroupID, p.Cost.ActualCost)
+	if p.IsSubscriptionBill && p.Cost.ActualCost > 0 && p.User != nil && deps.billingCacheService != nil {
+		// 订阅用量缓存已收敛为 user 单键（billing:sub:<userID>）：不再有分组槽位，
+		// 写入必须与资格检查读的是同一个键，否则会出现「已扣费但预检看不到」。
+		//
+		// 【不得拿 ActualCost 当全额】仓储层在「锁不到任何生效钱包」时会把这笔钱回落到
+		// 余额（宁可透支不白送），此时订阅钱包并未实际扣减。若仍按全额累加缓存，
+		// 预检会看到虚高用量而提前 429（用户明明没钱花了却被拦），且余额侧缓存反而
+		// 永不更新（走不进 else 分支）—— 两头全部失真。
+		fallback := 0.0
+		if result != nil {
+			fallback = result.SubscriptionFallbackAmount
+		}
+		if recorded := p.Cost.ActualCost - fallback; recorded > 0 {
+			deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, recorded)
+		}
+		if fallback > 0 {
+			// 回落部分落在余额上：同步余额缓存，让下一次预检能看到。
+			syncBalanceCacheAfterDeduction(ctx, p, deps, result)
 		}
 	} else if p.Cost.ActualCost > 0 && p.User != nil {
 		syncBalanceCacheAfterDeduction(ctx, p, deps, result)
@@ -626,7 +738,7 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		APIKey:             input.APIKey,
 		User:               input.User,
 		Account:            input.Account,
-		Subscription:       input.Subscription,
+		Subscriptions:      resolveBillingSubscriptions(input.Subscriptions, input.Subscription),
 		PricingAt:          input.PricingAt,
 		InboundEndpoint:    input.InboundEndpoint,
 		UpstreamEndpoint:   input.UpstreamEndpoint,
@@ -643,11 +755,12 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 
 // recordUsageCoreInput 是 recordUsageCore 的公共输入字段，从两种输入结构体中提取。
 type recordUsageCoreInput struct {
-	Result             *ForwardResult
-	APIKey             *APIKey
-	User               *User
-	Account            *Account
-	Subscription       *UserSubscription
+	Result  *ForwardResult
+	APIKey  *APIKey
+	User    *User
+	Account *Account
+	// Subscriptions 为该用户全部生效订阅钱包（expires_at 升序 = 先到期先消耗）。
+	Subscriptions      []*UserSubscription
 	PricingAt          time.Time
 	InboundEndpoint    string
 	UpstreamEndpoint   string
@@ -741,7 +854,8 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	apiKey := input.APIKey
 	user := input.User
 	account := input.Account
-	subscription := input.Subscription
+	// 订阅钱包集合：调用方给多份则直接用，只给了旧的单份字段时归一为一元切片。
+	subscriptions := input.Subscriptions
 	ApplyForwardImageBillingResolution(result)
 	logServiceTierBillingDowngrade("service.gateway", account, result.RequestID, ApplyForwardServiceTierBillingResolution(result))
 
@@ -829,12 +943,12 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		}
 	}
 
-	// 判断计费方式：订阅模式 vs 余额模式
-	// 个人订阅（GroupID=0）不依赖分组类型，普通分组下同样走订阅扣费；
-	// 但必须至少有一项额度才接管，否则退回余额计费（避开「空额度 = 全平台免费」的资损）。
-	isSubscriptionBilling := subscription != nil &&
-		((apiKey.Group != nil && apiKey.Group.IsSubscriptionType()) ||
-			(subscription.GroupID == 0 && subscription.HasEffectiveLimit(apiKey.Group)))
+	// 判断计费方式：订阅钱包 vs 余额模式。
+	// 不再参考分组 subscription_type（订阅不绑分组），也不再取单份代表全部：
+	// 统一用 SubscriptionWalletTakesOver（至少一份钱包设了额度才接管扣费），
+	// 与 CheckBillingEligibility 同口径；全部不限额时静默退回余额计费
+	// （避开「空额度 = 全平台免费」的资损口子，不得放宽）。
+	isSubscriptionBilling := SubscriptionWalletTakesOver(subscriptions)
 	billingType := BillingTypeBalance
 	if isSubscriptionBilling {
 		billingType = BillingTypeSubscription
@@ -842,7 +956,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	// 创建使用日志
 	accountRateMultiplier := account.BillingRateMultiplier()
-	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscription,
+	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscriptions,
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost)
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
@@ -885,7 +999,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		User:                  user,
 		APIKey:                apiKey,
 		Account:               account,
-		Subscription:          subscription,
+		Subscriptions:         subscriptions,
 		RequestPayloadHash:    resolveUsageBillingPayloadFingerprint(ctx, input.RequestPayloadHash),
 		IsSubscriptionBill:    isSubscriptionBilling,
 		AccountRateMultiplier: accountRateMultiplier,
@@ -1145,7 +1259,7 @@ func (s *GatewayService) buildRecordUsageLog(
 	apiKey *APIKey,
 	user *User,
 	account *Account,
-	subscription *UserSubscription,
+	subscriptions []*UserSubscription,
 	requestedModel string,
 	multiplier float64,
 	imageMultiplier float64,
@@ -1209,7 +1323,7 @@ func (s *GatewayService) buildRecordUsageLog(
 		IPAddress:                optionalTrimmedStringPtr(input.IPAddress),
 		SessionID:                optionalTrimmedStringPtr(input.SessionID),
 		GroupID:                  apiKey.GroupID,
-		SubscriptionID:           optionalSubscriptionID(subscription),
+		SubscriptionID:           primarySubscriptionID(subscriptions),
 		CreatedAt:                time.Now(),
 	}
 	if result.ImageCount > 0 && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
@@ -1243,9 +1357,11 @@ func resolveBillingMode(result *ForwardResult, cost *CostBreakdown) *string {
 	return &mode
 }
 
-func optionalSubscriptionID(subscription *UserSubscription) *int64 {
-	if subscription != nil {
-		return &subscription.ID
+// primarySubscriptionID 返回用量行应归属的订阅钱包 ID（与原子记账同一选择逻辑：
+// 先到期先消耗、优先有限额钱包），无钱包时返回 nil。
+func primarySubscriptionID(subscriptions []*UserSubscription) *int64 {
+	if primary := subscriptionsWithLimit(subscriptions); primary != nil {
+		return &primary.ID
 	}
 	return nil
 }

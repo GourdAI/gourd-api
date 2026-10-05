@@ -70,8 +70,9 @@ func TestBillingKeyGeneration(t *testing.T) {
 	})
 
 	t.Run("sub_key", func(t *testing.T) {
-		key := billingSubKey(100, 200)
-		assert.Equal(t, "billing:sub:100:200", key)
+		// 订阅钱包缓存不再按分组寻址：键收敛为 billing:sub:<userID>
+		key := billingSubKey(100)
+		assert.Equal(t, "billing:sub:100", key)
 	})
 }
 

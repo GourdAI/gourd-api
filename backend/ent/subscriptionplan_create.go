@@ -12,6 +12,7 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
+	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 )
 
 // SubscriptionPlanCreate is the builder for creating a SubscriptionPlan entity.
@@ -51,6 +52,20 @@ func (_c *SubscriptionPlanCreate) SetNillableDescription(v *string) *Subscriptio
 // SetPrice sets the "price" field.
 func (_c *SubscriptionPlanCreate) SetPrice(v float64) *SubscriptionPlanCreate {
 	_c.mutation.SetPrice(v)
+	return _c
+}
+
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (_c *SubscriptionPlanCreate) SetTotalLimitUsd(v float64) *SubscriptionPlanCreate {
+	_c.mutation.SetTotalLimitUsd(v)
+	return _c
+}
+
+// SetNillableTotalLimitUsd sets the "total_limit_usd" field if the given value is not nil.
+func (_c *SubscriptionPlanCreate) SetNillableTotalLimitUsd(v *float64) *SubscriptionPlanCreate {
+	if v != nil {
+		_c.SetTotalLimitUsd(*v)
+	}
 	return _c
 }
 
@@ -192,6 +207,21 @@ func (_c *SubscriptionPlanCreate) SetNillableUpdatedAt(v *time.Time) *Subscripti
 		_c.SetUpdatedAt(*v)
 	}
 	return _c
+}
+
+// AddUserSubscriptionIDs adds the "user_subscriptions" edge to the UserSubscription entity by IDs.
+func (_c *SubscriptionPlanCreate) AddUserSubscriptionIDs(ids ...int64) *SubscriptionPlanCreate {
+	_c.mutation.AddUserSubscriptionIDs(ids...)
+	return _c
+}
+
+// AddUserSubscriptions adds the "user_subscriptions" edges to the UserSubscription entity.
+func (_c *SubscriptionPlanCreate) AddUserSubscriptions(v ...*UserSubscription) *SubscriptionPlanCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddUserSubscriptionIDs(ids...)
 }
 
 // Mutation returns the SubscriptionPlanMutation object of the builder.
@@ -375,6 +405,10 @@ func (_c *SubscriptionPlanCreate) createSpec() (*SubscriptionPlan, *sqlgraph.Cre
 		_spec.SetField(subscriptionplan.FieldPrice, field.TypeFloat64, value)
 		_node.Price = value
 	}
+	if value, ok := _c.mutation.TotalLimitUsd(); ok {
+		_spec.SetField(subscriptionplan.FieldTotalLimitUsd, field.TypeFloat64, value)
+		_node.TotalLimitUsd = &value
+	}
 	if value, ok := _c.mutation.OriginalPrice(); ok {
 		_spec.SetField(subscriptionplan.FieldOriginalPrice, field.TypeFloat64, value)
 		_node.OriginalPrice = &value
@@ -414,6 +448,22 @@ func (_c *SubscriptionPlanCreate) createSpec() (*SubscriptionPlan, *sqlgraph.Cre
 	if value, ok := _c.mutation.UpdatedAt(); ok {
 		_spec.SetField(subscriptionplan.FieldUpdatedAt, field.TypeTime, value)
 		_node.UpdatedAt = value
+	}
+	if nodes := _c.mutation.UserSubscriptionsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   subscriptionplan.UserSubscriptionsTable,
+			Columns: []string{subscriptionplan.UserSubscriptionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(usersubscription.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
 	}
 	return _node, _spec
 }
@@ -524,6 +574,30 @@ func (u *SubscriptionPlanUpsert) UpdatePrice() *SubscriptionPlanUpsert {
 // AddPrice adds v to the "price" field.
 func (u *SubscriptionPlanUpsert) AddPrice(v float64) *SubscriptionPlanUpsert {
 	u.Add(subscriptionplan.FieldPrice, v)
+	return u
+}
+
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsert) SetTotalLimitUsd(v float64) *SubscriptionPlanUpsert {
+	u.Set(subscriptionplan.FieldTotalLimitUsd, v)
+	return u
+}
+
+// UpdateTotalLimitUsd sets the "total_limit_usd" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsert) UpdateTotalLimitUsd() *SubscriptionPlanUpsert {
+	u.SetExcluded(subscriptionplan.FieldTotalLimitUsd)
+	return u
+}
+
+// AddTotalLimitUsd adds v to the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsert) AddTotalLimitUsd(v float64) *SubscriptionPlanUpsert {
+	u.Add(subscriptionplan.FieldTotalLimitUsd, v)
+	return u
+}
+
+// ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsert) ClearTotalLimitUsd() *SubscriptionPlanUpsert {
+	u.SetNull(subscriptionplan.FieldTotalLimitUsd)
 	return u
 }
 
@@ -771,6 +845,34 @@ func (u *SubscriptionPlanUpsertOne) AddPrice(v float64) *SubscriptionPlanUpsertO
 func (u *SubscriptionPlanUpsertOne) UpdatePrice() *SubscriptionPlanUpsertOne {
 	return u.Update(func(s *SubscriptionPlanUpsert) {
 		s.UpdatePrice()
+	})
+}
+
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsertOne) SetTotalLimitUsd(v float64) *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.SetTotalLimitUsd(v)
+	})
+}
+
+// AddTotalLimitUsd adds v to the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsertOne) AddTotalLimitUsd(v float64) *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.AddTotalLimitUsd(v)
+	})
+}
+
+// UpdateTotalLimitUsd sets the "total_limit_usd" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsertOne) UpdateTotalLimitUsd() *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.UpdateTotalLimitUsd()
+	})
+}
+
+// ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsertOne) ClearTotalLimitUsd() *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.ClearTotalLimitUsd()
 	})
 }
 
@@ -1206,6 +1308,34 @@ func (u *SubscriptionPlanUpsertBulk) AddPrice(v float64) *SubscriptionPlanUpsert
 func (u *SubscriptionPlanUpsertBulk) UpdatePrice() *SubscriptionPlanUpsertBulk {
 	return u.Update(func(s *SubscriptionPlanUpsert) {
 		s.UpdatePrice()
+	})
+}
+
+// SetTotalLimitUsd sets the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsertBulk) SetTotalLimitUsd(v float64) *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.SetTotalLimitUsd(v)
+	})
+}
+
+// AddTotalLimitUsd adds v to the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsertBulk) AddTotalLimitUsd(v float64) *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.AddTotalLimitUsd(v)
+	})
+}
+
+// UpdateTotalLimitUsd sets the "total_limit_usd" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsertBulk) UpdateTotalLimitUsd() *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.UpdateTotalLimitUsd()
+	})
+}
+
+// ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
+func (u *SubscriptionPlanUpsertBulk) ClearTotalLimitUsd() *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.ClearTotalLimitUsd()
 	})
 }
 

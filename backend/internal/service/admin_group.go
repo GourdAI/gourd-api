@@ -1245,15 +1245,16 @@ func (s *adminServiceImpl) deleteGroup(ctx context.Context, id int64, requireEmp
 	}
 	// 注意：user_group_rate_multipliers 表通过外键 ON DELETE CASCADE 自动清理
 
-	// 事务成功后，异步失效受影响用户的订阅缓存
+	// 事务成功后失效受影响用户的订阅缓存。
+	// 注意：订阅已与分组解绑（契约第 6 节），DeleteCascade 不再返回受影响用户，
+	// 删分组不再触动任何订阅钱包；此处保留仅作防御性兼容（空集则不进入）。
 	if len(affectedUserIDs) > 0 && s.billingCacheService != nil {
-		groupID := id
 		go func() {
 			cacheCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			for _, userID := range affectedUserIDs {
-				if err := s.billingCacheService.InvalidateSubscription(cacheCtx, userID, groupID); err != nil {
-					logger.LegacyPrintf("service.admin", "invalidate subscription cache failed: user_id=%d group_id=%d err=%v", userID, groupID, err)
+				if err := s.billingCacheService.InvalidateSubscription(cacheCtx, userID); err != nil {
+					logger.LegacyPrintf("service.admin", "invalidate subscription cache failed: user_id=%d err=%v", userID, err)
 				}
 			}
 		}()
@@ -1401,26 +1402,20 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 		if group.Status != StatusActive {
 			return nil, infraerrors.BadRequest("GROUP_NOT_ACTIVE", "target group is not active")
 		}
-		// 订阅类型分组：用户须持有该分组的有效订阅才可绑定
-		if group.IsSubscriptionType() {
-			if s.userSubRepo == nil {
-				return nil, infraerrors.InternalServer("SUBSCRIPTION_REPOSITORY_UNAVAILABLE", "subscription repository is not configured")
-			}
-			if _, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, apiKey.UserID, *groupID); err != nil {
-				if errors.Is(err, ErrSubscriptionNotFound) {
-					return nil, infraerrors.BadRequest("SUBSCRIPTION_REQUIRED", "user does not have an active subscription for this group")
-				}
-				return nil, err
-			}
-		}
+		// 订阅不再参与改组判定（契约第 6 节）：订阅是用户维度的额度钱包，
+		// 不绑定分组也不授予准入；改组只需目标分组存在且 active，
+		// 专属分组的授权由下方 AddGroupToAllowedGroups 路径完成。
 
 		gid := *groupID
 		apiKey.GroupID = &gid
 		apiKey.Group = group
 		apiKey.GroupIDs = []int64{gid}
 
-		// 专属标准分组：使用事务保证「添加分组权限」与「更新 API Key」的原子性
-		if group.IsExclusive && !group.IsSubscriptionType() {
+		// 专属分组：使用事务保证「添加分组权限」与「更新 API Key」的原子性。
+		// 不再排除订阅型分组：订阅型分组的准入已回归分组权限本身（契约第 6 节）。
+		// 若继续跳过，admin 把 Key 改到「专属 + 订阅型」分组后不会写入
+		// user_allowed_groups，而准入层又只看分组权限 → 该 Key 会被 403 GROUP_NOT_ALLOWED。
+		if group.IsExclusive {
 			opCtx := ctx
 			var tx *dbent.Tx
 			if s.entClient == nil {
@@ -1543,17 +1538,7 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupIDs(ctx context.Context, keyID 
 		if group.Status != StatusActive {
 			return nil, infraerrors.BadRequest("GROUP_NOT_ACTIVE", fmt.Sprintf("group %d is not active", groupID))
 		}
-		if group.IsSubscriptionType() {
-			if s.userSubRepo == nil {
-				return nil, infraerrors.InternalServer("SUBSCRIPTION_REPOSITORY_UNAVAILABLE", "subscription repository is not configured")
-			}
-			if _, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, apiKey.UserID, groupID); err != nil {
-				if errors.Is(err, ErrSubscriptionNotFound) {
-					return nil, infraerrors.BadRequest("SUBSCRIPTION_REQUIRED", fmt.Sprintf("user does not have an active subscription for group %d", groupID))
-				}
-				return nil, err
-			}
-		}
+		// 订阅不再参与改组判定（契约第 6 节）：这里不再校验「该分组是否有有效订阅」。
 		isSub := group.IsSubscriptionType()
 		if firstGroup == nil {
 			firstGroup = group
@@ -1587,11 +1572,11 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupIDs(ctx context.Context, keyID 
 		return nil, fmt.Errorf("update api key groups: %w", err)
 	}
 
-	// 收集需要自动授权的专属标准分组（与单分组路径一致）。
+	// 收集需要自动授权的专属分组（与单分组路径一致；不再排除订阅型分组）。
 	exclusiveGrants := make([]int64, 0, len(normalized))
 	for _, groupID := range normalized {
 		group := groupsByID[groupID]
-		if group == nil || !group.IsExclusive || group.IsSubscriptionType() {
+		if group == nil || !group.IsExclusive {
 			continue
 		}
 		exclusiveGrants = append(exclusiveGrants, groupID)

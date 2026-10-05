@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"entgo.io/ent/dialect/sql"
+	"entgo.io/ent/dialect/sql/sqlgraph"
 )
 
 const (
@@ -21,6 +22,8 @@ const (
 	FieldDescription = "description"
 	// FieldPrice holds the string denoting the price field in the database.
 	FieldPrice = "price"
+	// FieldTotalLimitUsd holds the string denoting the total_limit_usd field in the database.
+	FieldTotalLimitUsd = "total_limit_usd"
 	// FieldOriginalPrice holds the string denoting the original_price field in the database.
 	FieldOriginalPrice = "original_price"
 	// FieldCurrency holds the string denoting the currency field in the database.
@@ -41,8 +44,17 @@ const (
 	FieldCreatedAt = "created_at"
 	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
 	FieldUpdatedAt = "updated_at"
+	// EdgeUserSubscriptions holds the string denoting the user_subscriptions edge name in mutations.
+	EdgeUserSubscriptions = "user_subscriptions"
 	// Table holds the table name of the subscriptionplan in the database.
 	Table = "subscription_plans"
+	// UserSubscriptionsTable is the table that holds the user_subscriptions relation/edge.
+	UserSubscriptionsTable = "user_subscriptions"
+	// UserSubscriptionsInverseTable is the table name for the UserSubscription entity.
+	// It exists in this package in order to avoid circular dependency with the "usersubscription" package.
+	UserSubscriptionsInverseTable = "user_subscriptions"
+	// UserSubscriptionsColumn is the table column denoting the user_subscriptions relation/edge.
+	UserSubscriptionsColumn = "plan_id"
 )
 
 // Columns holds all SQL columns for subscriptionplan fields.
@@ -52,6 +64,7 @@ var Columns = []string{
 	FieldName,
 	FieldDescription,
 	FieldPrice,
+	FieldTotalLimitUsd,
 	FieldOriginalPrice,
 	FieldCurrency,
 	FieldValidityDays,
@@ -135,6 +148,11 @@ func ByPrice(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldPrice, opts...).ToFunc()
 }
 
+// ByTotalLimitUsd orders the results by the total_limit_usd field.
+func ByTotalLimitUsd(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldTotalLimitUsd, opts...).ToFunc()
+}
+
 // ByOriginalPrice orders the results by the original_price field.
 func ByOriginalPrice(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldOriginalPrice, opts...).ToFunc()
@@ -183,4 +201,25 @@ func ByCreatedAt(opts ...sql.OrderTermOption) OrderOption {
 // ByUpdatedAt orders the results by the updated_at field.
 func ByUpdatedAt(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldUpdatedAt, opts...).ToFunc()
+}
+
+// ByUserSubscriptionsCount orders the results by user_subscriptions count.
+func ByUserSubscriptionsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newUserSubscriptionsStep(), opts...)
+	}
+}
+
+// ByUserSubscriptions orders the results by user_subscriptions terms.
+func ByUserSubscriptions(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newUserSubscriptionsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+func newUserSubscriptionsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(UserSubscriptionsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, UserSubscriptionsTable, UserSubscriptionsColumn),
+	)
 }

@@ -166,51 +166,21 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 			return
 		}
 
-		isSubscriptionGroup := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
-		var subscription *service.UserSubscription
+		// 订阅是「个人额度钱包」：不绑定分组、不授予分组准入（契约第 6 节）。
+		// 与主中间件同源：无条件探测钱包，只用于计费模式判定，失败/无订阅按 nil 处理，绝不 403。
+		var subscriptions []*service.UserSubscription
 		if subscriptionService != nil {
-			// 与主中间件一致：订阅型分组取专属订阅（无则 403），
-			// 其他情形探测个人订阅（group_id=0），避免同一 Key 在不同端点计费方式分叉。
-			if isSubscriptionGroup {
-				sub, err := subscriptionService.GetActiveSubscription(
-					c.Request.Context(),
-					apiKey.User.ID,
-					apiKey.Group.ID,
-				)
-				if err != nil {
-					abortWithGoogleError(c, 403, "No active subscription found for this group")
-					return
-				}
-				subscription = sub
-			} else if personal, err := subscriptionService.GetActiveSubscription(c.Request.Context(), apiKey.User.ID, 0); err == nil && personal != nil {
-				subscription = personal
+			if subs, err := subscriptionService.GetActiveSubscriptions(c.Request.Context(), apiKey.User.ID); err == nil {
+				subscriptions = subs
 			}
 		}
 
-		if subscription != nil {
-			needsMaintenance, err := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
-			if needsMaintenance {
-				refreshed, maintenanceErr := subscriptionService.EnsureWindowMaintenance(c.Request.Context(), subscription)
-				if maintenanceErr != nil {
-					abortWithGoogleError(c, 500, "Failed to maintain subscription usage windows")
-					return
-				}
-				subscription = refreshed
-				_, err = subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
-			}
-			if err != nil {
-				status := 403
-				if errors.Is(err, service.ErrDailyLimitExceeded) ||
-					errors.Is(err, service.ErrWeeklyLimitExceeded) ||
-					errors.Is(err, service.ErrMonthlyLimitExceeded) {
-					status = 429
-				}
-				abortWithGoogleError(c, status, err.Error())
-				return
-			}
-
-			c.Set(string(ContextKeySubscription), subscription)
-		} else {
+		// 订阅钱包接管扣费时跳过余额硬闸；余量不足由计费层按用户聚合拒绝。
+		// 不限额钱包（全额为 nil）不接管，但仍写入 ctx 供 handler 展示与记账定位。
+		if len(subscriptions) > 0 {
+			c.Set(string(ContextKeySubscription), subscriptions)
+		}
+		if !service.SubscriptionWalletTakesOver(subscriptions) {
 			if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
 				abortWithGoogleError(c, 403, "Insufficient account balance")
 				return

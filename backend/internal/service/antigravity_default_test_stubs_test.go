@@ -45,6 +45,11 @@ func (s *stubAntigravityAccountRepo) UpdateExtra(_ context.Context, id int64, up
 	return nil
 }
 
+// ClearModelRateLimitScopes 在本构建（非 unit）下不做断言，仅避免嵌入接口触发的 nil panic。
+func (s *stubAntigravityAccountRepo) ClearModelRateLimitScopes(_ context.Context, _ int64, _ []string) error {
+	return nil
+}
+
 type defaultDeleteSessionCall struct {
 	groupID     int64
 	sessionHash string

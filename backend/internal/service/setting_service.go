@@ -84,15 +84,14 @@ func (s *SettingService) ResolveGrokBaseURL(ctx context.Context, account *Accoun
 }
 
 var (
-	ErrRegistrationDisabled   = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
-	ErrSettingNotFound        = infraerrors.NotFound("SETTING_NOT_FOUND", "setting not found")
-	ErrDefaultSubGroupInvalid = infraerrors.BadRequest(
-		"DEFAULT_SUBSCRIPTION_GROUP_INVALID",
-		"default subscription group must exist and be subscription type",
-	)
-	ErrDefaultSubGroupDuplicate = infraerrors.BadRequest(
-		"DEFAULT_SUBSCRIPTION_GROUP_DUPLICATE",
-		"default subscription group cannot be duplicated",
+	ErrRegistrationDisabled = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
+	ErrSettingNotFound      = infraerrors.NotFound("SETTING_NOT_FOUND", "setting not found")
+	// ErrDefaultSubscriptionInvalid：新用户默认发放的订阅钱包配置不合法。
+	// 2026-10-03 重构：原 ErrDefaultSubGroupInvalid / ErrDefaultSubGroupDuplicate
+	// 随「订阅不绑分组」一并退役（分组存在性/类型/去重均不再适用）。
+	ErrDefaultSubscriptionInvalid = infraerrors.BadRequest(
+		"DEFAULT_SUBSCRIPTION_INVALID",
+		"default subscription requires a positive finite total_limit_usd and validity_days",
 	)
 )
 
@@ -106,11 +105,6 @@ type SettingRepository interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// DefaultSubscriptionGroupReader validates group references used by default subscriptions.
-type DefaultSubscriptionGroupReader interface {
-	GetByID(ctx context.Context, id int64) (*Group, error)
-}
-
 // WebSearchManagerBuilder creates a websearch.Manager from config (injected by infra layer).
 // proxyURLs maps proxy ID to resolved URL for provider-level proxy support.
 type WebSearchManagerBuilder func(cfg *WebSearchEmulationConfig, proxyURLs map[int64]string)
@@ -118,7 +112,6 @@ type WebSearchManagerBuilder func(cfg *WebSearchEmulationConfig, proxyURLs map[i
 // SettingService 系统设置服务
 type SettingService struct {
 	settingRepo                 SettingRepository
-	defaultSubGroupReader       DefaultSubscriptionGroupReader
 	proxyRepo                   ProxyRepository // for resolving websearch provider proxy URLs
 	cfg                         *config.Config
 	onUpdate                    func() // Callback when settings are updated (for cache invalidation)
@@ -292,11 +285,6 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 		settingRepo: settingRepo,
 		cfg:         cfg,
 	}
-}
-
-// SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.
-func (s *SettingService) SetDefaultSubscriptionGroupReader(reader DefaultSubscriptionGroupReader) {
-	s.defaultSubGroupReader = reader
 }
 
 // SetProxyRepository injects a proxy repo for resolving websearch provider proxy URLs.

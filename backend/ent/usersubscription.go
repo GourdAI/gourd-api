@@ -9,7 +9,7 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 )
@@ -27,32 +27,18 @@ type UserSubscription struct {
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// UserID holds the value of the "user_id" field.
 	UserID int64 `json:"user_id,omitempty"`
-	// GroupID holds the value of the "group_id" field.
-	GroupID int64 `json:"group_id,omitempty"`
+	// PlanID holds the value of the "plan_id" field.
+	PlanID *int64 `json:"plan_id,omitempty"`
 	// StartsAt holds the value of the "starts_at" field.
 	StartsAt time.Time `json:"starts_at,omitempty"`
 	// ExpiresAt holds the value of the "expires_at" field.
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 	// Status holds the value of the "status" field.
 	Status string `json:"status,omitempty"`
-	// DailyWindowStart holds the value of the "daily_window_start" field.
-	DailyWindowStart *time.Time `json:"daily_window_start,omitempty"`
-	// WeeklyWindowStart holds the value of the "weekly_window_start" field.
-	WeeklyWindowStart *time.Time `json:"weekly_window_start,omitempty"`
-	// MonthlyWindowStart holds the value of the "monthly_window_start" field.
-	MonthlyWindowStart *time.Time `json:"monthly_window_start,omitempty"`
-	// DailyUsageUsd holds the value of the "daily_usage_usd" field.
-	DailyUsageUsd float64 `json:"daily_usage_usd,omitempty"`
-	// WeeklyUsageUsd holds the value of the "weekly_usage_usd" field.
-	WeeklyUsageUsd float64 `json:"weekly_usage_usd,omitempty"`
-	// MonthlyUsageUsd holds the value of the "monthly_usage_usd" field.
-	MonthlyUsageUsd float64 `json:"monthly_usage_usd,omitempty"`
-	// DailyLimitUsd holds the value of the "daily_limit_usd" field.
-	DailyLimitUsd *float64 `json:"daily_limit_usd,omitempty"`
-	// WeeklyLimitUsd holds the value of the "weekly_limit_usd" field.
-	WeeklyLimitUsd *float64 `json:"weekly_limit_usd,omitempty"`
-	// MonthlyLimitUsd holds the value of the "monthly_limit_usd" field.
-	MonthlyLimitUsd *float64 `json:"monthly_limit_usd,omitempty"`
+	// TotalLimitUsd holds the value of the "total_limit_usd" field.
+	TotalLimitUsd *float64 `json:"total_limit_usd,omitempty"`
+	// TotalUsageUsd holds the value of the "total_usage_usd" field.
+	TotalUsageUsd float64 `json:"total_usage_usd,omitempty"`
 	// AssignedBy holds the value of the "assigned_by" field.
 	AssignedBy *int64 `json:"assigned_by,omitempty"`
 	// AssignedAt holds the value of the "assigned_at" field.
@@ -69,8 +55,8 @@ type UserSubscription struct {
 type UserSubscriptionEdges struct {
 	// User holds the value of the user edge.
 	User *User `json:"user,omitempty"`
-	// Group holds the value of the group edge.
-	Group *Group `json:"group,omitempty"`
+	// Plan holds the value of the plan edge.
+	Plan *SubscriptionPlan `json:"plan,omitempty"`
 	// AssignedByUser holds the value of the assigned_by_user edge.
 	AssignedByUser *User `json:"assigned_by_user,omitempty"`
 	// UsageLogs holds the value of the usage_logs edge.
@@ -91,15 +77,15 @@ func (e UserSubscriptionEdges) UserOrErr() (*User, error) {
 	return nil, &NotLoadedError{edge: "user"}
 }
 
-// GroupOrErr returns the Group value or an error if the edge
+// PlanOrErr returns the Plan value or an error if the edge
 // was not loaded in eager-loading, or loaded but was not found.
-func (e UserSubscriptionEdges) GroupOrErr() (*Group, error) {
-	if e.Group != nil {
-		return e.Group, nil
+func (e UserSubscriptionEdges) PlanOrErr() (*SubscriptionPlan, error) {
+	if e.Plan != nil {
+		return e.Plan, nil
 	} else if e.loadedTypes[1] {
-		return nil, &NotFoundError{label: group.Label}
+		return nil, &NotFoundError{label: subscriptionplan.Label}
 	}
-	return nil, &NotLoadedError{edge: "group"}
+	return nil, &NotLoadedError{edge: "plan"}
 }
 
 // AssignedByUserOrErr returns the AssignedByUser value or an error if the edge
@@ -127,13 +113,13 @@ func (*UserSubscription) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case usersubscription.FieldDailyUsageUsd, usersubscription.FieldWeeklyUsageUsd, usersubscription.FieldMonthlyUsageUsd, usersubscription.FieldDailyLimitUsd, usersubscription.FieldWeeklyLimitUsd, usersubscription.FieldMonthlyLimitUsd:
+		case usersubscription.FieldTotalLimitUsd, usersubscription.FieldTotalUsageUsd:
 			values[i] = new(sql.NullFloat64)
-		case usersubscription.FieldID, usersubscription.FieldUserID, usersubscription.FieldGroupID, usersubscription.FieldAssignedBy:
+		case usersubscription.FieldID, usersubscription.FieldUserID, usersubscription.FieldPlanID, usersubscription.FieldAssignedBy:
 			values[i] = new(sql.NullInt64)
 		case usersubscription.FieldStatus, usersubscription.FieldNotes:
 			values[i] = new(sql.NullString)
-		case usersubscription.FieldCreatedAt, usersubscription.FieldUpdatedAt, usersubscription.FieldDeletedAt, usersubscription.FieldStartsAt, usersubscription.FieldExpiresAt, usersubscription.FieldDailyWindowStart, usersubscription.FieldWeeklyWindowStart, usersubscription.FieldMonthlyWindowStart, usersubscription.FieldAssignedAt:
+		case usersubscription.FieldCreatedAt, usersubscription.FieldUpdatedAt, usersubscription.FieldDeletedAt, usersubscription.FieldStartsAt, usersubscription.FieldExpiresAt, usersubscription.FieldAssignedAt:
 			values[i] = new(sql.NullTime)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -181,11 +167,12 @@ func (_m *UserSubscription) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.UserID = value.Int64
 			}
-		case usersubscription.FieldGroupID:
+		case usersubscription.FieldPlanID:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
-				return fmt.Errorf("unexpected type %T for field group_id", values[i])
+				return fmt.Errorf("unexpected type %T for field plan_id", values[i])
 			} else if value.Valid {
-				_m.GroupID = value.Int64
+				_m.PlanID = new(int64)
+				*_m.PlanID = value.Int64
 			}
 		case usersubscription.FieldStartsAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -205,65 +192,18 @@ func (_m *UserSubscription) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.Status = value.String
 			}
-		case usersubscription.FieldDailyWindowStart:
-			if value, ok := values[i].(*sql.NullTime); !ok {
-				return fmt.Errorf("unexpected type %T for field daily_window_start", values[i])
-			} else if value.Valid {
-				_m.DailyWindowStart = new(time.Time)
-				*_m.DailyWindowStart = value.Time
-			}
-		case usersubscription.FieldWeeklyWindowStart:
-			if value, ok := values[i].(*sql.NullTime); !ok {
-				return fmt.Errorf("unexpected type %T for field weekly_window_start", values[i])
-			} else if value.Valid {
-				_m.WeeklyWindowStart = new(time.Time)
-				*_m.WeeklyWindowStart = value.Time
-			}
-		case usersubscription.FieldMonthlyWindowStart:
-			if value, ok := values[i].(*sql.NullTime); !ok {
-				return fmt.Errorf("unexpected type %T for field monthly_window_start", values[i])
-			} else if value.Valid {
-				_m.MonthlyWindowStart = new(time.Time)
-				*_m.MonthlyWindowStart = value.Time
-			}
-		case usersubscription.FieldDailyUsageUsd:
+		case usersubscription.FieldTotalLimitUsd:
 			if value, ok := values[i].(*sql.NullFloat64); !ok {
-				return fmt.Errorf("unexpected type %T for field daily_usage_usd", values[i])
+				return fmt.Errorf("unexpected type %T for field total_limit_usd", values[i])
 			} else if value.Valid {
-				_m.DailyUsageUsd = value.Float64
+				_m.TotalLimitUsd = new(float64)
+				*_m.TotalLimitUsd = value.Float64
 			}
-		case usersubscription.FieldWeeklyUsageUsd:
+		case usersubscription.FieldTotalUsageUsd:
 			if value, ok := values[i].(*sql.NullFloat64); !ok {
-				return fmt.Errorf("unexpected type %T for field weekly_usage_usd", values[i])
+				return fmt.Errorf("unexpected type %T for field total_usage_usd", values[i])
 			} else if value.Valid {
-				_m.WeeklyUsageUsd = value.Float64
-			}
-		case usersubscription.FieldMonthlyUsageUsd:
-			if value, ok := values[i].(*sql.NullFloat64); !ok {
-				return fmt.Errorf("unexpected type %T for field monthly_usage_usd", values[i])
-			} else if value.Valid {
-				_m.MonthlyUsageUsd = value.Float64
-			}
-		case usersubscription.FieldDailyLimitUsd:
-			if value, ok := values[i].(*sql.NullFloat64); !ok {
-				return fmt.Errorf("unexpected type %T for field daily_limit_usd", values[i])
-			} else if value.Valid {
-				_m.DailyLimitUsd = new(float64)
-				*_m.DailyLimitUsd = value.Float64
-			}
-		case usersubscription.FieldWeeklyLimitUsd:
-			if value, ok := values[i].(*sql.NullFloat64); !ok {
-				return fmt.Errorf("unexpected type %T for field weekly_limit_usd", values[i])
-			} else if value.Valid {
-				_m.WeeklyLimitUsd = new(float64)
-				*_m.WeeklyLimitUsd = value.Float64
-			}
-		case usersubscription.FieldMonthlyLimitUsd:
-			if value, ok := values[i].(*sql.NullFloat64); !ok {
-				return fmt.Errorf("unexpected type %T for field monthly_limit_usd", values[i])
-			} else if value.Valid {
-				_m.MonthlyLimitUsd = new(float64)
-				*_m.MonthlyLimitUsd = value.Float64
+				_m.TotalUsageUsd = value.Float64
 			}
 		case usersubscription.FieldAssignedBy:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -303,9 +243,9 @@ func (_m *UserSubscription) QueryUser() *UserQuery {
 	return NewUserSubscriptionClient(_m.config).QueryUser(_m)
 }
 
-// QueryGroup queries the "group" edge of the UserSubscription entity.
-func (_m *UserSubscription) QueryGroup() *GroupQuery {
-	return NewUserSubscriptionClient(_m.config).QueryGroup(_m)
+// QueryPlan queries the "plan" edge of the UserSubscription entity.
+func (_m *UserSubscription) QueryPlan() *SubscriptionPlanQuery {
+	return NewUserSubscriptionClient(_m.config).QueryPlan(_m)
 }
 
 // QueryAssignedByUser queries the "assigned_by_user" edge of the UserSubscription entity.
@@ -355,8 +295,10 @@ func (_m *UserSubscription) String() string {
 	builder.WriteString("user_id=")
 	builder.WriteString(fmt.Sprintf("%v", _m.UserID))
 	builder.WriteString(", ")
-	builder.WriteString("group_id=")
-	builder.WriteString(fmt.Sprintf("%v", _m.GroupID))
+	if v := _m.PlanID; v != nil {
+		builder.WriteString("plan_id=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
 	builder.WriteString(", ")
 	builder.WriteString("starts_at=")
 	builder.WriteString(_m.StartsAt.Format(time.ANSIC))
@@ -367,44 +309,13 @@ func (_m *UserSubscription) String() string {
 	builder.WriteString("status=")
 	builder.WriteString(_m.Status)
 	builder.WriteString(", ")
-	if v := _m.DailyWindowStart; v != nil {
-		builder.WriteString("daily_window_start=")
-		builder.WriteString(v.Format(time.ANSIC))
-	}
-	builder.WriteString(", ")
-	if v := _m.WeeklyWindowStart; v != nil {
-		builder.WriteString("weekly_window_start=")
-		builder.WriteString(v.Format(time.ANSIC))
-	}
-	builder.WriteString(", ")
-	if v := _m.MonthlyWindowStart; v != nil {
-		builder.WriteString("monthly_window_start=")
-		builder.WriteString(v.Format(time.ANSIC))
-	}
-	builder.WriteString(", ")
-	builder.WriteString("daily_usage_usd=")
-	builder.WriteString(fmt.Sprintf("%v", _m.DailyUsageUsd))
-	builder.WriteString(", ")
-	builder.WriteString("weekly_usage_usd=")
-	builder.WriteString(fmt.Sprintf("%v", _m.WeeklyUsageUsd))
-	builder.WriteString(", ")
-	builder.WriteString("monthly_usage_usd=")
-	builder.WriteString(fmt.Sprintf("%v", _m.MonthlyUsageUsd))
-	builder.WriteString(", ")
-	if v := _m.DailyLimitUsd; v != nil {
-		builder.WriteString("daily_limit_usd=")
+	if v := _m.TotalLimitUsd; v != nil {
+		builder.WriteString("total_limit_usd=")
 		builder.WriteString(fmt.Sprintf("%v", *v))
 	}
 	builder.WriteString(", ")
-	if v := _m.WeeklyLimitUsd; v != nil {
-		builder.WriteString("weekly_limit_usd=")
-		builder.WriteString(fmt.Sprintf("%v", *v))
-	}
-	builder.WriteString(", ")
-	if v := _m.MonthlyLimitUsd; v != nil {
-		builder.WriteString("monthly_limit_usd=")
-		builder.WriteString(fmt.Sprintf("%v", *v))
-	}
+	builder.WriteString("total_usage_usd=")
+	builder.WriteString(fmt.Sprintf("%v", _m.TotalUsageUsd))
 	builder.WriteString(", ")
 	if v := _m.AssignedBy; v != nil {
 		builder.WriteString("assigned_by=")

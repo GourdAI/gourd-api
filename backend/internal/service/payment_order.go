@@ -139,12 +139,14 @@ func (s *PaymentService) validateSubOrder(ctx context.Context, req CreateOrderRe
 	if err != nil || !plan.ForSale {
 		return nil, infraerrors.NotFound("PLAN_NOT_AVAILABLE", "plan not found or not for sale")
 	}
+	// 套餐的交付目标分组：仍要求存在且启用（下架分组不允许继续卖套餐），
+	// 但自 2026-10-03 订阅钱包改造起，订阅不再绑定分组、也不授予任何分组准入，
+	// 因此**不再要求该分组为「订阅制分组」**（原 GROUP_TYPE_MISMATCH 校验删除，
+	// 见 .gwork/SUBSCRIPTION_WALLET_SPEC.md 第 6/7 节）。
+	// plan.GroupID 仍原样写入 payment_orders.subscription_group_id，仅作展示与对账。
 	group, err := s.groupRepo.GetByID(ctx, plan.GroupID)
 	if err != nil || group.Status != payment.EntityStatusActive {
 		return nil, infraerrors.NotFound("GROUP_NOT_FOUND", "subscription group is no longer available")
-	}
-	if !group.IsSubscriptionType() {
-		return nil, infraerrors.BadRequest("GROUP_TYPE_MISMATCH", "group is not a subscription type")
 	}
 	return plan, nil
 }

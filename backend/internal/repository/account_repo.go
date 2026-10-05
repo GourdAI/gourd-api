@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -1687,6 +1688,62 @@ func (r *accountRepository) SetGrokOAuthRefreshTempUnschedulableIfCredentialsUnc
 	return true, nil
 }
 
+// schedulerSnapshotSyncTimeout 限制「脱离请求」后的快照同步最长占用，避免
+// 一个卡死的 Redis/DB 调用无限拖住 goroutine 调度。
+const schedulerSnapshotSyncTimeout = 2 * time.Second
+
+// modelRateLimitWriteTimeout 是「权威落库写」的预算，必须**大于**上面的快照同步
+// 预算，两者不能混用（本常量存在的唯一理由）。
+//
+// 为什么不是 2s：冷却 UPDATE 会与每请求的账号计费自增争同一行 ——
+// incrementUsageBillingAccountQuota (usage_billing_repo.go:551) 每个请求都对
+// accounts.extra 做一次 UPDATE（通常在事务内，锁持有到提交）。同一账号并发时，
+// 冷却写入必须排队等行锁。若沿用 2s：「客户端断开」那一半问题虽然修了，但
+// 「等锁超过 2s → 冷却写不进去」会以完全相同的症状复现（限流了还被调、反复 404）。
+// 改动前它跟随请求 ctx（通常远长于 2s），反而更容易等到锁；把缓存量级的预算
+// 套到权威写入上是**引入新回归**，不是修复。
+//
+// 5s 不是拍脑袋：它是仓库已经测试锁定的「账号状态写」统一口径
+// （openai_account_runtime_block_fastpath.go:13 openAIAccountStateUpdateTimeout，
+// 由 qoder_upstream_error_test.go:603 断言），本方法写的同样是账号状态。
+//
+// 仍需上界：本写入已脱离请求 ctx，请求结束后不会再取消它，若 DB 卡死 goroutine
+// 会永久占用连接。注意运行时**没**任何 statement_timeout/lock_timeout 兜底（全仓
+// 仅在迁移脚本里 SET LOCAL），超时时只能靠客户端放弃读取，因此调用方仍要接受
+// 「写失败 → 日志 + 照常 failover」这一既有语义。
+const modelRateLimitWriteTimeout = 5 * time.Second
+
+// writeBudget 在「已声明的调用方预算」与「本层默认预算」之间取**更短者**，
+// 并总是要脱离上游取消。没有它的时，contextOrBackground 会剥掉父 deadline
+// （Go context.go:597-599），把调用方给的 5s stateCtx 静默换成默认值 ——
+// 要么截断调用方的预算，要么被调用方的短预算误杀。取 min 同时避开两个方向。
+//
+// 【必须诚实说明】返回值不是「外层 + 内层」的简单相加：因为 WithoutCancel 移除了
+// 父 deadline，syncSchedulerAccountSnapshot 内部的 WithTimeout(2s) 是一个**全新**的
+// 定时器，不被外层截断（context.go:476-482：parent.Done()==nil 时不登记 children）。
+// 因此本函数走完的最坏耗时 ≈ 写入预算 + 2s，与 HEAD 原版的 Detached 模式同构。
+func writeBudget(ctx context.Context, fallback time.Duration) time.Duration {
+	if ctx == nil {
+		return fallback
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 && remaining < fallback {
+			return remaining
+		}
+	}
+	return fallback
+}
+
+// contextOrBackground 返回一个「保留 value、但已脱离上游取消信号」的 context。
+// 用于服务端状态变更的落库/缓存同步：这类写入的正确性不应取决于客户端是否还连着。
+// ctx 为 nil 时退回 Background（context.WithoutCancel(nil) 会返回 nil）。
+func contextOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
+}
+
 // syncSchedulerAccountSnapshot 在账号状态变更时主动同步快照到调度器缓存。
 // 当账号被设置为错误、禁用、不可调度或临时不可调度时调用，
 // 确保调度器和粘性会话逻辑能及时感知账号的最新状态，避免继续使用不可用账号。
@@ -1695,28 +1752,37 @@ func (r *accountRepository) SetGrokOAuthRefreshTempUnschedulableIfCredentialsUnc
 // when account status changes. Called when account is set to error, disabled,
 // unschedulable, or temporarily unschedulable, ensuring scheduler and sticky session
 // logic can promptly detect the latest account state and avoid using unavailable accounts.
+//
+// 【必须脱离请求生命周期】同步自身包含两次 IO（GetByID 重读 DB + SetAccount 写
+// Redis 快照）。而写冷却的典型时机恰好是上游返回 404/429 之后，此时客户端超时、
+// 主动断开或切走都是常规路径，请求 ctx 已经 cancel；若跟随它，两次 IO 会双双失败
+// （只留下一行日志），结果是 **DB 里有冷却、Redis 调度快照里没有**，而调度候选池读的
+// 恰恰是快照（scheduler_snapshot_service.go:221/228）——同一个号会被继续选中、再撞
+// 一遍同样的上游错误（用户可见的「限流了还被调、反复报 404」）。
+// outbox worker 只在延迟或异常时兜底，不能把正确性寄托在它上面。
+// 因此这里统一使用 context.WithoutCancel + 固定超时（与 SetTempUnschedulable 等处
+// 既有的 Detached 模式同源，当时只是漏了给这些写入口采用）。
 func (r *accountRepository) syncSchedulerAccountSnapshot(ctx context.Context, accountID int64) {
 	if r == nil || r.schedulerCache == nil || accountID <= 0 {
 		return
 	}
-	account, err := r.GetByID(ctx, accountID)
+	propagationCtx, cancel := context.WithTimeout(contextOrBackground(ctx), schedulerSnapshotSyncTimeout)
+	defer cancel()
+
+	account, err := r.GetByID(propagationCtx, accountID)
 	if err != nil {
 		logger.LegacyPrintf("repository.account", "[Scheduler] sync account snapshot read failed: id=%d err=%v", accountID, err)
 		return
 	}
-	if err := r.schedulerCache.SetAccount(ctx, account); err != nil {
+	if err := r.schedulerCache.SetAccount(propagationCtx, account); err != nil {
 		logger.LegacyPrintf("repository.account", "[Scheduler] sync account snapshot write failed: id=%d err=%v", accountID, err)
 	}
 }
 
+// syncSchedulerAccountSnapshotDetached 保留旧签名以免移动既有调用点；主实现已内联
+// 同样的脱离语义，这里只做委托，避免两份逻辑漂移。
 func (r *accountRepository) syncSchedulerAccountSnapshotDetached(ctx context.Context, accountID int64) {
-	base := context.Background()
-	if ctx != nil {
-		base = context.WithoutCancel(ctx)
-	}
-	propagationCtx, cancel := context.WithTimeout(base, 2*time.Second)
-	defer cancel()
-	r.syncSchedulerAccountSnapshot(propagationCtx, accountID)
+	r.syncSchedulerAccountSnapshot(ctx, accountID)
 }
 
 func (r *accountRepository) deleteSchedulerAccountSnapshot(ctx context.Context, accountID int64) {
@@ -2334,6 +2400,29 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 	if scope == "" {
 		return nil
 	}
+	// 【必须脱离请求生命周期】本方法写的是「服务端观测到的上游事实」（哪个 (账号,模型)
+	// 对暂时不可用），它的正确性不应取决于客户端是否还连着。而调用它的典型时机恰好
+	// 是上游返回 404/429 之后——此刻客户端超时、主动断开或已切走都是常规路径，请求
+	// ctx 往往已 cancel。跟随请求 ctx 会导致两种丢失：
+	//   1. UPDATE 本身失败 → 冷却根本没落库；
+	//   2. UPDATE 成功但随后的 Redis 快照同步失败 → DB 有冷却、调度候选池（读快照）
+	//      看不见 → 同一个号继续被选中、再撞一遍同样的上游错误。
+	// context.WithoutCancel 只去掉取消信号。【它不保证事务原子性】实测当前全仓
+	// **没有任何**调用方在事务内调用本方法（逐个核对过 ratelimit_service.go 全部
+	// 8 处、antigravity 与 admin_account 调用点，以及全仓 19 处 NewTxContext 事务
+	// 上下文，均不触碰这里），且本函数下游本就不感知事务：GetByID(:1729) 用
+	// r.client、enqueueSchedulerOutbox(:2415) 用 r.sql，都不走 clientFromContext。
+	// 因此「保留了 ctx 的 value」只意味着 UPDATE 会落到事务连接上，而同步/入队不会
+	// —— 引入事务调用方将得到部分原子性，而不是全部。将来若要包事务，必须同时改
+	// 那两处。这里不把「事务安全」当作已成立的前提写进注释。
+	//
+	// 预算用 writeBudget 取 min(调用方剩余, 5s)，不用快照的 2s：本写入要和每请求
+	// 的账号计费自增争同一行，2s 会把「客户端断开」换成「等锁超时」，症状不变。
+	// 调用方均不消费本方法的 error（只日志 + 照常 failover），改动不引入新语义。
+	writeCtx, cancelWrite := context.WithTimeout(contextOrBackground(ctx), writeBudget(ctx, modelRateLimitWriteTimeout))
+	defer cancelWrite()
+	ctx = writeCtx
+
 	now := time.Now().UTC()
 	payload := map[string]string{
 		"rate_limited_at":     now.Format(time.RFC3339),
@@ -2531,6 +2620,13 @@ func (r *accountRepository) ClearAntigravityQuotaScopes(ctx context.Context, id 
 }
 
 func (r *accountRepository) ClearModelRateLimits(ctx context.Context, id int64) error {
+	// 与 SetModelRateLimit 同源：清除冷却同样是服务端状态变更，不应被客户端断开
+	// 中途掉（否则会留下「DB 已清、快照仍显示冷却」的反向不一致，白封一个健康号）。
+	// 同样使用权威写入预算（与账号状态写口径一致的 5s，取不超调用方剩余的上界）。
+	writeCtx, cancelWrite := context.WithTimeout(contextOrBackground(ctx), writeBudget(ctx, modelRateLimitWriteTimeout))
+	defer cancelWrite()
+	ctx = writeCtx
+
 	client := clientFromContext(ctx, r.client)
 	result, err := client.ExecContext(
 		ctx,
@@ -2550,6 +2646,65 @@ func (r *accountRepository) ClearModelRateLimits(ctx context.Context, id int64) 
 	}
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue clear model rate limit failed: account=%d err=%v", id, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
+}
+
+// ClearModelRateLimitScopes 仅删除指定的几个冷却键（不动其它键）。
+//
+// 为什么需要它：调用方过去用 UpdateExtra(map{"model_rate_limits": <内存里的整个 map>})
+// 做“删一个键”，而 UpdateExtra 的 SQL 是 `extra || $1::jsonb`（见本文件 UpdateExtra）
+// ——**顶层整体替换**。内存 map 是请求开始时拿到的快照，不包含并发请求刚写入的
+// 其它冷却（例如同一轮重试里刚落的 model 键）。于是写回会**把 DB 里其它所有冷却
+// 一并抹掉** —— 与调度快照被陈旧对象覆写同一个错误模式，但破坏的是持久层，
+// 冷却保护直接失效（表现为「限流了还被调」）。
+//
+// 这里用 jsonb 路径删除 `#-`，在服务端原子地只移除目标键。
+func (r *accountRepository) ClearModelRateLimitScopes(ctx context.Context, id int64, scopes []string) error {
+	filtered := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope = strings.TrimSpace(scope); scope != "" {
+			filtered = append(filtered, scope)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	writeCtx, cancelWrite := context.WithTimeout(contextOrBackground(ctx), writeBudget(ctx, modelRateLimitWriteTimeout))
+	defer cancelWrite()
+	ctx = writeCtx
+
+	// 把多个目标键拼成**一条** UPDATE（只取一次行锁），逐个用 jsonb `#-` 路径删除：
+	// 只碰列出的键，不触碰其它冷却，也不依赖调用方传进来的内存状态。
+	args := make([]any, 0, len(filtered)+1)
+	args = append(args, id)
+	extraExpression := "COALESCE(extra, '{}'::jsonb)"
+	for _, scope := range filtered {
+		// args[0] 恒为 id（$1），故当前 scope 的占位符序号 = 追加后的参数个数。
+		args = append(args, scope)
+		extraExpression += fmt.Sprintf(" #- ARRAY['model_rate_limits', $%d]", len(args))
+	}
+
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(
+		ctx,
+		"UPDATE accounts SET extra = "+extraExpression+", updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL",
+		args...,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue clear model rate limit scopes failed: account=%d err=%v", id, err)
 	}
 	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil

@@ -73,22 +73,6 @@
                 @change="applyFilters"
               />
             </div>
-            <div class="w-full sm:w-48">
-              <Select
-                v-model="filters.group_id"
-                :options="groupOptions"
-                :placeholder="t('admin.subscriptions.allGroups')"
-                @change="applyFilters"
-              />
-            </div>
-            <div class="w-full sm:w-40">
-              <Select
-                v-model="filters.platform"
-                :options="platformFilterOptions"
-                :placeholder="t('admin.subscriptions.allPlatforms')"
-                @change="applyFilters"
-              />
-            </div>
           </div>
 
           <!-- Right: Actions -->
@@ -233,145 +217,49 @@
             </div>
           </template>
 
-          <template #cell-group="{ row }">
-            <GroupBadge
-              v-if="row.group"
-              :name="row.group.name"
-              :platform="row.group.platform"
-              :subscription-type="row.group.subscription_type"
-              :rate-multiplier="row.group.rate_multiplier"
-              :show-rate="false"
-            />
-            <span
-              v-else-if="row.group_id === 0"
-              class="inline-flex items-center gap-1 rounded-lg bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-dark-300"
-              data-test="personal-subscription-badge"
-            >
-              {{ t('admin.subscriptions.personalSubscription') }}
+          <template #cell-plan="{ row }">
+            <span v-if="row.plan?.name" class="text-sm font-medium text-gray-700 dark:text-gray-200">
+              {{ row.plan.name }}
             </span>
-            <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
+            <span
+              v-else
+              class="inline-flex items-center gap-1 rounded-lg bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-dark-300"
+              data-test="manual-assignment-badge"
+            >
+              {{ t('admin.subscriptions.manualAssignment') }}
+            </span>
           </template>
 
           <template #cell-usage="{ row }">
             <div class="min-w-[280px] space-y-2">
-              <!-- Daily Usage -->
-              <div v-if="dailyLimitOf(row)" class="usage-row">
+              <!-- Total quota pool（单一总额池，不随日/周/月滚动重置） -->
+              <div v-if="totalLimitOf(row)" class="usage-row">
                 <div class="flex items-center gap-2">
-                  <span class="usage-label">{{ t('admin.subscriptions.daily') }}</span>
+                  <span class="usage-label">{{ t('admin.subscriptions.total') }}</span>
                   <div class="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-dark-600">
                     <div
                       class="h-1.5 rounded-full transition-all"
-                      :class="getProgressClass(row.daily_usage_usd, dailyLimitOf(row))"
+                      :class="getProgressClass(row.total_usage_usd, totalLimitOf(row))"
                       :style="{
-                        width: getProgressWidth(row.daily_usage_usd, dailyLimitOf(row))
+                        width: getProgressWidth(row.total_usage_usd, totalLimitOf(row))
                       }"
                     ></div>
                   </div>
                   <span class="usage-amount">
-                    ${{ row.daily_usage_usd?.toFixed(2) || '0.00' }}
+                    ${{ row.total_usage_usd?.toFixed(2) || '0.00' }}
                     <span class="text-gray-400">/</span>
-                    ${{ dailyLimitOf(row)?.toFixed(2) }}
+                    ${{ totalLimitOf(row)?.toFixed(2) }}
                   </span>
                 </div>
-                <div class="reset-info" v-if="row.daily_window_start">
-                  <svg
-                    class="h-3 w-3"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  <span>{{ formatDailyUsageWindow(row) }}</span>
+                <div class="flex items-center gap-1 pl-12 text-[10px] text-gray-500 dark:text-gray-400">
+                  <span>{{ t('admin.subscriptions.remaining') }}</span>
+                  <span class="font-medium tabular-nums">${{ row.remaining_usd?.toFixed(2) || '0.00' }}</span>
                 </div>
               </div>
 
-              <!-- Weekly Usage -->
-              <div v-if="weeklyLimitOf(row)" class="usage-row">
-                <div class="flex items-center gap-2">
-                  <span class="usage-label">{{ t('admin.subscriptions.weekly') }}</span>
-                  <div class="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-dark-600">
-                    <div
-                      class="h-1.5 rounded-full transition-all"
-                      :class="getProgressClass(row.weekly_usage_usd, weeklyLimitOf(row))"
-                      :style="{
-                        width: getProgressWidth(row.weekly_usage_usd, weeklyLimitOf(row))
-                      }"
-                    ></div>
-                  </div>
-                  <span class="usage-amount">
-                    ${{ row.weekly_usage_usd?.toFixed(2) || '0.00' }}
-                    <span class="text-gray-400">/</span>
-                    ${{ weeklyLimitOf(row)?.toFixed(2) }}
-                  </span>
-                </div>
-                <div class="reset-info" v-if="row.weekly_window_start">
-                  <svg
-                    class="h-3 w-3"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  <span>{{ formatResetTime(row.weekly_window_start, 'weekly') }}</span>
-                </div>
-              </div>
-
-              <!-- Monthly Usage -->
-              <div v-if="monthlyLimitOf(row)" class="usage-row">
-                <div class="flex items-center gap-2">
-                  <span class="usage-label">{{ t('admin.subscriptions.monthly') }}</span>
-                  <div class="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-dark-600">
-                    <div
-                      class="h-1.5 rounded-full transition-all"
-                      :class="getProgressClass(row.monthly_usage_usd, monthlyLimitOf(row))"
-                      :style="{
-                        width: getProgressWidth(row.monthly_usage_usd, monthlyLimitOf(row))
-                      }"
-                    ></div>
-                  </div>
-                  <span class="usage-amount">
-                    ${{ row.monthly_usage_usd?.toFixed(2) || '0.00' }}
-                    <span class="text-gray-400">/</span>
-                    ${{ monthlyLimitOf(row)?.toFixed(2) }}
-                  </span>
-                </div>
-                <div class="reset-info" v-if="row.monthly_window_start">
-                  <svg
-                    class="h-3 w-3"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  <span>{{ formatResetTime(row.monthly_window_start, 'monthly') }}</span>
-                </div>
-              </div>
-
-              <!-- No Limits - Unlimited badge -->
+              <!-- Unlimited badge -->
               <div
-                v-if="
-                  !dailyLimitOf(row) &&
-                  !weeklyLimitOf(row) &&
-                  !monthlyLimitOf(row)
-                "
+                v-if="!totalLimitOf(row)"
                 class="flex items-center gap-2 rounded-lg bg-gradient-to-r from-emerald-50 to-teal-50 px-3 py-2 dark:from-emerald-900/20 dark:to-teal-900/20"
               >
                 <span class="text-lg text-emerald-600 dark:text-emerald-400">∞</span>
@@ -582,88 +470,20 @@
             </ul>
           </div>
         </div>
-        <div>
-          <label class="input-label">{{ t('admin.subscriptions.form.group') }}</label>
-          <Select
-            v-model="assignForm.group_id"
-            :disabled="submitting"
-            :options="subscriptionGroupOptions"
-            :placeholder="t('admin.subscriptions.selectGroup')"
-          >
-            <template #selected="{ option }">
-              <span
-                v-if="(option as unknown as GroupOption)?.value === 0"
-                class="inline-flex items-center gap-1 rounded-lg bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-dark-300"
-              >
-                {{ t('admin.subscriptions.personalSubscription') }}
-              </span>
-              <GroupBadge
-                v-else-if="option"
-                :name="(option as unknown as GroupOption).label"
-                :platform="(option as unknown as GroupOption).platform"
-                :subscription-type="(option as unknown as GroupOption).subscriptionType"
-                :rate-multiplier="(option as unknown as GroupOption).rate"
-              />
-              <span v-else class="text-gray-400">{{ t('admin.subscriptions.selectGroup') }}</span>
-            </template>
-            <template #option="{ option, selected }">
-              <GroupOptionItem
-                :name="(option as unknown as GroupOption).label"
-                :platform="(option as unknown as GroupOption).platform"
-                :subscription-type="(option as unknown as GroupOption).subscriptionType"
-                :rate-multiplier="(option as unknown as GroupOption).rate"
-                :description="(option as unknown as GroupOption).description"
-                :selected="selected"
-              />
-            </template>
-          </Select>
-          <p class="input-hint">
-            {{ assignForm.group_id === 0
-              ? t('admin.subscriptions.personalGroupHint')
-              : t('admin.subscriptions.groupHint') }}
-          </p>
-        </div>
+        <!-- 总额度钱包：单一总额池，不绑定分组、不授予分组准入 -->
         <div class="rounded-lg border border-gray-200 p-3 dark:border-dark-700">
-          <div class="grid grid-cols-3 gap-3">
-            <div>
-              <label class="input-label">{{ t('admin.subscriptions.form.dailyLimit') }}</label>
-              <input
-                v-model.number="assignForm.daily_limit_usd"
-                type="number"
-                min="0"
-                step="0.01"
-                data-test="assign-quota-daily"
-                :disabled="submitting"
-                :placeholder="t('admin.subscriptions.quotaPlaceholder')"
-                class="input"
-              />
-            </div>
-            <div>
-              <label class="input-label">{{ t('admin.subscriptions.form.weeklyLimit') }}</label>
-              <input
-                v-model.number="assignForm.weekly_limit_usd"
-                type="number"
-                min="0"
-                step="0.01"
-                data-test="assign-quota-weekly"
-                :disabled="submitting"
-                :placeholder="t('admin.subscriptions.quotaPlaceholder')"
-                class="input"
-              />
-            </div>
-            <div>
-              <label class="input-label">{{ t('admin.subscriptions.form.monthlyLimit') }}</label>
-              <input
-                v-model.number="assignForm.monthly_limit_usd"
-                type="number"
-                min="0"
-                step="0.01"
-                data-test="assign-quota-monthly"
-                :disabled="submitting"
-                :placeholder="t('admin.subscriptions.quotaPlaceholder')"
-                class="input"
-              />
-            </div>
+          <div>
+            <label class="input-label">{{ t('admin.subscriptions.form.totalLimit') }}</label>
+            <input
+              v-model.number="assignForm.total_limit_usd"
+              type="number"
+              min="0"
+              step="0.01"
+              data-test="assign-quota-total"
+              :disabled="submitting"
+              :placeholder="t('admin.subscriptions.quotaPlaceholder')"
+              class="input"
+            />
           </div>
           <p class="input-hint mt-2">{{ t('admin.subscriptions.quotaHint') }}</p>
         </div>
@@ -905,7 +725,7 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
-import type { AdminUser, UserSubscription, Group, GroupPlatform, SubscriptionType } from '@/types'
+import type { AdminUser, UserSubscription } from '@/types'
 import type { SimpleUser } from '@/api/admin/usage'
 import type { SubscriptionBulkAction, SubscriptionBulkActionResult, BulkAssignSubscriptionResult } from '@/api/admin/subscriptions'
 import { useTableSelection } from '@/composables/useTableSelection'
@@ -921,31 +741,11 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import Select from '@/components/common/Select.vue'
-import GroupBadge from '@/components/common/GroupBadge.vue'
-import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
 import Icon from '@/components/icons/Icon.vue'
-import {
-  getRemainingDurationParts,
-  getRemainingExpiryDuration,
-  isOneTimeDailyQuota,
-  effectiveDailyLimit,
-  effectiveWeeklyLimit,
-  effectiveMonthlyLimit,
-  type RemainingDurationParts
-} from '@/utils/subscriptionQuota'
-import { GROUP_PLATFORM_OPTIONS } from '@/constants/platforms'
+import { getRemainingExpiryDuration } from '@/utils/subscriptionQuota'
 
 const { t } = useI18n()
 const appStore = useAppStore()
-
-interface GroupOption {
-  value: number
-  label: string
-  description: string | null
-  platform: GroupPlatform
-  subscriptionType: SubscriptionType
-  rate: number
-}
 
 // Guide modal state
 const showGuideModal = ref(false)
@@ -993,7 +793,7 @@ const allColumns = computed<Column[]>(() => [
       : t('admin.users.columns.username'),
     sortable: false
   },
-  { key: 'group', label: t('admin.subscriptions.columns.group'), sortable: false },
+  { key: 'plan', label: t('admin.subscriptions.columns.plan'), sortable: false },
   { key: 'usage', label: t('admin.subscriptions.columns.usage'), sortable: false },
   { key: 'expires_at', label: t('admin.subscriptions.columns.expires'), sortable: true },
   { key: 'status', label: t('admin.subscriptions.columns.status'), sortable: true },
@@ -1072,7 +872,6 @@ const statusOptions = computed(() => [
 ])
 
 const subscriptions = ref<UserSubscription[]>([])
-const groups = ref<Group[]>([])
 const loading = ref(false)
 let abortController: AbortController | null = null
 
@@ -1127,8 +926,6 @@ let userSearchTimeout: ReturnType<typeof setTimeout> | null = null
 
 const filters = reactive({
   status: 'active',
-  group_id: '',
-  platform: '',
   user_id: null as number | null
 })
 
@@ -1159,56 +956,18 @@ const restoringSubscription = ref<UserSubscription | null>(null)
 
 const assignForm = reactive({
   user_id: null as number | null,
-  // null = 未选择；0 = 个人订阅（不绑分组，仅管理额度，不授予分组权限）
-  group_id: 0 as number | null,
   validity_days: 30,
-  daily_limit_usd: null as number | null,
-  weekly_limit_usd: null as number | null,
-  monthly_limit_usd: null as number | null
+  // 总额度钱包：null = 本次不改动已有额度；0 = 不限额
+  total_limit_usd: null as number | null
 })
 
-// 生效额度（订阅自有 > 归属分组），与后端 EffectiveDailyLimit 同构。
-const dailyLimitOf = (row: UserSubscription): number | null => effectiveDailyLimit(row, row.group)
-const weeklyLimitOf = (row: UserSubscription): number | null => effectiveWeeklyLimit(row, row.group)
-const monthlyLimitOf = (row: UserSubscription): number | null => effectiveMonthlyLimit(row, row.group)
+// 生效总额度（对齐后端 EffectiveTotalLimit：nil/<=0 = 不限额）。
+const totalLimitOf = (row: UserSubscription): number | null =>
+  row.total_limit_usd != null && row.total_limit_usd > 0 ? row.total_limit_usd : null
 
 const extendForm = reactive({
   days: 30
 })
-
-// Group options for filter (all groups)
-const groupOptions = computed(() => [
-  { value: '', label: t('admin.subscriptions.allGroups') },
-  ...groups.value.map((g) => ({ value: g.id.toString(), label: g.name }))
-])
-
-const platformFilterOptions = computed(() => [
-  { value: '', label: t('admin.subscriptions.allPlatforms') },
-  ...GROUP_PLATFORM_OPTIONS
-])
-
-// Group options for assign (only subscription type groups)
-// 首项为「个人订阅」（value=0）：不绑定分组，额度直接写在订阅行上。
-const subscriptionGroupOptions = computed(() => [
-  {
-    value: 0,
-    label: t('admin.subscriptions.personalSubscription'),
-    description: t('admin.subscriptions.personalGroupHint'),
-    platform: 'anthropic' as const,
-    subscriptionType: 'subscription' as const,
-    rate: 1
-  },
-  ...groups.value
-    .filter((g) => g.subscription_type === 'subscription' && g.status === 'active')
-    .map((g) => ({
-      value: g.id,
-      label: g.name,
-      description: g.description,
-      platform: g.platform,
-      subscriptionType: g.subscription_type,
-      rate: g.rate_multiplier
-    }))
-])
 
 const applyFilters = () => {
   clearSelection()
@@ -1231,8 +990,6 @@ const loadSubscriptions = async () => {
       pagination.page_size,
       {
         status: (filters.status as any) || undefined,
-        group_id: filters.group_id ? parseInt(filters.group_id) : undefined,
-        platform: filters.platform || undefined,
         user_id: filters.user_id || undefined,
         sort_by: sortState.sort_by,
         sort_order: sortState.sort_order
@@ -1258,14 +1015,6 @@ const loadSubscriptions = async () => {
       loading.value = false
       abortController = null
     }
-  }
-}
-
-const loadGroups = async () => {
-  try {
-    groups.value = await adminAPI.groups.getAll()
-  } catch (error) {
-    console.error('Error loading groups:', error)
   }
 }
 
@@ -1413,11 +1162,8 @@ const closeAssignModal = () => {
   assignUsers.value = []
   batchAssignResult.value = null
   assignForm.user_id = null
-  assignForm.group_id = 0
   assignForm.validity_days = 30
-  assignForm.daily_limit_usd = null
-  assignForm.weekly_limit_usd = null
-  assignForm.monthly_limit_usd = null
+  assignForm.total_limit_usd = null
   // Clear user search state
   selectedUser.value = null
   userSearchKeyword.value = ''
@@ -1431,39 +1177,29 @@ const handleAssignSubscription = async () => {
     appStore.showError(t('admin.subscriptions.pleaseSelectUser'))
     return
   }
-  if (assignForm.group_id === null || assignForm.group_id === undefined) {
-    appStore.showError(t('admin.subscriptions.pleaseSelectGroup'))
-    return
-  }
   if (!Number.isInteger(assignForm.validity_days) || assignForm.validity_days < 1 || assignForm.validity_days > 36500) {
     appStore.showError(t('admin.subscriptions.validityDaysRequired'))
     return
   }
-  const quotaValues = [assignForm.daily_limit_usd, assignForm.weekly_limit_usd, assignForm.monthly_limit_usd]
-  if (quotaValues.some((v) => v !== null && v !== undefined && (Number.isNaN(v) || v < 0))) {
+  const totalValue = assignForm.total_limit_usd
+  if (totalValue !== null && totalValue !== undefined && (Number.isNaN(totalValue as number) || (totalValue as number) < 0)) {
     appStore.showError(t('admin.subscriptions.quotaInvalid'))
     return
   }
-  // 语义：留空 = 不改动已有额度（后端「三者全缺则不改」，兼容只续期不调额度）；
-  // 显式输 0 = 不限额（后端 normalizeSubLimit 将 <=0 归为不限）。
+  // 语义：留空 = 不改动已有额度（后端「缺省则不改」）；显式输 0 = 不限额（normalizeSubLimit 将 <=0 归为不限）。
   // 必须显式处理 ''：v-model.number 清空后得到空串，?? 不会将其归为 undefined，
   // 直接提交会让 Go 的 *float64 反序列化失败。
   const toQuotaField = (value: number | null): number | undefined =>
     value === null || value === undefined || (value as unknown) === '' || Number.isNaN(value)
       ? undefined
       : value
-  const quotaPayload = {
-    daily_limit_usd: toQuotaField(assignForm.daily_limit_usd),
-    weekly_limit_usd: toQuotaField(assignForm.weekly_limit_usd),
-    monthly_limit_usd: toQuotaField(assignForm.monthly_limit_usd)
-  }
+  const quotaPayload = { total_limit_usd: toQuotaField(assignForm.total_limit_usd) }
 
   submitting.value = true
   try {
     if (batchAssignEnabled.value) {
       batchAssignResult.value = await adminAPI.subscriptions.bulkAssign({
         user_ids: assignUsers.value.map((user) => user.id),
-        group_id: assignForm.group_id,
         validity_days: assignForm.validity_days,
         ...quotaPayload
       })
@@ -1478,7 +1214,6 @@ const handleAssignSubscription = async () => {
     }
     await adminAPI.subscriptions.assign({
       user_id: assignForm.user_id!,
-      group_id: assignForm.group_id,
       validity_days: assignForm.validity_days,
       ...quotaPayload
     })
@@ -1584,7 +1319,7 @@ const confirmResetQuota = async () => {
   if (resettingQuota.value) return
   resettingQuota.value = true
   try {
-    await adminAPI.subscriptions.resetQuota(resettingSubscription.value.id, { daily: true, weekly: true, monthly: true })
+    await adminAPI.subscriptions.resetQuota(resettingSubscription.value.id)
     appStore.showSuccess(t('admin.subscriptions.quotaResetSuccess'))
     showResetQuotaConfirm.value = false
     resettingSubscription.value = null
@@ -1642,65 +1377,6 @@ const getProgressClass = (used: number | null | undefined, limit: number | null)
   return 'bg-green-500'
 }
 
-const formatResetDuration = (parts: RemainingDurationParts): string => {
-  if (parts.days > 0) {
-    return t('admin.subscriptions.resetInDaysHours', { days: parts.days, hours: parts.hours })
-  }
-
-  if (parts.hours > 0) {
-    return t('admin.subscriptions.resetInHoursMinutes', { hours: parts.hours, minutes: parts.minutes })
-  }
-
-  return t('admin.subscriptions.resetInMinutes', { minutes: parts.minutes })
-}
-
-const formatQuotaEndDuration = (parts: RemainingDurationParts): string => {
-  if (parts.days > 0) {
-    return t('admin.subscriptions.quotaEndsInDaysHours', { days: parts.days, hours: parts.hours })
-  }
-
-  if (parts.hours > 0) {
-    return t('admin.subscriptions.quotaEndsInHoursMinutes', { hours: parts.hours, minutes: parts.minutes })
-  }
-
-  return t('admin.subscriptions.quotaEndsInMinutes', { minutes: parts.minutes })
-}
-
-const formatDailyUsageWindow = (subscription: UserSubscription): string => {
-  if (isOneTimeDailyQuota(subscription) && subscription.expires_at) {
-    const parts = getRemainingDurationParts(subscription.expires_at)
-    return parts ? formatQuotaEndDuration(parts) : t('admin.subscriptions.windowNotActive')
-  }
-
-  return formatResetTime(subscription.daily_window_start, 'daily')
-}
-
-// Format reset time based on window start and period type
-const formatResetTime = (windowStart: string | null, period: 'daily' | 'weekly' | 'monthly'): string => {
-  if (!windowStart) return t('admin.subscriptions.windowNotActive')
-
-  const start = new Date(windowStart)
-  const now = new Date()
-
-  // Calculate reset time based on period
-  let resetTime: Date
-  switch (period) {
-    case 'daily':
-      resetTime = new Date(start.getTime() + 24 * 60 * 60 * 1000)
-      break
-    case 'weekly':
-      resetTime = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000)
-      break
-    case 'monthly':
-      resetTime = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000)
-      break
-  }
-
-  const parts = getRemainingDurationParts(resetTime, now)
-
-  return parts ? formatResetDuration(parts) : t('admin.subscriptions.windowNotActive')
-}
-
 // Handle click outside to close dropdowns
 const handleClickOutside = (event: MouseEvent) => {
   const target = event.target as HTMLElement
@@ -1715,7 +1391,6 @@ onMounted(() => {
   loadUserColumnMode()
   loadSavedColumns()
   loadSubscriptions()
-  loadGroups()
   document.addEventListener('click', handleClickOutside)
 })
 
@@ -1741,9 +1416,5 @@ onUnmounted(() => {
 
 .usage-amount {
   @apply whitespace-nowrap text-xs tabular-nums text-gray-600 dark:text-gray-300;
-}
-
-.reset-info {
-  @apply flex items-center gap-1 pl-12 text-[10px] text-blue-600 dark:text-blue-400;
 }
 </style>

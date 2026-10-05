@@ -311,9 +311,21 @@ func creditSnapshotExhausted(snapshot *accountCreditSnapshot) bool {
 }
 
 // creditSnapshotUtilizationIsReliable 报告本快照的 used/size 是否可用于「用量占比」。
-// 只有 Trae 满足（used 与 size 同源于未过期权益包聚合）。
+//
+// 需同时满足两条（缺一即不可用）：
+//  1. **只有 Trae** 满足 used 与 size 同源（均来自未过期权益包聚合）；
+//  2. **Credits 必须已耗尽**。Trae 有两个独立的钱袋子：权益包池（size/remain/used）
+//     与 status 接口口径的总积分（credits）。used/size 只描述前者，所以
+//     「权益包用光但积分还剩」会被算成 100%，而账号其实完全健康。
+//     与 creditSnapshotExhausted 的 `Remain > 0 || Credits > 0 → 放行` 保持同源，
+//     否则两条通道会对同一账号给出矛盾结论（硬闸门说「没耗尽」、阈值通道说「100%」），
+//     管理员设 80% 阈值就会把还有几千积分的号停掉（实测误杀）。
+//     积分是「余额」不是「配额池」，本身不存在占比语义，因此这里直接不产出候选。
 func creditSnapshotUtilizationIsReliable(snapshot *accountCreditSnapshot) bool {
-	return snapshot != nil && snapshot.platform == PlatformTrae && snapshot.Size > 0
+	return snapshot != nil &&
+		snapshot.platform == PlatformTrae &&
+		snapshot.Size > 0 &&
+		snapshot.Credits <= 0
 }
 
 // creditSnapshotRecoveryUntil 积分耗尽的恢复时刻：次日 0 点（跟随全局时区）。

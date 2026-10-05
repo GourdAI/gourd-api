@@ -67,17 +67,10 @@ func (r *transactionalBulkSubscriptionRepo) UpdateStatus(ctx context.Context, _ 
 	return nil
 }
 
-func (r *transactionalBulkSubscriptionRepo) ResetUsageWindows(ctx context.Context, _ int64, daily, weekly, monthly bool, dailyStart, periodicStart time.Time) error {
-	sub := r.pending[dbent.TxFromContext(ctx)]
-	if daily {
-		sub.DailyUsageUSD, sub.DailyWindowStart = 0, &dailyStart
-	}
-	if weekly {
-		sub.WeeklyUsageUSD, sub.WeeklyWindowStart = 0, &periodicStart
-	}
-	if monthly {
-		sub.MonthlyUsageUSD, sub.MonthlyWindowStart = 0, &periodicStart
-	}
+// ResetUsage 整包清零已用额度（钱包化后无日/周/月窗口可选，也就不再有
+// ResetUsageWindows 的三档布尔参数与窗口锚点时间）。
+func (r *transactionalBulkSubscriptionRepo) ResetUsage(ctx context.Context, _ int64) error {
+	r.pending[dbent.TxFromContext(ctx)].TotalUsageUSD = 0
 	return nil
 }
 
@@ -103,7 +96,7 @@ func TestBulkSubscriptionAction_RollsBackPostWriteFailureBeforeRetry(t *testing.
 				status = SubscriptionStatusExpired
 			}
 			repo := &transactionalBulkSubscriptionRepo{
-				committed:       UserSubscription{ID: 1, UserID: 10, GroupID: 20, Status: status, ExpiresAt: expiresAt, DailyUsageUSD: 7},
+				committed:       UserSubscription{ID: 1, UserID: 10, Status: status, ExpiresAt: expiresAt, TotalLimitUSD: ptrFloat64(20), TotalUsageUSD: 7},
 				pending:         make(map[*dbent.Tx]*UserSubscription),
 				reads:           make(map[*dbent.Tx]int),
 				postReadFailure: tc.postReadFailure,
@@ -111,7 +104,7 @@ func TestBulkSubscriptionAction_RollsBackPostWriteFailureBeforeRetry(t *testing.
 			}
 			svc := NewSubscriptionService(nil, repo, nil, client, nil)
 			t.Cleanup(svc.Stop)
-			input := &BulkSubscriptionActionInput{SubscriptionIDs: []int64{1}, Action: tc.action, Days: 7, Daily: true}
+			input := &BulkSubscriptionActionInput{SubscriptionIDs: []int64{1}, Action: tc.action, Days: 7}
 
 			mock.ExpectBegin()
 			mock.ExpectRollback()
@@ -120,7 +113,7 @@ func TestBulkSubscriptionAction_RollsBackPostWriteFailureBeforeRetry(t *testing.
 			require.Equal(t, 1, result.FailedCount)
 			require.Equal(t, expiresAt, repo.committed.ExpiresAt, "failed operation must not commit its earlier expiry write")
 			require.Equal(t, status, repo.committed.Status)
-			require.Equal(t, float64(7), repo.committed.DailyUsageUSD)
+			require.Equal(t, float64(7), repo.committed.TotalUsageUSD)
 
 			repo.postReadFailure, repo.statusFailure = false, false
 			mock.ExpectBegin()
@@ -132,7 +125,9 @@ func TestBulkSubscriptionAction_RollsBackPostWriteFailureBeforeRetry(t *testing.
 				require.Equal(t, expiresAt.AddDate(0, 0, 7), repo.committed.ExpiresAt, "retry must extend only once")
 				require.Equal(t, SubscriptionStatusActive, repo.committed.Status)
 			} else {
-				require.Zero(t, repo.committed.DailyUsageUSD)
+				require.Zero(t, repo.committed.TotalUsageUSD)
+				require.NotNil(t, repo.committed.TotalLimitUSD, "重置额度不得改写额度快照")
+				require.Equal(t, float64(20), *repo.committed.TotalLimitUSD)
 			}
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
