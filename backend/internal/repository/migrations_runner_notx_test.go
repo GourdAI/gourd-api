@@ -3,6 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -15,6 +18,15 @@ func TestValidateMigrationExecutionMode(t *testing.T) {
 		nonTx, err := validateMigrationExecutionMode("001_add_idx.sql", "CREATE INDEX CONCURRENTLY idx_a ON t(a);")
 		require.False(t, nonTx)
 		require.Error(t, err)
+	})
+
+	t.Run("事务迁移注释提到CONCURRENTLY不应误伤", func(t *testing.T) {
+		// 246_subscription_wallet_model.sql 回归：注释里写了「不使用 CREATE INDEX
+		// CONCURRENTLY，因此可安全跑在事务内」，裸子串匹配会误伤真实事务迁移，
+		// 校验必须只看剥离注释后的真实语句。
+		nonTx, err := validateMigrationExecutionMode("246_subscription_wallet_model.sql", "\n-- 注意：不使用 CREATE INDEX CONCURRENTLY，因此可安全跑在事务内。\nCREATE INDEX IF NOT EXISTS idx_a ON t(a);\n")
+		require.False(t, nonTx)
+		require.NoError(t, err)
 	})
 
 	t.Run("notx迁移要求CREATE使用IF NOT EXISTS", func(t *testing.T) {
@@ -49,6 +61,29 @@ DROP INDEX CONCURRENTLY IF EXISTS idx_b;
 		require.True(t, nonTx)
 		require.NoError(t, err)
 	})
+}
+
+// TestValidateMigrationExecutionMode_AllMigrations 是生产事故（246 重启风暴）的回归守护：
+// 逐个校验 migrations 目录下每一个真实 .sql 文件，确保任何迁移文件都不会被
+// 校验器拒绝（尤其是「注释里提到 CONCURRENTLY 被误伤为 CONCURRENTLY 语句」这类
+// 裸子串匹配陷阱）。新增迁移文件后本测试会自动覆盖到。
+func TestValidateMigrationExecutionMode_AllMigrations(t *testing.T) {
+	t.Helper()
+	pattern := filepath.Join("..", "..", "migrations", "*.sql")
+	names, err := filepath.Glob(pattern)
+	require.NoError(t, err)
+	require.NotEmpty(t, names, "未找到任何迁移文件，请确认测试相对路径")
+	for _, path := range names {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			content, err := os.ReadFile(path)
+			require.NoError(t, err)
+			name := filepath.Base(path)
+			nonTx, err := validateMigrationExecutionMode(name, string(content))
+			require.NoError(t, err, name+": 启动校验会失败（检查是否把注释误判为语句）")
+			wantNotTx := strings.HasSuffix(strings.ToLower(name), nonTransactionalMigrationSuffix)
+			require.Equal(t, wantNotTx, nonTx, name)
+		})
+	}
 }
 
 func TestApplyMigrationsFS_NonTransactionalMigration(t *testing.T) {

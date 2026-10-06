@@ -502,7 +502,10 @@ func validateMigrationExecutionMode(name, content string) (bool, error) {
 	nonTx := strings.HasSuffix(normalizedName, nonTransactionalMigrationSuffix)
 
 	if !nonTx {
-		if strings.Contains(upperContent, "CONCURRENTLY") {
+		// 判定基于剥离行注释后的内容：注释里提到 CONCURRENTLY（例如说明「不使用
+		// CREATE INDEX CONCURRENTLY」）不是 CONCURRENTLY 语句，不应误伤；真正会在
+		// 事务内执行失败的是语句本身。口径与 _notx 分支的逐语句判定保持一致。
+		if strings.Contains(strings.ToUpper(stripSQLLineComment(content)), "CONCURRENTLY") {
 			return false, errors.New("CONCURRENTLY statements must be placed in *_notx.sql migrations")
 		}
 		return false, nil
