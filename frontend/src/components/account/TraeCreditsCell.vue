@@ -361,9 +361,25 @@ const tokenExpiryTooltip = computed(() => {
 })
 
 // 主数字用 remain（未过期权益包聚合剩余），缺 remain 时回落 credits（上游 status 口径）。
+//
+// 【降级快照护栏】库里存量快照可能是旧后端留下的「usage 失败但写全 0」形态
+// （remain=0 且 size=0 且 packs=0，而 status 的 credits 有真实余额）：旧实现用
+// `typeof remain === 'number'` 判缺失，**0 会直接命中、永不回落 credits**，于是
+// 把「剩余 2,203」显示成「剩余 0」。新后端已不再写这种快照（usage 失败即 Success=false
+// 且不落盘），但存量脏数据仍需读侧兼容，直到下一次成功探测自然覆盖。
+const isDegradedZeroReading = (r: TraeCreditsView): boolean => {
+  if (typeof r.remain !== 'number' || r.remain !== 0) return false
+  if (typeof r.credits !== 'number' || r.credits <= 0) return false
+  const sizeEmpty = typeof r.size !== 'number' || r.size === 0
+  const packsEmpty = typeof r.packs !== 'number' || r.packs === 0
+  const noPackages = !Array.isArray(r.packages) || r.packages.length === 0
+  return sizeEmpty && packsEmpty && noPackages
+}
+
 const primaryCredits = computed(() => {
   const r = resolved.value
   if (!r) return undefined
+  if (isDegradedZeroReading(r)) return r.credits
   if (typeof r.remain === 'number') return r.remain
   if (typeof r.credits === 'number') return r.credits
   return undefined

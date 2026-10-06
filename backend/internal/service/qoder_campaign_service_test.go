@@ -329,7 +329,8 @@ func TestQoderQueryCreditsAggregatesQuotaAndCampaigns(t *testing.T) {
 	require.Equal(t, "personal_professional", result.UserType)
 	require.Equal(t, "cn", result.Realm)
 	require.False(t, result.QuotaExceeded)
-	require.Equal(t, 1, result.Packs)
+	// 已改：packs 现在只计**可用**专属包（夹具里的包已耗尽+过期 ⇒ 0）。
+	require.Equal(t, 0, result.Packs)
 	require.Len(t, result.Packages, 1)
 	require.Equal(t, "act-20260901-170", result.Packages[0].Name)
 

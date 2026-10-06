@@ -194,6 +194,46 @@ type qoderClaimResp struct {
 // 对外的结果 / 快照结构
 // ---------------------------------------------------------------------------
 
+// qoderPackageNegativeStatusSuffixes 上游专属资源包 status 里明确表示「这个包不能再用」
+// 的后缀集合。上游用的是 QUOTA_DETAIL_STATUS_* 一族枚举，本仓库只实测到 EXHAUSTED
+// 一例（见 qoder_campaign_service_test.go 的 qoderQuotaBody），其余值按后缀匹配兜住，
+// 避免上游新增负向态时又把死包算进余额。
+var qoderPackageNegativeStatusSuffixes = []string{"EXHAUSTED", "EXPIRED", "UNAVAILABLE", "INVALID", "REFUNDED"}
+
+// qoderPackUsable 判定单个专属资源包是否仍可用（可用才计入余额/总额/packs 计数）。
+//
+// 三条依据，任一命中即视为不可用：
+//  1. remaining <= 0：包已用光，不再贡献余额；
+//  2. status 命中已知负向后缀；
+//  3. expiresAt 已过期（上游这里是**毫秒**，比较前归一到秒）。
+//
+// 注意**不把 available==false 当作否决依据**：Go 侧 bool 零值与「上游没下发该字段」
+// 无法区分，若以它为正向前置条件，上游一旦省略 available 就会把全部专属包判成不可用，
+// 反而复现「主数字偏小」这个原始缺陷。available 仅作为明细透传给前端展示。
+func qoderPackUsable(remaining float64, status string, expiresAtMillis int64, nowSeconds int64) bool {
+	if remaining <= 0 {
+		return false
+	}
+	upper := strings.ToUpper(strings.TrimSpace(status))
+	for _, suffix := range qoderPackageNegativeStatusSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return false
+		}
+	}
+	if expiresAtMillis > 0 {
+		// 上游此处为毫秒（实测 1790000000000），归一到秒后再与 now 比较；
+		// 阈值与 Trae 的 traeNormalizeEpochSeconds 保持一致（>1e12 视为毫秒）。
+		expiresSeconds := expiresAtMillis
+		if expiresSeconds > 1e12 {
+			expiresSeconds /= 1000
+		}
+		if expiresSeconds <= nowSeconds {
+			return false
+		}
+	}
+	return true
+}
+
 // QoderCreditPack 单个专属资源包摘要（dedicatedResourcePackages 条目）。
 type QoderCreditPack struct {
 	Name       string  `json:"name,omitempty"`
@@ -213,7 +253,9 @@ type QoderCreditsResult struct {
 	Realm    string `json:"realm"`
 	UserType string `json:"user_type,omitempty"`
 
-	// 汇总余额 = 套餐内 + 资源包（活动赠送计入资源包）。
+	// 汇总余额 = 套餐内 + 加油包 + **可用**专属资源包（活动赠送即以专属包下发，
+	// 故必须计入，否则「领取 100 Credits」后主数字纹丝不动）。
+	// 已用光/已过期/负向态的专属包不计入，也不计入 Packs。
 	Remaining float64 `json:"remaining"`
 	Used      float64 `json:"used"`
 	Total     float64 `json:"total"`
@@ -440,8 +482,12 @@ func (s *QoderCreditsService) applyQoderQuota(result *QoderCreditsResult, resp *
 		result.Total += resp.AddOnQuota.Total
 		result.Remaining += resp.AddOnQuota.Remaining
 	}
+	// 专属资源包：只有「还能花」的那部分才进余额/总额/计数（见 qoderPackUsable）。
+	// 历史缺陷：这里曾经只 Packs++ 与追加明细、不做任何累加，导致活动赠送的 Credits
+	// 永远不进主数字，与 QoderCreditsResult.Remaining 字段上的注释「汇总余额=套餐内
+	// + 加油包 + 可用专属资源包」自相矛盾。
+	nowSeconds := time.Now().Unix()
 	for _, pkg := range resp.DedicatedResourcePackages {
-		result.Packs++
 		result.Packages = append(result.Packages, QoderCreditPack{
 			Name:      pkg.Name,
 			Remain:    pkg.Remaining,
@@ -451,6 +497,13 @@ func (s *QoderCreditsService) applyQoderQuota(result *QoderCreditsResult, resp *
 			ExpiresAt: pkg.ExpiresAt,
 			Available: pkg.Available,
 		})
+		if !qoderPackUsable(pkg.Remaining, pkg.Status, pkg.ExpiresAt, nowSeconds) {
+			continue
+		}
+		result.Packs++
+		result.Remaining += pkg.Remaining
+		result.Used += pkg.Used
+		result.Total += pkg.Total
 	}
 }
 

@@ -181,8 +181,13 @@ type TraeCredentials struct {
 	Nickname     string
 	Realm        string
 	BaseURL      string
-	// DeviceID / MachineID 上游风控指纹：UG 域（签到/积分）缺 device_id 直接返回
-	// 业务码 9004（参数错误）。两者缺省时由账号 ID 稳定派生（见 traeStableDeviceID）。
+	// DeviceID / MachineID 上游聊天域（IDE 主进程）的设备画像：登录时与上游绑定的那
+	// 一对真值，同一账号必须恒定。两个 UG 子族用法不同：
+	//   - 签到族（checkin_credits/status|claim）**不读 device_id**，必须每轮现抛新随机
+	//     值（见 traeFreshCheckinDeviceID）——拿这对持久值去签到正是 9074 成因；
+	//   - 权益族（pay/ide_user_ent_usage）只读 device_id（沿用本值，见
+	//     traeUGStableDeviceID），两族都不发 machine_id。
+	// 两者缺省时由账号 ID 稳定派生（见 traeStableDeviceID）。
 	DeviceID  string
 	MachineID string
 	// IDEVersion / IDEVersionCode 决定上游可用模型表（version-code 不匹配会拿到

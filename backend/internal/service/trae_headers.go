@@ -10,16 +10,40 @@ package service
 //   - 聊天域走 IDE 主进程身份，UA 是 "Trae/<version>"，必须带 x-uid；
 //   - OAuth 域头族极简（只有 content-type/accept/UA），带任何 IDE 私有头反而可能被拒。
 //
-// 设备指纹：x-device-id 必须是 15~16 位纯数字（发 hex/UUID 在风控眼里不是设备号，
-// 签到直接 9074），x-machine-id 为 32 位 hex。凭据缺省时由账号 ID 稳定派生：
-// 同一账号每次请求、重启后都得到同一组指纹，避免"每请求换设备号"被判定为异常。
+// 设备指纹（两套纪律**相反**，别互相"顺手复用"）：
+//   - **聊天域**（IDE 主进程身份）：x-device-id / x-machine-id 用登录时与上游绑定的
+//     那一对真值（凭据优先，缺省由账号 ID 稳定派生），同一账号必须恒定 —— 聊天域
+//     每请求换设备号 = 画像漂移，会被风控盯上。
+//   - **UG 签到族**（/trae/api/v2/ug/checkin_credits/status|claim）：x-device-id 必须
+//     **每轮现抛一个新的 16 位随机数字**。取证依据（mmqz/cpa-multi-plugins@0.12.117
+//     plugins/trae/upstream/checkin_device_test.go 包注释，v0.12.65，作者注明"被两次
+//     反转才定下"）："the ug check-in x-device-id must be a fresh random 16-digit
+//     numeric string — the login hex32 deviceId provably fails claim with 9074,
+//     reused/deterministic numeric ids degrade over time, and an empty value yields
+//     9004"。⇒ 把聊天域那对持久指纹拿去签到，正是 9074 的成因（固定值会随时间退化）。
+//   - **UG 权益族**（/trae/api/v2/pay/ide_user_ent_usage 等非签到端点）：沿用**账号级
+//     稳定** device_id，不轮换。同一个参考实现把边界写得很死（client.go ugCheckinRequest
+//     v0.12.65 注释原文）："deviceID 非空时覆盖 ugBaseHeaders 的 X-Device-Id ——
+//     签到族请求专用，其余 ug 端点（积分查询等）**不受影响**"；其 UgHeaders 对权益族
+//     直接发 a.DeviceID（抓包成功基线）。⇒ 没有证据支持在余额探测上轮换设备号，就不
+//     越界套用签到族纪律（那会给「余额显示不准」这条排查线新引入一个变量）。
+//
+// **不发 x-machine-id**：两套 UG 请求都适用（成功抓包的逐头清单里没有该头；参考实现
+// ugBaseHeaders 同样不发，X-Machine-Id 只在聊天域 SOLOHeaders 里出现）。
+//
+// UG 域另外两个每请求新生成的头（同一参考实现 headers.go 的 2026-09-03 成功签到抓包）：
+// x-request-id（uuid-v4）与 x-tt-trace-id（"00-<32hex>-<16hex>-01"，16hex 取自本次
+// request-id），两者在**同一请求内配对**，换请求必须换 trace。
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -63,8 +87,65 @@ func traeUAForUG(creds TraeCredentials) string {
 	return "VSCode " + defaultTraeVSCodeVersion + " (TRAE SOLO CN)"
 }
 
-// traeStableDeviceID 由账号 ID 派生 16 位纯数字设备号（上游风控画像要求设备号为
-// 数字串；hex/UUID 会被判为非法设备号 → 签到 9074）。
+// traeFreshCheckinDeviceID 现抛一个**新的** 16 位纯数字设备号，供 UG 域（签到/积分）
+// 使用。纪律见文件头：签到设备号必须每请求新随机，复用或确定性派生的数字号会随时间
+// 退化并被上游以 9074 拒绝（文案是"参与用户太多"，实际语义是"设备号无效"）。
+//
+// 绝不返回空串：空值上游直接判 9004（参数错误）。crypto/rand 实际不会失败，万一失败
+// 也要退化到时刻派生的合法形态，不能因为取随机数失败就发一个空头出去。
+func traeFreshCheckinDeviceID() string {
+	if id, err := newTraeLoginDeviceID(); err == nil {
+		return id
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("trae-fallback-device:%d", time.Now().UnixNano())))
+	digits := strconv.FormatUint(uint64(sum[0])<<56|uint64(sum[1])<<48|uint64(sum[2])<<40|
+		uint64(sum[3])<<32|uint64(sum[4])<<24|uint64(sum[5])<<16|uint64(sum[6])<<8|uint64(sum[7]), 10)
+	for len(digits) < 16 {
+		digits = "1" + digits
+	}
+	if len(digits) > 16 {
+		digits = digits[:16]
+	}
+	if digits[0] == '0' {
+		digits = "1" + digits[1:]
+	}
+	return digits
+}
+
+// traeUGStableDeviceID UG **权益族**（ide_user_ent_usage 等非签到端点）的设备号：沿用
+// 账号级稳定值（凭据优先，缺省由账号 ID 派生）。取证：参考实现 UgHeaders 直接发
+// a.DeviceID，并在新随机制度落地时把它限定为「签到族专用，其余 ug 端点不受影响」。
+// 签到族不得用本函数（见 traeFreshCheckinDeviceID）。
+func traeUGStableDeviceID(creds TraeCredentials, account *Account) string {
+	deviceID, _ := traeResolveDeviceIdentity(creds, account)
+	return deviceID
+}
+
+// traeNewUGRequestIDs 生成一对**同一请求内配对**的追踪标识（抓包实证：真实客户端每
+// 请求现生成，且 trace-id 尾段取自 request-id）。返回 (requestID, traceID)。
+func traeNewUGRequestIDs() (string, string) {
+	requestID, err := newTraeUUIDv4()
+	if err != nil {
+		// newTraeUUIDv4 只依赖 crypto/rand，实际不会失败；兼容分支仍必须产出
+		// **合法 8-4-4-4-12 且 version/variant 位正确**的形态（缺头或畸形的
+		// request-id 同样是一个上游没见过的画像）。
+		sum := sha256.Sum256([]byte(fmt.Sprintf("trae-rid:%d", time.Now().UnixNano())))
+		h := hex.EncodeToString(sum[:]) // 恰好 32 个十六进制字符
+		requestID = h[0:8] + "-" + h[8:12] + "-4" + h[13:16] + "-8" + h[17:20] + "-" + h[20:32]
+	}
+	t := make([]byte, 16)
+	if _, err := rand.Read(t); err != nil {
+		derived := sha256.Sum256([]byte(requestID))
+		copy(t, derived[:16])
+	}
+	traceID := "00-" + hex.EncodeToString(t) + "-" +
+		strings.ReplaceAll(requestID, "-", "")[:16] + "-01"
+	return requestID, traceID
+}
+
+// traeStableDeviceID 由账号 ID 派生 16 位纯数字设备号（**聊天域**兜底用：上游风控
+// 画像要求设备号为数字串，hex/UUID 不是设备号）。签到/UG 域不得用它，见
+// traeFreshCheckinDeviceID。
 func traeStableDeviceID(account *Account) string {
 	seed := traeFingerprintSeed(account)
 	sum := sha256.Sum256([]byte("trae-device:" + seed))
@@ -165,15 +246,30 @@ func applyTraeChatHeaders(req *http.Request, creds TraeCredentials, account *Acc
 	}
 }
 
-// applyTraeBillingHeaders 构造 UG 域（积分查询 / 每日签到）出站头：IDE 插件进程指纹。
+// applyTraeBillingHeaders 构造 UG 域（权益用量查询 / 每日签到）出站头：IDE 插件进程指纹。
 //
-// 与聊天域的三处关键差异（均为实测换来的纪律）：
+// 不接 *Account：机器码属于聊天域，UG 域一律不发；设备号由**调用方**按端点族算好后
+// 传入（签到族走 traeFreshCheckinDeviceID，权益族走 traeUGStableDeviceID）。把账号
+// 对象递进来只会诱使后来者对两族统一"顺手"取一个值 —— 那正是本纪律被两次反转的起点。
+//
+// 与聊天域的四处关键差异（均为实测/一手抓包换来的纪律）：
 //  1. UA 是 VSCode/(TRAE SOLO CN) 而不是 Trae/<ver>；
 //  2. **不发 X-Uid**（真实插件签到请求里没有该头，多发即指纹异常）；
-//  3. Accept 为 */*、Sec-Fetch-* 三件套齐全（插件走 fetch no-cors 形态）。
-func applyTraeBillingHeaders(req *http.Request, creds TraeCredentials, account *Account) {
+//  3. **不发 X-Machine-Id**（抓包成功的签到请求逐头清单里没有它；多一个上游
+//     没见过的头 = 指纹异常，本仓头文件自己就写着这条纪律）；
+//  4. 设备号按族分流，并配一对每请求新生成的 X-Request-Id / X-TT-Trace-Id。
+//
+// deviceID 语义：
+//   - 签到编排（status→claim→回查）必须显式传入**当轮新随机值**且全程同值（上游把它们
+//     当配对校验参数，一轮内突变反而会被拒）；
+//   - 权益用量查询传入 traeUGStableDeviceID 的账号稳定值（无证据支持在此轮换）；
+//   - 传空串仅属兼容兜底：现抛一个新随机值，不静默发空头（空 = 9004）。
+func applyTraeBillingHeaders(req *http.Request, creds TraeCredentials, deviceID string) {
 	ideVersion := traeEffective(creds.IDEVersion, defaultTraeIDEVersion)
-	deviceID, machineID := traeResolveDeviceIdentity(creds, account)
+	if strings.TrimSpace(deviceID) == "" {
+		deviceID = traeFreshCheckinDeviceID()
+	}
+	requestID, traceID := traeNewUGRequestIDs()
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "*/*")
@@ -183,7 +279,6 @@ func applyTraeBillingHeaders(req *http.Request, creds TraeCredentials, account *
 		req.Header.Set("Authorization", traeJWTAuthScheme+" "+token)
 	}
 	req.Header.Set("X-Device-Id", deviceID)
-	req.Header.Set("X-Machine-Id", machineID)
 	req.Header.Set("X-User-Region", traeUserRegion(creds))
 	req.Header.Set("Package-Type", traePackageType(creds))
 	req.Header.Set("App-Version", ideVersion)
@@ -192,6 +287,8 @@ func applyTraeBillingHeaders(req *http.Request, creds TraeCredentials, account *
 	req.Header.Set("X-Device-Type", traeEffective(creds.DeviceType, defaultTraeDeviceType))
 	req.Header.Set("X-OS-Version", traeEffective(creds.OSVersion, defaultTraeOSVersion))
 	req.Header.Set("X-Lgw-Req-Sdk-Type", "3")
+	req.Header.Set("X-Request-Id", requestID)
+	req.Header.Set("X-TT-Trace-Id", traceID)
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "no-cors")
 	req.Header.Set("Sec-Fetch-Site", "none")

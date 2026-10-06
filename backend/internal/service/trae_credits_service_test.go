@@ -403,11 +403,12 @@ func TestTraeQueryCreditsUsageFailureIsNotFatal(t *testing.T) {
 	repo.accountsByID = map[int64]*Account{45: traeCreditsAccount(45, server.URL, nil)}
 
 	result, err := svc.QueryCredits(context.Background(), 45)
+	// 已改：usage 失败后不再冒充成功（全零降级快照会盖掉上次正确余额），改记错不落盘。
 	require.NoError(t, err)
-	require.True(t, result.Success, "权益包明细失败不致命：退回 status 的总积分读数")
+	require.False(t, result.Success, "权益包明细失败 ⇒ 没有余额读数，不得当成功")
 	require.InDelta(t, 1234.5, result.Credits, 1e-6)
 	require.EqualValues(t, 0, result.Remain)
-	require.Empty(t, result.Error)
+	require.Contains(t, result.Error, "usage")
 }
 
 // 纪律 3：claim 报成功但回查读数未跟上 → 不推翻上游结论，但记下待确认 detail。
@@ -444,10 +445,11 @@ func TestTraeCheckinClaimOKButStillUncheckedRecordsPendingStatus(t *testing.T) {
 		traeCheckinStatusPath, traeCheckinClaimPath, traeCheckinStatusPath,
 		traeCheckinStatusPath, traeEntUsagePath,
 	}, spy.pathLog(), "回查一次取余额 + 成功后的积分快照刷新（status + ent_usage）")
-	// fail 仍落签到快照（列表页要显示失败态），成功则附带刷新积分快照。
+	// fail 仍落签到快照（列表页要显示失败态）；本夹具 ent_usage 回 404 ⇒ 积分刷新
+	// 拿到降级读数，按新行为不得落 trae_credits 快照（否则会盖掉上次正确余额）。
 	_, _, _, keys := repo.counts()
 	require.Contains(t, keys, traeCheckinExtraKey)
-	require.Contains(t, keys, traeCreditsExtraKey)
+	require.NotContains(t, keys, traeCreditsExtraKey)
 }
 
 func TestTraeCheckinHappyPathConfirmsViaStatus(t *testing.T) {
@@ -589,7 +591,7 @@ func TestTraeCheckinClaimPropagates9095AsAlready(t *testing.T) {
 	account := traeCreditsAccount(50, server.URL, nil)
 	// claim 层不得吞掉 9095：否则编排层无法区分「刚领到」与「今早已签」，
 	// 前端会把未产生收益的重复签到误报为成功领取。
-	err := svc.traeCheckinClaim(context.Background(), account)
+	err := svc.traeCheckinClaim(context.Background(), account, "")
 	require.Error(t, err)
 	require.True(t, traeIsCheckinAlreadyError(err), "9095 必须被分类为幂等已签到")
 	require.False(t, traeIsBusyError(err), "9095 不得误判为 9074 繁忙")
@@ -1192,7 +1194,8 @@ func TestTraeCreditsUGRequestsCarryDeviceHeadersAndNoUID(t *testing.T) {
 	require.Len(t, reqs, 2)
 	for _, req := range reqs {
 		require.Regexp(t, `^\d{15,16}$`, req.Header.Get("X-Device-Id"))
-		require.Regexp(t, `^[0-9a-f]{32}$`, req.Header.Get("X-Machine-Id"))
+		// 已改：UG 域不再发 X-Machine-Id（抓包实证的成功签到请求里没有该头）。
+		require.Empty(t, req.Header.Get("X-Machine-Id"))
 		require.Equal(t, "CN", req.Header.Get("X-User-Region"))
 		require.Empty(t, req.Header.Get("X-Uid"), "UG 域绝不发 X-Uid")
 		require.Contains(t, req.Header.Get("User-Agent"), "VSCode ")

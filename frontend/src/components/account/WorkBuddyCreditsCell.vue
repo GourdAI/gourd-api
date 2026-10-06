@@ -245,6 +245,8 @@ type WorkBuddyCreditsSnapshotExtra = {
   realm?: string
   not_applicable?: boolean
   enterprise?: boolean
+  /** 后端按配置时区（Asia/Shanghai）判定的今日签到态，已过「仅当日」闸门。 */
+  today_checkin_status?: string
 }
 
 // 任务快照 extra 形状（后端 UpdateExtra 写入 workbuddy_activity / workbuddy_travel）。
@@ -293,23 +295,33 @@ const snapshotData = computed<WorkBuddyCreditsResult | null>(() => {
     packages: snap.packages,
     fetched_at: snap.fetched_at,
     not_applicable: snap.not_applicable,
-    enterprise: snap.enterprise
+    enterprise: snap.enterprise,
+    today_checkin_status: snap.today_checkin_status
   }
 })
 
-// 从 account.extra 读今日签到快照（workbuddy_checkin，仅当日有效）。
+// 从 account.extra 读今日签到快照（workbuddy_checkin）。
+//
+// 【P0：旧口径把「昨日已签到」显示成「今日已签到」】旧实现拿
+// `new Date().toISOString().slice(0,10)`（**UTC 日期**）去比后端写入的
+// `workbuddy_checkin.date`（**Asia/Shanghai 日期串**），还宽化到「或昨天」。两个
+// 口径在中国大陆浏览器上必然错位：本地 00:00-07:59 时 UTC 仍是昨天，昨日快照
+// 直接命中 today；本地 08:00 后 UTC 变今天，昨日快照又命中 yesterday 宽化分支
+// ——结果是**整天**都显示绿色「今日已签到」，真实漏签被掩盖、直接损失每日积分。
+// 现行做法：优先读后端随积分快照下发的 `today_checkin_status`（已按权威时区
+// 判定且做过「仅当日」闸门）；只有旧版后端没下发该字段时，才降级用本地日期
+// 严格相等比对（不再宽化昨天，宁可不显示也不误报）。
 const snapshotCheckinStatus = computed(() => {
+  const fromCreditsSnapshot = snapshotData.value?.today_checkin_status
+  if (typeof fromCreditsSnapshot === 'string' && fromCreditsSnapshot) {
+    return fromCreditsSnapshot
+  }
   const raw = (props.account.extra as Record<string, unknown> | undefined)?.workbuddy_checkin
   if (!raw || typeof raw !== 'object') return ''
   const snap = raw as { date?: string; status?: string }
   if (typeof snap.date !== 'string' || typeof snap.status !== 'string') return ''
-  const today = new Date().toISOString().slice(0, 10)
-  // 本地日期可能与容器时区不同，宽化为「当天或昨天之内」由后端判定；
-  // 这里仅展示性读取，以快照自带 date 与本地今天粗匹配 + lenient 处理。
-  if (snap.date !== today) {
-    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10)
-    if (snap.date !== yesterday) return ''
-  }
+  // 降级路径：日期串必须与浏览器本地今日严格相等（与 Trae 组件同口径）。
+  if (snap.date !== todayLocalDate()) return ''
   return snap.status
 })
 
@@ -545,9 +557,10 @@ const handleProbe = async () => {
     // 失败时保留已渲染的快照（仅显示错误行），成功才覆盖。
     if (result.success) {
       data.value = result
-      // 后端返回的今日签到状态优先刷新展示（若本次无本地覆盖）。
-      if (result.today_checkin_status && !localCheckinStatus.value) {
-        localCheckinStatus.value = result.today_checkin_status
+      // 签到态以本次查询回执为权威：后端已按配置时区算好 today_checkin_status，
+      // 空串也必须覆盖本地态，否则旧快照误报的「今日已签到」点多少次查询都洗不掉。
+      if (!localCheckinStatus.value) {
+        localCheckinStatus.value = result.today_checkin_status ?? ''
       }
     } else {
       error.value = result.error || t('common.error')

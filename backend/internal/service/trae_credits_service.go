@@ -16,8 +16,13 @@ package service
 //  1. UG 域 HTTP 一律 200，成败只看 body 的 code；
 //  2. claim 的业务码 9095 = 今日已签到，属幂等成功而非失败；code=0 也幂等（重复
 //     调用不再发钱），故**不能拿积分变化当签到凭据**，必须回查 checked_in；
-//  3. 9074（"当前参与用户太多"）是**账号级稳定拒绝**（换 deviceId/token/UA 均无效），
-//     只重试 1 次即判失败；
+//  3. **9074 的文案（"当前参与用户太多"）不可信**：一手取证（cpa-multi-plugins
+//     checkin_device_test.go 包注释 v0.12.65）表明它常常是"这个 x-device-id 上游不认"
+//     ——登录绑定的 hex32 设备号必被 9074 拒，复用/确定性数字号会**随时间退化**，
+//     空值则是 9004。⇒ 本仓不对 9074 做变体重试（一次即如实落 fail），但**调用前必须
+//     确认设备号是当轮新随机的**：旧纪律"换 deviceId 无效"实际换的是**另一个固定值**，
+//     从未试过"每轮新随机"；同批旧结论里"换 req_source 无效"也是在固定设备号前提下
+//     测得（已被变量污染），不得再当作否据；
 //  4. 聚合积分必须跳过已过期权益包：签到积分当日发放、31 天后过期，不过滤会显示
 //     "越签越多、永远用不完"。
 //
@@ -66,7 +71,7 @@ const (
 const (
 	traeCodeOK             = 0
 	traeCodeAlreadyChecked = 9095 // 今日已签到（幂等成功）
-	traeCodeBusy           = 9074 // 当前参与用户太多：账号级稳定拒绝
+	traeCodeBusy           = 9074 // 文案"参与用户太多"，实测语义多为 x-device-id 不被上游接受
 	traeCodeSessionDead    = 1001 // 令牌/会话失效
 	traeCodeActivityOff    = 9090 // 活动暂不可用
 	traeCodeBadParams      = 9004 // 参数错误（典型：缺设备头）
@@ -319,13 +324,21 @@ func (s *TraeCreditsService) queryCreditsForAccount(ctx context.Context, account
 		result.Error = err.Error()
 		return result
 	}
-	status, statusErr := s.traeCheckinStatus(ctx, account)
+	status, statusErr := s.traeCheckinStatus(ctx, account, "")
 	if statusErr == nil && status != nil {
 		result.Credits = status.Credits
 		result.CheckedIn = status.CheckedIn
 		result.Checkable = status.Enable
 	}
-	// 权益包明细失败不致命：退回 status 的总积分读数。
+	// 权益包明细是余额的唯一来源：拿不到就没有余额读数，不得拿 0 冒充。
+	//
+	// 【此处曾是 P0 数据缺陷】旧实现只在 status 也坏时才记错，于是
+	// 「status 成功 + usage 失败」会以 Success=true 落盘一份
+	// remain/used/size/packs 全为 0 的降级快照，盖掉上一次的正确余额：
+	//   1. 前端 fallback 用 `typeof remain === 'number'` 判缺失（TraeCreditsCell.vue
+	//      的 primaryCredits），被 0 骗过，永远不会回落到真实的 credits；
+	//   2. account_credit_quota.go:255-257 「快照只来自成功探测」的落盘前提就此被破坏。
+	// 取不到包明细就是「没有读数」，不能拿 0 冒充余额，因此必须记错并拒绝落盘。
 	if packs, usageErr := s.traeEntitlementUsage(ctx, account); usageErr == nil {
 		remain, used, size := traeAggregatePacks(packs)
 		result.Remain = remain
@@ -335,6 +348,9 @@ func (s *TraeCreditsService) queryCreditsForAccount(ctx context.Context, account
 		result.Packages = packs
 	} else if statusErr != nil {
 		result.Error = fmt.Sprintf("%v; usage: %v", statusErr, usageErr)
+		return result
+	} else {
+		result.Error = fmt.Sprintf("usage: %v", usageErr)
 		return result
 	}
 	if statusErr != nil {
@@ -359,7 +375,11 @@ func (s *TraeCreditsService) checkinForAccount(ctx context.Context, account *Acc
 		s.persistTraeCheckinSnapshot(ctx, account, result)
 		return result
 	}
-	status, err := s.traeCheckinStatus(ctx, account)
+	// 本轮签到的设备号：**开始时现抛一个，全程（status → claim → 回查）保持同值**。
+	// 上游把这几个请求的 x-device-id 当配对校验参数，而它必须是当轮新生成的随机值
+	// （不能是账号级持久指纹，见 trae_headers.go 文件头的取证注释）。
+	checkinDeviceID := traeFreshCheckinDeviceID()
+	status, err := s.traeCheckinStatus(ctx, account, checkinDeviceID)
 	if err != nil {
 		result.Status = TraeCheckinStatusFail
 		result.Detail = err.Error()
@@ -383,7 +403,7 @@ func (s *TraeCreditsService) checkinForAccount(ctx context.Context, account *Acc
 			return result
 		}
 	}
-	claimErr := s.traeCheckinClaim(ctx, account)
+	claimErr := s.traeCheckinClaim(ctx, account, checkinDeviceID)
 	switch {
 	case claimErr == nil:
 		result.Status = TraeCheckinStatusOK
@@ -391,13 +411,12 @@ func (s *TraeCreditsService) checkinForAccount(ctx context.Context, account *Acc
 		// 「今天已签到」是幂等成功，不填 detail，免得被误读成失败。
 		result.Status = TraeCheckinStatusAlready
 	case traeIsBusyError(claimErr):
-		// 9074（「当前参与用户太多」）字面看像拥堵，实测却是账号级稳定拒绝：同一账号
-		// 40+ 次重试（间隔 0~15s）全部 9074，刷新 token、换全新 deviceId、换 UA /
-		// region / 换请求体（含 req_source）均无效。对照实验：把失败账号的 deviceId
-		// 借给成功账号仍 code=0 —— 失败跟着账号走，不跟着设备或参数走。
-		// 故此处不做任何参数变体重试（旧的「改用 req_source=2 再试一次」已被上述实测
-		// 否证，只会多一次无效且风控可见的请求），也不谎报成功：如实落 fail 并保留
-		// 上游原文，让管理面板看到真实缺签。
+		// 9074：文案说"当前参与用户太多"，但一手取证表明它通常是**设备号不认**（见
+		// 文件头纪律 3）。本轮已用当轮新随机设备号；参考实现（cpa client.go
+		// ugCheckinReqSourcesFor）会在 9074 后换 req_source 变体再探，本仓暂不跟进：
+		// 那会在同一轮里多打几次风控可见的写请求，而旧结论"换 req_source 无效"已确认
+		// 是在固定设备号前提下测得，不得当作否据 —— 属待你拍板的可选增强，不是否据。
+		// 也不谎报成功：如实落 fail 并保留上游原文，让面板看到真实缺签。
 		result.Status = TraeCheckinStatusFail
 		result.Detail = claimErr.Error()
 	default:
@@ -409,7 +428,7 @@ func (s *TraeCreditsService) checkinForAccount(ctx context.Context, account *Acc
 	// 是唯一权威判定，而 checked_in 是带设备侧缓存延迟的读数（实测：换 deviceId 后
 	// 会短暂回 false）。若把它当否据，配合「当日成功优先不覆盖」的快照合并语义，
 	// 一次真实成功的签到会被长期误报为失败，代价高于反过来。只记录待确认。
-	if after, queryErr := s.traeCheckinStatus(ctx, account); queryErr == nil && after != nil {
+	if after, queryErr := s.traeCheckinStatus(ctx, account, checkinDeviceID); queryErr == nil && after != nil {
 		result.Credits = after.Credits
 		result.HasCredit = true
 		if result.Status == TraeCheckinStatusOK && !after.CheckedIn {
@@ -479,11 +498,13 @@ type traeCheckinStatusBody struct {
 	Enable    bool    `json:"enable"`
 }
 
-// traeCheckinStatus 查询签到状态（含当前总积分）。
-func (s *TraeCreditsService) traeCheckinStatus(ctx context.Context, account *Account) (*traeCheckinStatusBody, error) {
+// traeCheckinStatus 查询签到状态（含当前总积分）。checkinDeviceID 为空时本函数
+// 自行现抛一个（单次调用方，如积分探测）；签到编排必须显式传入同一个值
+// （上游把 status 与 claim 的 x-device-id 当**配对校验参数**，一轮内不得突变）。
+func (s *TraeCreditsService) traeCheckinStatus(ctx context.Context, account *Account, checkinDeviceID string) (*traeCheckinStatusBody, error) {
 	data, err := s.traeBillingRequestWithAuthRetry(ctx, account, traeCheckinStatusPath, map[string]any{
 		"req_source": traeReqSource(account),
-	})
+	}, checkinDeviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -500,10 +521,10 @@ func (s *TraeCreditsService) traeCheckinStatus(ctx context.Context, account *Acc
 // traeCheckinClaim 发起每日签到领取。错误原样上抛：由调用方区分「幂等已成功
 // （9095=今日已签到）」与「真的失败」——在此就地吞掉会把「未领到积分」误报成
 // 「刚刚领到」（前端按钮文案也不同：一个是「早就签过了」，一个是「刚领到」）。
-func (s *TraeCreditsService) traeCheckinClaim(ctx context.Context, account *Account) error {
+func (s *TraeCreditsService) traeCheckinClaim(ctx context.Context, account *Account, checkinDeviceID string) error {
 	_, err := s.traeBillingRequestWithAuthRetry(ctx, account, traeCheckinClaimPath, map[string]any{
 		"req_source": traeReqSource(account),
-	})
+	}, checkinDeviceID)
 	return err
 }
 
@@ -547,7 +568,7 @@ func (s *TraeCreditsService) traeEntitlementUsage(ctx context.Context, account *
 	data, err := s.traeBillingRequestWithAuthRetry(ctx, account, traeEntUsagePath, map[string]any{
 		"require_usage": true,
 		"req_source":    traeUsageReqSource,
-	})
+	}, traeUGStableDeviceID(account.GetTraeCredentials(), account))
 	if err != nil {
 		return nil, err
 	}
@@ -635,9 +656,14 @@ type traeBillingEnvelope struct {
 }
 
 // traeBillingRequestWithAuthRetry 发送 UG 请求；401/code=1001 且持有 refresh_token 时
-// 换票一次后重试一次。
-func (s *TraeCreditsService) traeBillingRequestWithAuthRetry(ctx context.Context, account *Account, path string, body any) (json.RawMessage, error) {
-	data, err := s.traeBillingRequestOnce(ctx, account, path, body)
+// 换票一次后重试一次。deviceID 透传给两次尝试（**同一轮必须同值**）；空串表示由本层
+// 现抛一个。注意换票重试仍用同一设备号：设备号是「本轮调用」的身份，与 token 轮换
+// 无关（token 轮换不得连带突变设备号，那是风控最敏感的信号）。
+func (s *TraeCreditsService) traeBillingRequestWithAuthRetry(ctx context.Context, account *Account, path string, body any, deviceID string) (json.RawMessage, error) {
+	if strings.TrimSpace(deviceID) == "" {
+		deviceID = traeFreshCheckinDeviceID()
+	}
+	data, err := s.traeBillingRequestOnce(ctx, account, path, body, deviceID)
 	if err == nil {
 		return data, nil
 	}
@@ -651,12 +677,17 @@ func (s *TraeCreditsService) traeBillingRequestWithAuthRetry(ctx context.Context
 		slog.Warn("trae billing token refresh failed", "account_id", account.ID, "error", refreshErr)
 		return nil, err
 	}
-	return s.traeBillingRequestOnce(ctx, account, path, body)
+	return s.traeBillingRequestOnce(ctx, account, path, body, deviceID)
 }
 
 // traeBillingRequestOnce 发送单次 UG 请求：HTTP >=400 或业务 code != 0 都返回
 // *traeBillingError（幂等/会话失效判据）；传输与解析错误返回普通 error。
-func (s *TraeCreditsService) traeBillingRequestOnce(ctx context.Context, account *Account, path string, body any) (json.RawMessage, error) {
+// deviceID 为 UG 域设备号的唯一来源（由调用方按端点族选定：签到族用当轮新随机值，
+// 权益族用账号稳定值）；空串仅属兼容兑底，现抛一个新随机值，绝不发空头（空 = 9004）。
+func (s *TraeCreditsService) traeBillingRequestOnce(ctx context.Context, account *Account, path string, body any, deviceID string) (json.RawMessage, error) {
+	if strings.TrimSpace(deviceID) == "" {
+		deviceID = traeFreshCheckinDeviceID()
+	}
 	baseURL := account.GetTraeBillingBaseURL()
 	if strings.TrimSpace(baseURL) == "" {
 		return nil, fmt.Errorf("trae account %d missing billing base_url", account.ID)
@@ -683,7 +714,7 @@ func (s *TraeCreditsService) traeBillingRequestOnce(ctx context.Context, account
 		return nil, fmt.Errorf("build trae billing request: %w", err)
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	applyTraeBillingHeaders(req, account.GetTraeCredentials(), account)
+	applyTraeBillingHeaders(req, account.GetTraeCredentials(), deviceID)
 
 	resp, err := s.httpUpstream.Do(req, s.resolveTraeProxyURL(ctx, account), account.ID, maxInt(account.Concurrency, 1))
 	if err != nil {

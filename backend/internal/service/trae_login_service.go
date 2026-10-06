@@ -430,11 +430,14 @@ func (s *TraeLoginService) completeLogin(
 	}
 
 	// 设备指纹落库：**上游绑定的就是本次登录生成的 device_id/machine_id**
-	//（DeviceInfo 随换票上传，服务端 BoundDeviceID 回显为准）。此后聊天/UG 域
-	// 全部复用真值（凭据覆盖优先级已在 traeResolveDeviceIdentity 就位），
-	// 不再走账号 ID 派生的兜底。
+	//（DeviceInfo 随换票上传，服务端 BoundDeviceID 回显为准）。此后**聊天域**复用
+	// 这对真值（凭据覆盖优先级已在 traeResolveDeviceIdentity 就位），不再走账号 ID
+	// 派生的兜底。
+	// 注意：UG **签到族**不读它们（那里的 x-device-id 必须每轮现抛新随机值，拿这对
+	// 持久值去签到会被 9074 拒）；UG **权益族**仍读 device_id（不读 machine_id），见
+	// trae_headers.go 文件头的两族分流说明。
 	deviceID := firstTraeNonEmpty(boundDeviceID, session.DeviceID)
-	machineID := strings.ReplaceAll(session.MachineID, "-", "") // 32hex，满足 UG 域画像
+	machineID := strings.ReplaceAll(session.MachineID, "-", "") // 32hex，聊天域画像
 
 	// refreshToken 域兜底：authCode 端点与续期端点不同 host 族，优先信回包/回调
 	// 的 loginHost；缺省回 realm 默认。与默认一致时不落键，保持列表整洁。

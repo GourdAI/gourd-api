@@ -7,8 +7,10 @@ package service
 // 与账号内换票（traeTokenRefresher）的区别：这里没有账号上下文，故不落库、
 // 不加账号级锁，只做一次 ExchangeToken + GetUserInfo 并把归一化后的凭据回传前端。
 //
-// GetUserInfo 用于补 uid/nickname：上游 x-uid 与 token 内的 data.id 必须一致，
-// 缺失时前端表单留空让用户误填，就会在签到时拿到 9004。
+// GetUserInfo 用于补 uid/nickname：uid 是聊天域 x-uid 与账号展示的来源，必须在
+// 建档时就补齐（拿不到时前端表单留空会让用户误填）。
+// 注：旧注释把签到 9004 归因于“x-uid 缺失”，这是错的 —— UG 域（签到/积分）本来
+// 就不发 x-uid，9004 的成因是 **claim 没带 x-device-id**（见 trae_headers.go）。
 
 import (
 	"bytes"
@@ -185,7 +187,7 @@ type traeGetUserInfoResponse struct {
 	} `json:"Result"`
 }
 
-// callGetUserInfo 取账号 uid/昵称（x-uid 与签到 9004 的直接成因，故建档时就补齐）。
+// callGetUserInfo 取账号 uid/昵称（聊天域 x-uid 与展示名的来源，故建档时就补齐）。
 func (s *TraeOAuthService) callGetUserInfo(ctx context.Context, creds *TraeCredentials, accessToken, proxyURL string) (uid, nickname string, err error) {
 	target := strings.TrimRight(firstTraeNonEmpty(creds.OAuthBaseURL, traeRealmOAuthBaseURL(creds.Realm)), "/") + traeGetUserInfo
 	validatedURL, err := cnValidateProbeURL(s.cfg, target)

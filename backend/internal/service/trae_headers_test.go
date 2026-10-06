@@ -82,13 +82,13 @@ func TestTraeBillingHeadersCarryDeviceFingerprintAndOmitUID(t *testing.T) {
 	creds.AccessToken = "Cloud-IDE-JWT eyJhbGciOiJIUzI1NiA.payload.sig"
 
 	postWith(t, server, traeCheckinStatusPath, func(req *http.Request) {
-		applyTraeBillingHeaders(req, creds, account)
+		applyTraeBillingHeaders(req, creds, traeFreshCheckinDeviceID())
 	})
 	header := probe.last(t)
 
-	// 纪律 7：UG 域三件套必须齐全。
+	// 纪律 7（已改）：UG 域带设备号，但**不发**机器码（抓包实证成功的签到请求无该头）。
 	require.NotEmpty(t, header.Get("X-Device-Id"))
-	require.NotEmpty(t, header.Get("X-Machine-Id"))
+	require.Empty(t, header.Get("X-Machine-Id"))
 	require.Equal(t, "CN", header.Get("X-User-Region"))
 	// 纪律 7：绝不发 X-Uid（真实插件请求无该头，多发即指纹异常）。
 	require.Empty(t, header.Get("X-Uid"), "UG 域不得发 X-Uid")
@@ -116,7 +116,7 @@ func TestTraeBillingHeadersForGlobalRealm(t *testing.T) {
 
 	global := traeHeaderTestCreds("global")
 	postWith(t, server, traeEntUsagePath, func(req *http.Request) {
-		applyTraeBillingHeaders(req, global, traeAccount(102, map[string]any{"realm": "global", "access_token": "at"}))
+		applyTraeBillingHeaders(req, global, traeUGStableDeviceID(global, traeAccount(102, map[string]any{"realm": "global", "access_token": "at"})))
 	})
 	header := probe.last(t)
 	require.Equal(t, "SG", header.Get("X-User-Region"))
@@ -335,7 +335,7 @@ func TestTraeHeaderSuitesAreMutuallyExclusive(t *testing.T) {
 		return req.Header
 	}
 	chat := build(func(req *http.Request) { applyTraeChatHeaders(req, creds, account) })
-	billing := build(func(req *http.Request) { applyTraeBillingHeaders(req, creds, account) })
+	billing := build(func(req *http.Request) { applyTraeBillingHeaders(req, creds, traeFreshCheckinDeviceID()) })
 	oauth := build(func(req *http.Request) { applyTraeRefreshHeaders(req, creds, creds.AccessToken) })
 
 	// X-Uid：只有聊天域发。
@@ -346,9 +346,9 @@ func TestTraeHeaderSuitesAreMutuallyExclusive(t *testing.T) {
 	require.Equal(t, "text/event-stream", chat.Get("Accept"))
 	require.Equal(t, "*/*", billing.Get("Accept"))
 	require.Equal(t, "application/json", oauth.Get("Accept"))
-	// 设备指纹：OAuth 域不发，聊天与 UG 都发（且必须同值，同一台机器）。
+	// 设备指纹（已改）：只有聊天域复用账号级持久指纹；UG 签到族每轮现抛新随机，两者不同源。
 	require.Empty(t, oauth.Get("X-Device-Id"))
-	require.Equal(t, chat.Get("X-Device-Id"), billing.Get("X-Device-Id"))
+	require.NotEqual(t, chat.Get("X-Device-Id"), billing.Get("X-Device-Id"))
 	// OAuth 域不发 Authorization（换票阶段还没有 access token）。
 	require.Empty(t, oauth.Get("Authorization"))
 	require.NotEmpty(t, chat.Get("Authorization"))

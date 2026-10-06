@@ -125,6 +125,13 @@ type WorkBuddyCreditsSnapshot struct {
 	Packages    []WorkBuddyCreditsPackage `json:"packages,omitempty"`
 	FetchedAt   int64                     `json:"fetched_at"`
 	Realm       string                    `json:"realm"`
+	// TodayCheckinStatus 后端按**配置时区**（timezone.Now()）得出的「今日」签到态。
+	// 写入动机：前端旧实现自己拿 UTC 日期串去比 `workbuddy_checkin.date`（而后端写
+	// 的是 Asia/Shanghai 日期串），两个口径在中国大陆浏览器上必然错位，把「昨日已
+	// 签到」显示成「今日已签到」。签到态是数据正确性的一部分（错一天就漏领一天的
+	// 积分），所以随积分快照多落一个已按权威口径判定的字段，让前端不再自算日期。
+	// 已由 workbuddyCheckinStatusToday 做过「仅当日 + 成功优先」闸门，过期自然为空串。
+	TodayCheckinStatus string `json:"today_checkin_status,omitempty"`
 	// NotApplicable / Enterprise 与 WorkBuddyCreditsResult 同义（列表免探测渲染需要）。
 	NotApplicable bool `json:"not_applicable,omitempty"`
 	Enterprise    bool `json:"enterprise,omitempty"`
@@ -677,6 +684,11 @@ func (s *WorkBuddyCreditsService) persistWorkbuddyCreditsSnapshot(ctx context.Co
 		Realm:         result.Realm,
 		NotApplicable: result.NotApplicable,
 		Enterprise:    result.Enterprise,
+		// 同一口径透传：result 在 queryCreditsForAccount 开头（:311）已调
+		// workbuddyCheckinStatusToday 算好，这里不重算，避免两个入口口径分叉。
+		// 已知局限：它读的是探测开始时的 account 内存对象，若本请求周期内刚完成
+		// 签到则拿到的是空串；前端靠 handleCheckin 的本地覆盖兼容，下次探测自然补全。
+		TodayCheckinStatus: result.TodayCheckinStatus,
 	}
 	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{workbuddyCreditsExtraKey: snapshot}); err != nil {
 		slog.Warn("workbuddy credits snapshot persist failed", "account_id", account.ID, "error", err)
