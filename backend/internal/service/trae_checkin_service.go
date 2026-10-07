@@ -45,7 +45,9 @@ type TraeCheckinService struct {
 }
 
 // traeCheckinBatchTimeout 单批签到的总时长上限（大批量账号下限保护）。
-const traeCheckinBatchTimeout = 30 * time.Minute
+// 单账号签到含 9074 限流重试后最坏可达 7 分钟（traeCheckinTimeout=420s），
+// 30 分钟只够 4 个账号，放宽到 2 小时以容纳大批量账号。
+const traeCheckinBatchTimeout = 2 * time.Hour
 
 // traeDefaultCheckinHours 默认签到小时（本地时区）：9 点 + 21 点兜底。
 var traeDefaultCheckinHours = []int{9, 21}

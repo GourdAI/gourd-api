@@ -20,7 +20,13 @@ package service
 //     反转才定下"）："the ug check-in x-device-id must be a fresh random 16-digit
 //     numeric string — the login hex32 deviceId provably fails claim with 9074,
 //     reused/deterministic numeric ids degrade over time, and an empty value yields
-//     9004"。⇒ 把聊天域那对持久指纹拿去签到，正是 9074 的成因（固定值会随时间退化）。
+//     9004"。⇒ 把聊天域那对持久指纹拿去签到必然失败（固定值会随时间退化）。
+//     另注：9074 本身是**瞬时限流**（等待后重试可成功，见 trae_credits_service.go
+//     纪律 3），但"每轮新随机设备号"的纪律独立成立，两者不矛盾。
+//     关于"绑定设备后每轮设备号不同是否有问题"：没有问题。参考实现明确写道设备号
+//     "不持久化：只是签到 API 的校验参数，上游按 uid 记账，换号不影响发放"——
+//     签到奖励按账号（uid）发放，设备号仅用于 did 维度的去重（did_checked_in），
+//     每轮新设备号不会导致重复发放，也不会丢奖励。
 //   - **UG 权益族**（/trae/api/v2/pay/ide_user_ent_usage 等非签到端点）：沿用**账号级
 //     稳定** device_id，不轮换。同一个参考实现把边界写得很死（client.go ugCheckinRequest
 //     v0.12.65 注释原文）："deviceID 非空时覆盖 ugBaseHeaders 的 X-Device-Id ——
@@ -89,7 +95,8 @@ func traeUAForUG(creds TraeCredentials) string {
 
 // traeFreshCheckinDeviceID 现抛一个**新的** 16 位纯数字设备号，供 UG 域（签到/积分）
 // 使用。纪律见文件头：签到设备号必须每请求新随机，复用或确定性派生的数字号会随时间
-// 退化并被上游以 9074 拒绝（文案是"参与用户太多"，实际语义是"设备号无效"）。
+// 退化（登录 hex32 必被拒）。注意 9074 的真实语义是瞬时限流而非"设备号无效"，
+// 但"每轮新随机"仍是签到族的正确形态（上游按 uid 记账，换号不影响发放）。
 //
 // 绝不返回空串：空值上游直接判 9004（参数错误）。crypto/rand 实际不会失败，万一失败
 // 也要退化到时刻派生的合法形态，不能因为取随机数失败就发一个空头出去。

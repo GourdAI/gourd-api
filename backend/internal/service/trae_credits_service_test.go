@@ -597,10 +597,11 @@ func TestTraeCheckinClaimPropagates9095AsAlready(t *testing.T) {
 	require.False(t, traeIsBusyError(err), "9095 不得误判为 9074 繁忙")
 }
 
-// 纪律 2：9074 是账号级稳定拒绝（换 deviceId / token / UA / 请求体均无效）——
-// 不得做任何参数变体重试，也不得把失败掩盖成成功。
-func TestTraeCheckinCode9074FailsWithoutParamRetry(t *testing.T) {
-	t.Parallel()
+// 9074 是**瞬时限流**而非账号级永久拒绝：等待后重试即可成功。决定性证据是用户实测
+// 「每隔几分钟手动点一次签到就能成功」——若 9074 是设备号永久拒绝，隔多久点都不会成功。
+// 因此本仓对 9074 做有限次重试（每次换新随机设备号），重试成功必须如实报 ok。
+// 本测试不用 t.Parallel()：它临时把包级重试间隔置 0，避免与并行测试互相踩踏。
+func TestTraeCheckinCode9074RetriesWithFreshDeviceAndSucceeds(t *testing.T) {
 	spy := &traeUpstreamSpy{}
 	var claimCalls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -623,20 +624,30 @@ func TestTraeCheckinCode9074FailsWithoutParamRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// 重试间隔置 0（源文件声明为 var 正是为测试），收尾恢复。
+	originalDelay := traeCheckin9074RetryDelay
+	traeCheckin9074RetryDelay = 0
+	defer func() { traeCheckin9074RetryDelay = originalDelay }()
+
 	repo := &traeCreditsFakeRepo{extras: map[string]any{}}
 	svc := newTraeCreditsTestService(&workbuddyTestUpstream{client: server.Client()}, repo)
 	repo.accountsByID = map[int64]*Account{51: traeCreditsAccount(51, server.URL, map[string]any{"req_source": "1"})}
 
 	result, err := svc.Checkin(context.Background(), 51)
 	require.NoError(t, err)
-	require.Equal(t, TraeCheckinStatusFail, result.Status, "9074 不得被重试掩盖成成功")
-	require.False(t, result.Success)
-	require.Contains(t, result.Detail, "9074")
-	require.Equal(t, 1, spy.countOf(traeCheckinClaimPath), "9074 不得做任何参数变体重试")
+	require.Equal(t, TraeCheckinStatusOK, result.Status, "9074 重试成功后必须报 ok")
+	require.True(t, result.Success)
+	require.Equal(t, 2, spy.countOf(traeCheckinClaimPath), "首次 9074 后应重试一次并成功")
+	// 两次 claim 必须使用不同的新随机设备号（重试换新设备号是纪律核心）。
+	deviceIDs := traeClaimDeviceIDs(spy)
+	require.Len(t, deviceIDs, 2)
+	require.NotEqual(t, deviceIDs[0], deviceIDs[1], "9074 重试必须换新设备号")
+	for _, id := range deviceIDs {
+		require.Regexp(t, `^\d{16}$`, id, "签到设备号必须是 16 位纯数字")
+	}
 	claimBodies := traeClaimBodies(spy)
-	require.Len(t, claimBodies, 1)
+	require.Len(t, claimBodies, 2)
 	require.Contains(t, claimBodies[0], `"req_source":1`)
-	require.Equal(t, 0, spy.countOf(traeEntUsagePath), "失败不刷新积分快照")
 }
 
 // traeClaimBodies 抽出 claim 请求对应的 body（按路径配对，不受后续积分刷新调用影响）。
@@ -651,8 +662,22 @@ func traeClaimBodies(spy *traeUpstreamSpy) []string {
 	return out
 }
 
-func TestTraeCheckinCode9074TwiceFails(t *testing.T) {
-	t.Parallel()
+// traeClaimDeviceIDs 抽出 claim 请求携带的 X-Device-Id（按路径配对）。
+func traeClaimDeviceIDs(spy *traeUpstreamSpy) []string {
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	out := make([]string, 0, len(spy.paths))
+	for i, p := range spy.paths {
+		if p == traeCheckinClaimPath && i < len(spy.requests) {
+			out = append(out, spy.requests[i].Header.Get("X-Device-Id"))
+		}
+	}
+	return out
+}
+
+// 9074 重试次数耗尽仍失败：如实落 fail（不谎报成功），且重试次数有上限（不无限打上游）。
+// 本测试不用 t.Parallel()：它临时把包级重试间隔置 0。
+func TestTraeCheckinCode9074ExhaustsRetriesThenFails(t *testing.T) {
 	spy := &traeUpstreamSpy{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -667,6 +692,10 @@ func TestTraeCheckinCode9074TwiceFails(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+
+	originalDelay := traeCheckin9074RetryDelay
+	traeCheckin9074RetryDelay = 0
+	defer func() { traeCheckin9074RetryDelay = originalDelay }()
 
 	repo := &traeCreditsFakeRepo{extras: map[string]any{}}
 	svc := newTraeCreditsTestService(&workbuddyTestUpstream{client: server.Client()}, repo)
@@ -677,12 +706,14 @@ func TestTraeCheckinCode9074TwiceFails(t *testing.T) {
 	require.Equal(t, TraeCheckinStatusFail, result.Status)
 	require.False(t, result.Success)
 	require.Contains(t, result.Detail, "9074")
-	require.Equal(t, 1, spy.countOf(traeCheckinClaimPath), "9074 一次即判失败，不得重试")
+	// 首次 + traeCheckin9074MaxRetries 次重试 = 有上限的尝试次数。
+	require.Equal(t, traeCheckin9074MaxRetries+1, spy.countOf(traeCheckinClaimPath), "9074 重试次数必须有上限")
 	require.Equal(t, 0, spy.countOf(traeEntUsagePath), "失败不刷新积分快照")
 }
 
-func TestTraeCheckinReqSourceTwoDoesNotRetry(t *testing.T) {
-	t.Parallel()
+// req_source=2 的账号遭遇 9074 时同样走限流重试（重试与 req_source 无关，且重试时
+// req_source 保持账号配置值不变，只换设备号）。本测试不用 t.Parallel()。
+func TestTraeCheckinReqSourceTwoRetriesKeepsReqSource(t *testing.T) {
 	spy := &traeUpstreamSpy{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -698,6 +729,10 @@ func TestTraeCheckinReqSourceTwoDoesNotRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
+	originalDelay := traeCheckin9074RetryDelay
+	traeCheckin9074RetryDelay = 0
+	defer func() { traeCheckin9074RetryDelay = originalDelay }()
+
 	repo := &traeCreditsFakeRepo{extras: map[string]any{}}
 	svc := newTraeCreditsTestService(&workbuddyTestUpstream{client: server.Client()}, repo)
 	repo.accountsByID = map[int64]*Account{53: traeCreditsAccount(53, server.URL, map[string]any{"req_source": "2"})}
@@ -705,7 +740,11 @@ func TestTraeCheckinReqSourceTwoDoesNotRetry(t *testing.T) {
 	result, err := svc.Checkin(context.Background(), 53)
 	require.NoError(t, err)
 	require.Equal(t, TraeCheckinStatusFail, result.Status)
-	require.Equal(t, 1, spy.countOf(traeCheckinClaimPath), "9074 与 req_source 无关，不得兜底重试")
+	require.Equal(t, traeCheckin9074MaxRetries+1, spy.countOf(traeCheckinClaimPath), "9074 限流重试与 req_source 无关")
+	// 重试不改变 req_source：所有 claim 都保持账号配置的 req_source=2。
+	for _, body := range traeClaimBodies(spy) {
+		require.Contains(t, body, `"req_source":2`)
+	}
 }
 
 func TestTraeCheckinEnableFalseSkipsWithoutSnapshot(t *testing.T) {

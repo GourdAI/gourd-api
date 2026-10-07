@@ -16,13 +16,13 @@ package service
 //  1. UG 域 HTTP 一律 200，成败只看 body 的 code；
 //  2. claim 的业务码 9095 = 今日已签到，属幂等成功而非失败；code=0 也幂等（重复
 //     调用不再发钱），故**不能拿积分变化当签到凭据**，必须回查 checked_in；
-//  3. **9074 的文案（"当前参与用户太多"）不可信**：一手取证（cpa-multi-plugins
-//     checkin_device_test.go 包注释 v0.12.65）表明它常常是"这个 x-device-id 上游不认"
-//     ——登录绑定的 hex32 设备号必被 9074 拒，复用/确定性数字号会**随时间退化**，
-//     空值则是 9004。⇒ 本仓不对 9074 做变体重试（一次即如实落 fail），但**调用前必须
-//     确认设备号是当轮新随机的**：旧纪律"换 deviceId 无效"实际换的是**另一个固定值**，
-//     从未试过"每轮新随机"；同批旧结论里"换 req_source 无效"也是在固定设备号前提下
-//     测得（已被变量污染），不得再当作否据；
+// 	3. **9074 = 瞬时限流，等待后重试即可成功**（文案"当前参与用户太多"是真实语义）。
+// 	    决定性证据：用户实测「每隔几分钟手动点一次签到就能成功」——若 9074 是永久拒绝，
+// 	    隔多久点都不会成功；参考实现（cpa-multi-plugins client.go bizError）也把 9074 归为
+// 	    ErrSoftRate（60s 短冷却）而非禁用账号。⇒ 本仓对 9074 做有限次重试（每次换新随机
+// 	    设备号，见 checkinForAccount）。历史注：旧纪律曾认为 9074 是"设备号不认、一次即判"，
+// 	    那是固定设备号时代的观测（复用/确定性数字号确实会随时间退化），已被本次实测推翻；
+// 	    但"签到族设备号必须每轮新随机"的纪律仍然成立（登录 hex32 必被拒、空值 9004）；
 //  4. 聚合积分必须跳过已过期权益包：签到积分当日发放、31 天后过期，不过滤会显示
 //     "越签越多、永远用不完"。
 //
@@ -54,8 +54,10 @@ import (
 const (
 	// traeBillingTimeout 单次 UG 上游调用（查询/签到）的总时长上限。
 	traeBillingTimeout = 20 * time.Second
-	// traeCheckinTimeout 单次签到编排（状态 → 领取 → 回查积分）的总时长上限。
-	traeCheckinTimeout = 60 * time.Second
+	// traeCheckinTimeout 单次签到编排（预刷新 →（status→claim→回查）×最多 4 次尝试）的
+	// 总时长上限。最坏路径：4 次尝试×3 次 UG 调用×20s（=240s）+ 3 次重试等待×60s
+	// （=180s），再留 token 刷新重试余量，故放宽到 7 分钟。
+	traeCheckinTimeout = 420 * time.Second
 	// traeBillingMaxBodyBytes UG 响应体读取上限（权益包列表很小）。
 	traeBillingMaxBodyBytes int64 = 1 << 20
 	// traeCreditsExtraKey / traeCheckinExtraKey account.Extra 快照键。
@@ -71,11 +73,26 @@ const (
 const (
 	traeCodeOK             = 0
 	traeCodeAlreadyChecked = 9095 // 今日已签到（幂等成功）
-	traeCodeBusy           = 9074 // 文案"参与用户太多"，实测语义多为 x-device-id 不被上游接受
+	traeCodeBusy           = 9074 // 瞬时限流（"参与用户太多"）：等待后重试可成功，非永久拒绝
 	traeCodeSessionDead    = 1001 // 令牌/会话失效
 	traeCodeActivityOff    = 9090 // 活动暂不可用
 	traeCodeBadParams      = 9004 // 参数错误（典型：缺设备头）
 )
+
+// 9074 限流重试参数。9074 是**瞬时限流**（非账号级永久拒绝），等待后重试即可成功。
+// 决定性证据：用户实测「每隔几分钟手动点一次签到就能成功」——若 9074 是设备号永久
+// 拒绝，隔多久点都不会成功。参考实现（cpa-multi-plugins client.go bizError）也把
+// 9074 归类为 ErrSoftRate（60s 短冷却），而非禁用账号。旧注释「9074=设备号不认、
+// 一次即判失败」基于固定设备号时代的观测，已被本次实测推翻。
+const (
+	// traeCheckin9074MaxRetries 9074 限流后的最大重试次数（不含首次尝试）。
+	// 首次 + 3 次重试 = 最多 4 次尝试，配合重试间隔覆盖「几分钟」的限流窗口。
+	traeCheckin9074MaxRetries = 3
+)
+
+// traeCheckin9074RetryDelay 9074 限流后每次重试前的等待时间。对齐参考实现
+// ErrSoftRate 的 60s 冷却；用 var 而非 const，便于单测置 0 加速。
+var traeCheckin9074RetryDelay = 60 * time.Second
 
 // 签到状态（与前端契约一致；skipped = 账号形态不支持签到）。
 const (
@@ -217,7 +234,7 @@ func traeIsSessionDeadError(err error) bool {
 	return be.Status == http.StatusUnauthorized || be.Code == traeCodeSessionDead
 }
 
-// traeIsBusyError 报告错误是否为上游 9074（账号级稳定拒绝，只重试一次）。
+// traeIsBusyError 报告错误是否为上游 9074（瞬时限流，等待后换新设备号重试整套编排）。
 func traeIsBusyError(err error) bool {
 	var be *traeBillingError
 	return errors.As(err, &be) && be.Code == traeCodeBusy
@@ -363,7 +380,13 @@ func (s *TraeCreditsService) queryCreditsForAccount(ctx context.Context, account
 	return result
 }
 
-// checkinForAccount 单账号签到编排：预刷新 → status → claim → 回查 status → 落快照。
+// checkinForAccount 单账号签到编排：预刷新 →（status → claim → 回查）×最多 4 次尝试 → 落快照。
+//
+// 9074 重试的粒度是**整套编排**而非单次 claim：每次尝试现抛一个全新设备号并贯穿该次
+// 尝试的 status→claim→回查（上游把它们当配对校验参数，同一尝试内突变设备号反而被拒），
+// 撞上 9074 则等待后以新设备号重来整套流程。参考实现的调度器同构（每次 attempt 生成
+// 一个 did 贯穿三步，9074 计入当日退避重试）。证据：用户实测「每隔几分钟手动点一次就能
+// 成功」——若只重发 claim 而不重新走 status，配对校验与限流窗口都无从对齐。
 func (s *TraeCreditsService) checkinForAccount(ctx context.Context, account *Account) *TraeCheckinResult {
 	result := &TraeCheckinResult{
 		Realm:     account.GetTraeRealm(),
@@ -375,74 +398,88 @@ func (s *TraeCreditsService) checkinForAccount(ctx context.Context, account *Acc
 		s.persistTraeCheckinSnapshot(ctx, account, result)
 		return result
 	}
-	// 本轮签到的设备号：**开始时现抛一个，全程（status → claim → 回查）保持同值**。
-	// 上游把这几个请求的 x-device-id 当配对校验参数，而它必须是当轮新生成的随机值
-	// （不能是账号级持久指纹，见 trae_headers.go 文件头的取证注释）。
-	checkinDeviceID := traeFreshCheckinDeviceID()
-	status, err := s.traeCheckinStatus(ctx, account, checkinDeviceID)
-	if err != nil {
-		result.Status = TraeCheckinStatusFail
-		result.Detail = err.Error()
-		s.persistTraeCheckinSnapshot(ctx, account, result)
-		return result
-	}
-	if status != nil {
-		result.Credits = status.Credits
-		result.HasCredit = true
-		// 上游已确认今日签过：不再发 claim（重复请求无收益，且徒增风控画像）。
-		if status.CheckedIn {
-			result.Status = TraeCheckinStatusAlready
-			result.Success = true
-			s.persistTraeCheckinSnapshot(ctx, account, result)
-			s.refreshCreditsSnapshot(ctx, account)
-			return result
+	var busy bool
+	for attempt := 0; ; attempt++ {
+		result, busy = s.traeCheckinAttempt(ctx, account, traeFreshCheckinDeviceID())
+		if !busy || attempt >= traeCheckin9074MaxRetries || ctx.Err() != nil {
+			break
 		}
-		if !status.Enable {
-			result.Status = TraeCheckinStatusSkipped
-			result.Detail = "check-in activity is not available for this account"
-			return result
+		slog.Info("trae check-in 9074 retry",
+			"account_id", account.ID, "attempt", attempt+1)
+		select {
+		case <-time.After(traeCheckin9074RetryDelay):
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
 		}
 	}
-	claimErr := s.traeCheckinClaim(ctx, account, checkinDeviceID)
-	switch {
-	case claimErr == nil:
-		result.Status = TraeCheckinStatusOK
-	case traeIsCheckinAlreadyError(claimErr):
-		// 「今天已签到」是幂等成功，不填 detail，免得被误读成失败。
-		result.Status = TraeCheckinStatusAlready
-	case traeIsBusyError(claimErr):
-		// 9074：文案说"当前参与用户太多"，但一手取证表明它通常是**设备号不认**（见
-		// 文件头纪律 3）。本轮已用当轮新随机设备号；参考实现（cpa client.go
-		// ugCheckinReqSourcesFor）会在 9074 后换 req_source 变体再探，本仓暂不跟进：
-		// 那会在同一轮里多打几次风控可见的写请求，而旧结论"换 req_source 无效"已确认
-		// 是在固定设备号前提下测得，不得当作否据 —— 属待你拍板的可选增强，不是否据。
-		// 也不谎报成功：如实落 fail 并保留上游原文，让面板看到真实缺签。
-		result.Status = TraeCheckinStatusFail
-		result.Detail = claimErr.Error()
-	default:
-		result.Status = TraeCheckinStatusFail
-		result.Detail = claimErr.Error()
-	}
-	// 签到接口不回传积分数：回查 status 取新余额。
-	// 关于「claim 报成功但回查仍 checked_in=false」：不以它推翻结论。上游 code
-	// 是唯一权威判定，而 checked_in 是带设备侧缓存延迟的读数（实测：换 deviceId 后
-	// 会短暂回 false）。若把它当否据，配合「当日成功优先不覆盖」的快照合并语义，
-	// 一次真实成功的签到会被长期误报为失败，代价高于反过来。只记录待确认。
-	if after, queryErr := s.traeCheckinStatus(ctx, account, checkinDeviceID); queryErr == nil && after != nil {
-		result.Credits = after.Credits
-		result.HasCredit = true
-		if result.Status == TraeCheckinStatusOK && !after.CheckedIn {
-			result.Detail = "claim accepted (code=0) but check-in status not yet reflected upstream"
-			slog.Info("trae check-in accepted but status not yet reflected",
-				"account_id", account.ID, "credits", after.Credits)
-		}
-	}
+	result.CheckedAt = time.Now().Unix()
 	result.Success = result.Status == TraeCheckinStatusOK || result.Status == TraeCheckinStatusAlready
 	s.persistTraeCheckinSnapshot(ctx, account, result)
 	if result.Success {
 		s.refreshCreditsSnapshot(ctx, account)
 	}
 	return result
+}
+
+// traeCheckinAttempt 单次签到尝试：一个全新设备号贯穿 status → claim → 回查。
+// 返回结果与是否撞 9074 限流（busy=true 时调用方可等待后换新设备号重试整套流程）。
+// 已签到（账号维度 checked_in 或设备维度 did_checked_in）与不可用（enable=false）是
+// 终态，不触发重试；重试只针对 9074 这一种瞬时限流。
+func (s *TraeCreditsService) traeCheckinAttempt(ctx context.Context, account *Account, deviceID string) (*TraeCheckinResult, bool) {
+	result := &TraeCheckinResult{Realm: account.GetTraeRealm()}
+	status, err := s.traeCheckinStatus(ctx, account, deviceID)
+	if err != nil {
+		result.Status = TraeCheckinStatusFail
+		result.Detail = err.Error()
+		return result, traeIsBusyError(err)
+	}
+	if status != nil {
+		result.Credits = status.Credits
+		result.HasCredit = true
+		// 上游已确认今日签过（账号维度或设备维度）：不再发 claim（重复请求无收益，
+		// 且徒增风控画像）。官方 claim 前置同口径：checked_in===false 且
+		// did_checked_in!==true 才可领（参考实现 client.go CheckinStatusResult 注释）。
+		if status.CheckedIn || status.DidCheckedIn {
+			result.Status = TraeCheckinStatusAlready
+			return result, false
+		}
+		if !status.Enable {
+			result.Status = TraeCheckinStatusSkipped
+			result.Detail = "check-in activity is not available for this account"
+			return result, false
+		}
+	}
+	claimErr := s.traeCheckinClaim(ctx, account, deviceID)
+	switch {
+	case claimErr == nil:
+		result.Status = TraeCheckinStatusOK
+	case traeIsCheckinAlreadyError(claimErr):
+		// 「今天已签到」是幂等成功，不填 detail，免得被误读成失败。
+		result.Status = TraeCheckinStatusAlready
+	default:
+		result.Status = TraeCheckinStatusFail
+		result.Detail = claimErr.Error()
+	}
+	// 签到接口不回传积分数：回查 status 取新余额（沿用本次尝试的同一设备号）。
+	// claim 失败时不回查：限流窗口内少打一次上游，重试会重来整套流程。
+	// 关于「claim 报成功但回查仍 checked_in=false」：不以它推翻结论。上游 code
+	// 是唯一权威判定，而 checked_in 是带设备侧缓存延迟的读数（实测：换 deviceId 后
+	// 会短暂回 false）。若把它当否据，配合「当日成功优先不覆盖」的快照合并语义，
+	// 一次真实成功的签到会被长期误报为失败，代价高于反过来。只记录待确认。
+	if result.Status == TraeCheckinStatusOK || result.Status == TraeCheckinStatusAlready {
+		if after, queryErr := s.traeCheckinStatus(ctx, account, deviceID); queryErr == nil && after != nil {
+			result.Credits = after.Credits
+			result.HasCredit = true
+			if result.Status == TraeCheckinStatusOK && !after.CheckedIn {
+				result.Detail = "claim accepted (code=0) but check-in status not yet reflected upstream"
+				slog.Info("trae check-in accepted but status not yet reflected",
+					"account_id", account.ID, "credits", after.Credits)
+			}
+		}
+	}
+	return result, traeIsBusyError(claimErr)
 }
 
 // refreshCreditsSnapshot 签到后刷新积分快照（失败只告警：余额观测不影响签到结论）。
@@ -490,12 +527,18 @@ func (s *TraeCreditsService) refreshTraeBillingToken(ctx context.Context, accoun
 
 // traeCheckinStatusBody status 接口响应（HTTP 恒 200，成败看 code）。
 type traeCheckinStatusBody struct {
-	Code      int     `json:"code"`
-	Message   string  `json:"message"`
-	Msg       string  `json:"msg"`
-	CheckedIn bool    `json:"checked_in"`
-	Credits   float64 `json:"credits"`
-	Enable    bool    `json:"enable"`
+	Code      int    `json:"code"`
+	Message   string `json:"message"`
+	Msg       string `json:"msg"`
+	CheckedIn bool   `json:"checked_in"`
+	// DidCheckedIn 设备维度的"今日已签"（官方字段 did_checked_in）。
+	// 每轮用新设备号时此值应为 false；若为 true 则保守视为已签到。
+	DidCheckedIn bool    `json:"did_checked_in"`
+	Credits      float64 `json:"credits"`
+	// ExtraCredits 会员/活动加码奖励（官方字段 extra_credits）。
+	// 到账总额 = credits + extra_credits。
+	ExtraCredits float64 `json:"extra_credits"`
+	Enable       bool    `json:"enable"`
 }
 
 // traeCheckinStatus 查询签到状态（含当前总积分）。checkinDeviceID 为空时本函数
