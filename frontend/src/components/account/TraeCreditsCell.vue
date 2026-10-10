@@ -132,7 +132,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { TraeCreditsPackage, TraeCreditsResult } from '@/api/admin/trae'
+import type { TraeCreditsPackage, TraeCreditsResult, TraeCreditsSnapshot } from '@/api/admin/trae'
 import type { Account } from '@/types'
 
 const props = defineProps<{
@@ -201,21 +201,9 @@ const formatTraeCredits = (value: number): string => {
   })
 }
 
-// 后端 UpdateExtra 写入 trae_credits 的快照形状（字段可能缺失）。
-type TraeCreditsSnapshotExtra = {
-  credits?: number
-  remain?: number
-  used?: number
-  size?: number
-  packs?: number
-  packages?: TraeCreditsPackage[]
-  fetched_at?: number
-  realm?: string
-  checkable?: boolean
-  checked_in?: boolean
-  token_expires_at?: number
-  refresh_expires_at?: number
-}
+// 后端 UpdateExtra 写入 trae_credits 的快照形状（字段可能缺失），
+// 与签到回执携带的 credits_snapshot 同构（后端 TraeCreditsSnapshot）。
+type TraeCreditsSnapshotExtra = TraeCreditsSnapshot
 
 // 从 account.extra 读持久化快照（免探测渲染）。
 const snapshotData = computed<TraeCreditsView | null>(() => {
@@ -616,20 +604,36 @@ const handleCheckin = async () => {
     if (result.status === 'fail' || result.status === 'skipped') {
       checkinError.value = result.detail || t('common.error')
     }
-    // 签到成功（ok/already）后用回执余额刷新显示，缺额度则回退查一次。
-    // 必须以 has_credits=true 为准：后端在回查 status 失败时 credits 恒为 0，
-    // 直接写入会把「剩余 2203.5」误显示成 0（与事实相反的读数）。
+    // 签到成功（ok/already）后用回执携带的**权威余额快照**刷新显示。
+    // 回执的 credits 是 status 口径的「每日签到奖励额」（官方卡片展示的那个数），
+    // **不是账户余额**：把它写进 remain 会把几千的权益包余额覆盖成奖励额（如 100），
+    // 出现「剩余 100 / 已用 2,848 / 总额 4,700」这种自相矛盾的读数。余额只认
+    // snapshot.remain；快照缺失（后端签到后刷新未成功）才回退重查一次，
+    // 重查失败保留既有读数、仅标记已签到，绝不拿 credits 冒充余额。
     if (result.status === 'ok' || result.status === 'already') {
-      if (result.has_credits === true && typeof result.credits === 'number' && data.value) {
+      const snapshot = result.credits_snapshot
+      if (snapshot && typeof snapshot.remain === 'number') {
         data.value = {
-          ...data.value,
-          remain: result.credits,
-          credits: result.credits,
-          checked_in: true
+          success: true,
+          realm: typeof snapshot.realm === 'string' ? snapshot.realm : data.value?.realm,
+          credits: typeof snapshot.credits === 'number' ? snapshot.credits : data.value?.credits,
+          remain: snapshot.remain,
+          used: typeof snapshot.used === 'number' ? snapshot.used : data.value?.used,
+          size: typeof snapshot.size === 'number' ? snapshot.size : data.value?.size,
+          packs: typeof snapshot.packs === 'number' ? snapshot.packs : data.value?.packs,
+          packages: Array.isArray(snapshot.packages) ? snapshot.packages : data.value?.packages,
+          fetched_at:
+            typeof snapshot.fetched_at === 'number' ? snapshot.fetched_at : data.value?.fetched_at,
+          checkable:
+            typeof snapshot.checkable === 'boolean' ? snapshot.checkable : data.value?.checkable,
+          checked_in: true,
+          token_expires_at: numOr(snapshot.token_expires_at, data.value?.token_expires_at),
+          refresh_expires_at: numOr(snapshot.refresh_expires_at, data.value?.refresh_expires_at)
         }
-      } else if (data.value) {
-        data.value = { ...data.value, checked_in: true }
       } else {
+        if (data.value) {
+          data.value = { ...data.value, checked_in: true }
+        }
         await handleProbe()
       }
     }

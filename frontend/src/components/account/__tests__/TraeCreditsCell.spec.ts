@@ -247,11 +247,24 @@ describe('TraeCreditsCell', () => {
   })
 
   it('shows the checked-in state and updated credits after a successful check-in', async () => {
+    // 回执 credits 是「每日签到奖励额」（官方卡片读数），余额只认 credits_snapshot.remain：
+    // 把奖励额写进 remain 正是线上故障（剩余积分被覆盖成 100）。
     checkinTraeAccount.mockResolvedValue({
       success: true,
       status: 'ok',
-      credits: 880.75,
+      credits: 100,
       has_credits: true,
+      credits_snapshot: {
+        credits: 100,
+        remain: 1851.6,
+        used: 2848.4,
+        size: 4700,
+        packs: 5,
+        realm: 'cn',
+        checkable: true,
+        checked_in: true,
+        fetched_at: nowSeconds()
+      },
       realm: 'cn',
       checked_at: nowSeconds()
     })
@@ -272,8 +285,11 @@ describe('TraeCreditsCell', () => {
     expect(wrapper.get('[data-test="trae-checkin-status"]').text()).toContain(
       'admin.accounts.trae.checkinDoneToday'
     )
-    // 签到回执的浮点余额直接更新展示（无需再查询）。
-    expect(wrapper.get('[data-test="trae-credits-remain"]').text()).toContain('880.8')
+    // 余额取回执里的权威快照（包聚合），而非奖励额 100。
+    expect(wrapper.get('[data-test="trae-credits-remain"]').text()).toContain('1,851.6')
+    expect(wrapper.get('[data-test="trae-credits-remain"]').text()).not.toContain('100')
+    expect(wrapper.get('[data-test="trae-credits-usage"]').text()).toContain('2,848.4')
+    expect(wrapper.get('[data-test="trae-credits-usage"]').text()).toContain('4,700')
     expect(queryTraeCredits).not.toHaveBeenCalled()
     // 已签到后按钮禁用并提示今日已签到。
     const after = wrapper.get('[data-test="trae-checkin"]')
@@ -282,12 +298,26 @@ describe('TraeCreditsCell', () => {
   })
 
   it('keeps the current balance when the check-in receipt carries no verified credits', async () => {
-    // 回查 status 失败时后端 credits 恒为 0（has_credits 缺省）——
-    // 不能拿它覆盖展示，否则「剩余 2203.5」会变成 0，与事实相反。
+    // 无快照（后端签到后刷新未成功）⇒ 回落重查；重查也失败时保留既有读数，
+    // 奖励额/0 都不得写进 remain，否则「剩余 2203.5」会被覆盖成与事实相反的数。
+    queryTraeCredits.mockResolvedValue({
+      success: false,
+      realm: 'cn',
+      credits: 0,
+      remain: 0,
+      used: 0,
+      size: 0,
+      packs: 0,
+      checkable: false,
+      checked_in: false,
+      fetched_at: 0,
+      error: 'usage: upstream unavailable'
+    })
     checkinTraeAccount.mockResolvedValue({
       success: true,
       status: 'ok',
-      credits: 0,
+      credits: 100,
+      has_credits: true,
       realm: 'cn',
       checked_at: nowSeconds()
     })
@@ -308,10 +338,50 @@ describe('TraeCreditsCell', () => {
     await wrapper.get('[data-test="trae-checkin"]').trigger('click')
     await flushPromises()
 
+    expect(queryTraeCredits).toHaveBeenCalledWith(9115)
     expect(wrapper.get('[data-test="trae-credits-remain"]').text()).toContain('2,203.5')
+    expect(wrapper.get('[data-test="trae-credits-remain"]').text()).not.toContain('100')
     expect(wrapper.get('[data-test="trae-checkin-status"]').text()).toContain(
       'admin.accounts.trae.checkinDoneToday'
     )
+  })
+
+  it('refreshes the balance via probe when the receipt carries no snapshot', async () => {
+    queryTraeCredits.mockResolvedValue({
+      success: true,
+      realm: 'cn',
+      credits: 100,
+      remain: 2203.5,
+      used: 796.5,
+      size: 3000,
+      packs: 1,
+      checkable: true,
+      checked_in: true,
+      fetched_at: nowSeconds()
+    })
+    checkinTraeAccount.mockResolvedValue({
+      success: true,
+      status: 'ok',
+      credits: 100,
+      has_credits: true,
+      realm: 'cn',
+      checked_at: nowSeconds()
+    })
+    const account = makeAccount(9116, {
+      extra: {
+        trae_credits: { remain: 900.4, realm: 'cn', checkable: true, checked_in: false, fetched_at: nowSeconds() }
+      }
+    } as Partial<Account>)
+    const wrapper = mount(TraeCreditsCell, { props: { account } })
+    await flushPromises()
+
+    await wrapper.get('[data-test="trae-checkin"]').trigger('click')
+    await flushPromises()
+
+    // 无快照 ⇒ 回落重查，余额取查询结果的包聚合 remain，而非奖励额 100。
+    expect(queryTraeCredits).toHaveBeenCalledWith(9116)
+    expect(wrapper.get('[data-test="trae-credits-remain"]').text()).toContain('2,203.5')
+    expect(wrapper.get('[data-test="trae-credits-remain"]').text()).not.toContain('100')
   })
 
   it('disables the check-in button from the upstream checked_in reading', async () => {

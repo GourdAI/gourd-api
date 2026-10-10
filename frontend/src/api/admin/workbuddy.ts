@@ -6,7 +6,7 @@
  * 完成登录 → 前端轮询 exchangeWorkBuddyCode（pending → completed）取回凭据。
  */
 
-import { apiClient } from '../client'
+import { apiClient, LONG_RUNNING_ACTION_TIMEOUT_MS } from '../client'
 
 /** WorkBuddy 双域：国内 copilot.tencent.com / 国际 www.workbuddy.ai（裸域会被上游 301）。 */
 export type WorkBuddyAuthRealm = 'cn' | 'global'
@@ -148,8 +148,11 @@ export async function queryWorkBuddyCredits(id: number): Promise<WorkBuddyCredit
 
 /** 手动签到（幂等：今天已签到返回 status=already，仍是成功语义）。 */
 export async function checkinWorkBuddyAccount(id: number): Promise<WorkBuddyCheckinResult> {
+  // 后端签到编排上限 60s，超过全局 30s 默认超时；放宽以免本地 abort 误报网络错误。
   const { data } = await apiClient.post<WorkBuddyCheckinResult>(
-    `/admin/workbuddy/accounts/${id}/checkin`
+    `/admin/workbuddy/accounts/${id}/checkin`,
+    undefined,
+    { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
   )
   return data
 }

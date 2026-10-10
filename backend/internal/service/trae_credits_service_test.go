@@ -217,7 +217,9 @@ func TestTraeQueryCreditsAggregatesPacksAndPersistsSnapshot(t *testing.T) {
 		spy.record(r, string(body))
 		switch r.URL.Path {
 		case traeCheckinStatusPath:
-			writeTraeJSON(w, http.StatusOK, traeStatusBody(false, true, 2203.5264))
+			// status.credits 是每日签到奖励额（官方卡片读数），刻意与包聚合余额不等：
+			// 夹具不得把「status.credits == 总余额」这一未验证假设固化成规格（循环论证）。
+			writeTraeJSON(w, http.StatusOK, traeStatusBody(false, true, 100))
 		case traeEntUsagePath:
 			writeTraeJSON(w, http.StatusOK, traePacksBody(
 				traePack("checkin_20260920_7001", 2000, 200.8772, future),
@@ -250,7 +252,8 @@ func TestTraeQueryCreditsAggregatesPacksAndPersistsSnapshot(t *testing.T) {
 	require.Equal(t, "checkin", result.Packages[0].Kind)
 	require.Equal(t, "plan", result.Packages[1].Kind)
 	require.False(t, result.Packages[0].Expired)
-	require.InDelta(t, 2203.5264, result.Credits, 1e-6)
+	// 两个读数各自取源：Credits=status 奖励额、Remain=包聚合，互不相等才是真实形态。
+	require.InDelta(t, 100, result.Credits, 1e-6)
 	require.False(t, result.CheckedIn)
 	require.True(t, result.Checkable)
 
@@ -268,6 +271,7 @@ func TestTraeQueryCreditsAggregatesPacksAndPersistsSnapshot(t *testing.T) {
 	snap, ok := repo.extras[traeCreditsExtraKey].(TraeCreditsSnapshot)
 	require.True(t, ok)
 	require.InDelta(t, 2203.5264, snap.Remain, 1e-6)
+	require.InDelta(t, 100, snap.Credits, 1e-6, "快照同时保留两个读数，余额只认 remain")
 	require.Equal(t, "cn", snap.Realm)
 	require.Len(t, snap.Packages, 2)
 }
@@ -441,6 +445,8 @@ func TestTraeCheckinClaimOKButStillUncheckedRecordsPendingStatus(t *testing.T) {
 	require.Equal(t, TraeCheckinStatusOK, result.Status)
 	require.True(t, result.Success)
 	require.Contains(t, result.Detail, "not yet reflected")
+	// ent_usage 404 ⇒ 签到后刷新未落盘 ⇒ 不得附带快照，调用方回落重新查询。
+	require.Nil(t, result.CreditsSnapshot)
 	require.Equal(t, []string{
 		traeCheckinStatusPath, traeCheckinClaimPath, traeCheckinStatusPath,
 		traeCheckinStatusPath, traeEntUsagePath,
@@ -470,7 +476,9 @@ func TestTraeCheckinHappyPathConfirmsViaStatus(t *testing.T) {
 		case traeCheckinClaimPath:
 			writeTraeJSON(w, http.StatusOK, `{"code":0,"message":"success"}`)
 		case traeEntUsagePath:
-			writeTraeJSON(w, http.StatusOK, traePacksBody(traePack("checkin_20260926_1", 110, 0, time.Now().AddDate(0, 0, 31).Unix())))
+			// 包聚合余额刻意与 status.credits(110) 不等：签到回执必须携带权威余额，
+			// 前端不得拿奖励额写 remain（线上故障形态：remain 被覆盖成 100）。
+			writeTraeJSON(w, http.StatusOK, traePacksBody(traePack("checkin_20260926_1", 4700, 2848.4, time.Now().AddDate(0, 0, 31).Unix())))
 		default:
 			writeTraeJSON(w, http.StatusNotFound, `{"code":404}`)
 		}
@@ -486,8 +494,14 @@ func TestTraeCheckinHappyPathConfirmsViaStatus(t *testing.T) {
 	require.Equal(t, TraeCheckinStatusOK, result.Status)
 	require.True(t, result.Success)
 	require.Empty(t, result.Detail)
-	require.InDelta(t, 110, result.Credits, 1e-6, "积分取回查 status 的读数（claim 不回传积分）")
+	require.InDelta(t, 110, result.Credits, 1e-6, "credits 取回查 status 的读数（claim 不回传积分）；它是奖励额而非余额")
 	require.True(t, result.HasCredit)
+	// 权威余额随回执带回：remain 取包聚合，与 status.credits 刻意不等。
+	require.NotNil(t, result.CreditsSnapshot, "签到成功后必须附带刷新后的余额快照")
+	require.InDelta(t, 1851.6, result.CreditsSnapshot.Remain, 1e-6)
+	require.InDelta(t, 2848.4, result.CreditsSnapshot.Used, 1e-6)
+	require.InDelta(t, 4700, result.CreditsSnapshot.Size, 1e-6)
+	require.InDelta(t, 110, result.CreditsSnapshot.Credits, 1e-6)
 
 	paths := spy.pathLog()
 	require.Equal(t, []string{
@@ -503,6 +517,11 @@ func TestTraeCheckinHappyPathConfirmsViaStatus(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, TraeCheckinStatusOK, snap.Status)
 	require.Equal(t, timezone.Now().Format("2006-01-02"), snap.Date)
+	// 落盘的积分快照余额同样是包聚合（列表页免探测渲染不得被奖励额污染）。
+	creditsSnap, ok := repo.extras[traeCreditsExtraKey].(TraeCreditsSnapshot)
+	require.True(t, ok)
+	require.InDelta(t, 1851.6, creditsSnap.Remain, 1e-6)
+	require.InDelta(t, 110, creditsSnap.Credits, 1e-6)
 }
 
 // 纪律 4：status.checked_in=true 时不再发 claim。
@@ -1275,6 +1294,47 @@ func TestTraeReqSourceDefaultsToOne(t *testing.T) {
 	require.Equal(t, 1, traeReqSource(traeCreditsAccount(75, "https://x", nil)))
 	require.Equal(t, 2, traeReqSource(traeCreditsAccount(76, "https://x", map[string]any{"req_source": 2})))
 	require.Equal(t, 1, traeReqSource(traeCreditsAccount(77, "https://x", map[string]any{"req_source": 5})), "越界取值回落默认")
+}
+
+// 签到回执必须携带权威余额快照（remain=包聚合），前端不得把 status.credits
+// （每日签到奖励额）写进 remain：线上故障正是「签到后剩余积分被覆盖成 100，
+// 而已用/总额仍是旧包聚合」的自相矛盾读数。
+func TestTraeCheckinReceiptCarriesAuthoritativeBalanceNotRewardCredits(t *testing.T) {
+	t.Parallel()
+	spy := &traeUpstreamSpy{}
+	var statusCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		spy.record(r, string(body))
+		switch r.URL.Path {
+		case traeCheckinStatusPath:
+			// status.credits 恒为奖励额 100（官方卡片读数），与余额无关。
+			writeTraeJSON(w, http.StatusOK, traeStatusBody(atomic.AddInt32(&statusCalls, 1) > 1, true, 100))
+		case traeCheckinClaimPath:
+			writeTraeJSON(w, http.StatusOK, `{"code":0,"message":"success"}`)
+		case traeEntUsagePath:
+			writeTraeJSON(w, http.StatusOK, traePacksBody(
+				traePack("plan_monthly_7001", 4700, 2848.4, time.Now().AddDate(0, 0, 20).Unix()),
+			))
+		default:
+			writeTraeJSON(w, http.StatusNotFound, `{"code":404}`)
+		}
+	}))
+	defer server.Close()
+
+	repo := &traeCreditsFakeRepo{extras: map[string]any{}}
+	svc := newTraeCreditsTestService(&workbuddyTestUpstream{client: server.Client()}, repo)
+	repo.accountsByID = map[int64]*Account{80: traeCreditsAccount(80, server.URL, nil)}
+
+	result, err := svc.Checkin(context.Background(), 80)
+	require.NoError(t, err)
+	require.Equal(t, TraeCheckinStatusOK, result.Status)
+	// 回执 credits 是奖励额；余额只在 CreditsSnapshot 里。
+	require.InDelta(t, 100, result.Credits, 1e-6)
+	require.NotNil(t, result.CreditsSnapshot)
+	require.InDelta(t, 1851.6, result.CreditsSnapshot.Remain, 1e-6)
+	require.InDelta(t, 4700, result.CreditsSnapshot.Size, 1e-6)
+	require.Len(t, result.CreditsSnapshot.Packages, 1)
 }
 
 func TestTraeFirstNonEmptyAndNumericHelpers(t *testing.T) {

@@ -6,7 +6,7 @@
  * 调用方必须以 body.success 判成败，不能依赖 HTTP 状态码。
  */
 
-import { apiClient } from '../client'
+import { apiClient, LONG_RUNNING_ACTION_TIMEOUT_MS } from '../client'
 
 /** Trae 双域：国内 cn / 国际 global。 */
 export type TraeRealm = 'cn' | 'global'
@@ -48,13 +48,36 @@ export interface TraeCreditsResult {
   error?: string
 }
 
+/** 签到后刷新的权威余额快照（对应后端 TraeCreditsSnapshot，字段可能缺省）。 */
+export interface TraeCreditsSnapshot {
+  credits?: number
+  remain?: number
+  used?: number
+  size?: number
+  packs?: number
+  packages?: TraeCreditsPackage[]
+  fetched_at?: number
+  realm?: string
+  checkable?: boolean
+  checked_in?: boolean
+  token_expires_at?: number
+  refresh_expires_at?: number
+}
+
 /** 签到结果（对应后端 TraeCheckinResult）。 */
 export interface TraeCheckinResult {
   success: boolean
   status: 'ok' | 'already' | 'fail' | 'skipped'
   detail?: string
+  /**
+   * status 口径的当前总积分，即官方「每日签到奖励额」，**不是账户余额**。
+   * 余额必须取 credits_snapshot.remain：把本字段写进 remain 会把几千的
+   * 权益包余额覆盖成奖励额（如 100）。
+   */
   credits: number
   has_credits?: boolean
+  /** 签到成功后刷新的权威余额快照；缺省=刷新未成功，需回落重新查询。 */
+  credits_snapshot?: TraeCreditsSnapshot
   realm?: string
   checked_at: number
 }
@@ -160,8 +183,12 @@ export async function queryTraeCredits(id: number): Promise<TraeCreditsResult> {
 
 /** 手动签到（幂等：今天已签到返回 status=already，仍是成功语义）。 */
 export async function checkinTraeAccount(id: number): Promise<TraeCheckinResult> {
+  // 后端签到编排撞 9074 限流会等 60s 重试（总上限 420s），全局 30s 超时会在
+  // 限流时必然本地 abort 并误报网络错误，故单独放宽到长耗时上限。
   const { data } = await apiClient.post<TraeCheckinResult>(
-    `/admin/trae/accounts/${id}/checkin`
+    `/admin/trae/accounts/${id}/checkin`,
+    undefined,
+    { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
   )
   return data
 }

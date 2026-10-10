@@ -27,6 +27,12 @@ export const apiClient: AxiosInstance = axios.create({
   }
 })
 
+// 长耗时管理动作（手动签到等）的超时上限。全局 30s 默认值对这些接口太短：
+// Trae 签到编排撞上游 9074 限流会等 60s 换新设备号重试（最多 4 次尝试、总上限
+// 420s），凡撞限流的请求必然超过 30s，曾被本地 abort 并误报成网络错误。
+// 此类接口的调用方必须用本常量覆盖默认超时。
+export const LONG_RUNNING_ACTION_TIMEOUT_MS = 480_000
+
 // ==================== Request Interceptor ====================
 
 // Get user's timezone
@@ -262,6 +268,19 @@ apiClient.interceptors.response.use(
         error: apiData.error,
         message: apiData.message || apiData.detail || error.message,
         metadata: apiData.metadata,
+      })
+    }
+
+    // Request timeout: the local axios timer aborted the request before any HTTP
+    // response arrived. Reporting this as a network error is misleading (the user's
+    // connection can be perfectly fine while the server is simply slow), and for
+    // check-ins the backend keeps working after our abort, so tell the caller to
+    // refresh later instead of blaming the network.
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      return Promise.reject({
+        status: 0,
+        code: 'REQUEST_TIMEOUT',
+        message: 'Request timed out. The server may still be processing; refresh later to check the result.'
       })
     }
 

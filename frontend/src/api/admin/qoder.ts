@@ -6,7 +6,7 @@
  * 完成登录 → 前端调用 exchangeQoderCode 取回凭据。
  */
 
-import { apiClient } from '../client'
+import { apiClient, LONG_RUNNING_ACTION_TIMEOUT_MS } from '../client'
 
 /** Qoder 双域：国内 gateway.qoder.com.cn / 国际 api1.qoder.sh。 */
 export type QoderAuthRealm = 'cn' | 'global'
@@ -107,7 +107,12 @@ export async function queryQoderCredits(id: number): Promise<QoderCreditsResult>
  * 幂等：同一轮重复领取上游返回 replayed，本接口回报 status=already（仍为成功语义）。
  */
 export async function checkinQoderAccount(id: number): Promise<QoderCheckinResult> {
-  const { data } = await apiClient.post<QoderCheckinResult>(`/admin/qoder/accounts/${id}/checkin`)
+  // 后端领取编排上限 60s，超过全局 30s 默认超时；放宽以免本地 abort 误报网络错误。
+  const { data } = await apiClient.post<QoderCheckinResult>(
+    `/admin/qoder/accounts/${id}/checkin`,
+    undefined,
+    { timeout: LONG_RUNNING_ACTION_TIMEOUT_MS }
+  )
   return data
 }
 

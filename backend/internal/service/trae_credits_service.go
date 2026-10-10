@@ -3,8 +3,11 @@ package service
 // trae_credits_service.go Trae 账号积分查询与每日签到服务。
 //
 // 上游接口（UG 域 api.trae.cn，与聊天域分离，且客户端指纹不同，见 trae_headers.go）：
-//   - 签到状态 + 当前总积分：POST /trae/api/v2/ug/checkin_credits/status
+//   - 签到状态 + 每日签到奖励额：POST /trae/api/v2/ug/checkin_credits/status
 //     body {"req_source":N} → {code, checked_in, credits, enable, message}
+//     注意：credits 是官方卡片展示的**每日签到奖励额**（"Daily check-in: {credits}
+//     credits"），**不是账户余额**；余额唯一来源是 ide_user_ent_usage 权益包聚合的
+//     remain。把 status.credits 当余额展示/落盘会把几千的余额显示成奖励额（如 100）。
 //   - 每日签到领取：POST /trae/api/v2/ug/checkin_credits/claim → 只有 code/message，
 //     **领取到的积分不在响应里**，必须回查 status 才拿得到新余额；
 //   - 权益包用量（真正的余额明细）：POST /trae/api/v2/pay/ide_user_ent_usage
@@ -140,13 +143,20 @@ type TraeCreditsResult struct {
 
 // TraeCheckinResult 签到结果（状态机：ok/already/fail/skipped）。
 type TraeCheckinResult struct {
-	Success   bool    `json:"success"`
-	Status    string  `json:"status"`
-	Detail    string  `json:"detail,omitempty"`
+	Success bool   `json:"success"`
+	Status  string `json:"status"`
+	Detail  string `json:"detail,omitempty"`
+	// Credits 是 status 口径的当前总积分，即官方卡片展示的**每日签到奖励额**，
+	// 不是账户余额。余额必须取 CreditsSnapshot.Remain：把本字段写进 remain 会
+	// 把几千的权益包余额覆盖成奖励额（如 100）。
 	Credits   float64 `json:"credits"`
 	HasCredit bool    `json:"has_credits,omitempty"`
-	Realm     string  `json:"realm,omitempty"`
-	CheckedAt int64   `json:"checked_at"`
+	// CreditsSnapshot 签到成功后刷新的权威余额快照（与查询端点同口径：
+	// remain=未过期权益包聚合），供调用方一次性刷新展示；nil=签到后刷新未成功，
+	// 调用方应回落重新查询，不得拿 Credits 冒充余额。
+	CreditsSnapshot *TraeCreditsSnapshot `json:"credits_snapshot,omitempty"`
+	Realm           string               `json:"realm,omitempty"`
+	CheckedAt       int64                `json:"checked_at"`
 }
 
 // TraeCreditsSnapshot 写入 account.Extra 的积分快照（供列表免探测渲染）。
@@ -418,7 +428,9 @@ func (s *TraeCreditsService) checkinForAccount(ctx context.Context, account *Acc
 	result.Success = result.Status == TraeCheckinStatusOK || result.Status == TraeCheckinStatusAlready
 	s.persistTraeCheckinSnapshot(ctx, account, result)
 	if result.Success {
-		s.refreshCreditsSnapshot(ctx, account)
+		// 刷新后的权威余额随回执带回：前端此前拿 status 口径的 credits（每日奖励额）
+		// 写 remain，把余额覆盖成 100；现在余额一律以快照的 remain 为准。
+		result.CreditsSnapshot = s.refreshCreditsSnapshot(ctx, account)
 	}
 	return result
 }
@@ -482,12 +494,17 @@ func (s *TraeCreditsService) traeCheckinAttempt(ctx context.Context, account *Ac
 	return result, traeIsBusyError(claimErr)
 }
 
-// refreshCreditsSnapshot 签到后刷新积分快照（失败只告警：余额观测不影响签到结论）。
-func (s *TraeCreditsService) refreshCreditsSnapshot(ctx context.Context, account *Account) {
-	if credits := s.queryCreditsForAccount(ctx, account); !credits.Success {
+// refreshCreditsSnapshot 签到后刷新积分快照并返回落盘的权威余额（未落盘返回 nil）。
+// 失败只告警：余额观测不影响签到结论。
+func (s *TraeCreditsService) refreshCreditsSnapshot(ctx context.Context, account *Account) *TraeCreditsSnapshot {
+	credits := s.queryCreditsForAccount(ctx, account)
+	if !credits.Success {
 		slog.Debug("trae credits refresh after checkin failed",
 			"account_id", account.ID, "error", credits.Error)
+		return nil
 	}
+	snapshot := traeCreditsSnapshotFrom(credits)
+	return &snapshot
 }
 
 // ensureTraeBillingToken 确保账号持有可用 access_token：临近过期且持有 refresh_token
@@ -811,27 +828,32 @@ func (s *TraeCreditsService) resolveTraeProxyURL(ctx context.Context, account *A
 	return ""
 }
 
+// traeCreditsSnapshotFrom 探测结果转落盘快照（查询路径与签到后刷新路径共用同一
+// 口径，避免两处字段漂移）。
+func traeCreditsSnapshotFrom(result *TraeCreditsResult) TraeCreditsSnapshot {
+	return TraeCreditsSnapshot{
+		Credits:          result.Credits,
+		Remain:           result.Remain,
+		Used:             result.Used,
+		Size:             result.Size,
+		Packs:            result.Packs,
+		Packages:         result.Packages,
+		FetchedAt:        result.FetchedAt,
+		Realm:            result.Realm,
+		Checkable:        result.Checkable,
+		CheckedIn:        result.CheckedIn,
+		TokenExpiresAt:   result.TokenExpiresAt,
+		RefreshExpiresAt: result.RefreshExpiresAt,
+	}
+}
+
 // persistTraeCreditsSnapshot 把积分快照写入 account.Extra（失败只告警：快照是观测
 // 数据，写入失败不应把一次成功查询变成错误）。
 func (s *TraeCreditsService) persistTraeCreditsSnapshot(ctx context.Context, account *Account, result *TraeCreditsResult) {
 	if s.accountRepo == nil || account == nil || result == nil || !result.Success {
 		return
 	}
-	snapshot := TraeCreditsSnapshot{
-		Credits:   result.Credits,
-		Remain:    result.Remain,
-		Used:      result.Used,
-		Size:      result.Size,
-		Packs:     result.Packs,
-		Packages:  result.Packages,
-		FetchedAt: result.FetchedAt,
-		Realm:     result.Realm,
-		Checkable: result.Checkable,
-		CheckedIn: result.CheckedIn,
-	}
-	// 到期时刻随快照落库，使列表页不请求上游也能告警。
-	snapshot.TokenExpiresAt = result.TokenExpiresAt
-	snapshot.RefreshExpiresAt = result.RefreshExpiresAt
+	snapshot := traeCreditsSnapshotFrom(result)
 	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{traeCreditsExtraKey: snapshot}); err != nil {
 		slog.Warn("trae credits snapshot persist failed", "account_id", account.ID, "error", err)
 	}

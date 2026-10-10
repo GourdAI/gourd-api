@@ -510,6 +510,40 @@ describe('API Client', () => {
         })
       )
     })
+
+    it('本地超时 abort（ECONNABORTED）报请求超时而非网络错误', async () => {
+      // 回归：签到等长耗时接口曾被本地 30s abort 后误报成 Network error，
+      // 用户网络正常却看到「检查连接」，真因是服务端仍在重试。
+      const adapter = vi.fn().mockRejectedValue({
+        code: 'ECONNABORTED',
+        message: 'timeout of 30000ms exceeded',
+        config: { url: '/test' },
+        // 没有 response：与真实本地超时 abort 同形
+      })
+      apiClient.defaults.adapter = adapter
+
+      await expect(apiClient.get('/test')).rejects.toEqual(
+        expect.objectContaining({
+          status: 0,
+          code: 'REQUEST_TIMEOUT',
+          message: expect.stringContaining('timed out'),
+        })
+      )
+    })
+
+    it('ETIMEDOUT 同样归类为请求超时', async () => {
+      const adapter = vi.fn().mockRejectedValue({
+        code: 'ETIMEDOUT',
+        message: 'timeout exceeded',
+        config: { url: '/test' },
+      })
+      apiClient.defaults.adapter = adapter
+
+      await expect(apiClient.get('/test')).rejects.toMatchObject({
+        status: 0,
+        code: 'REQUEST_TIMEOUT',
+      })
+    })
   })
 
   // --- 请求取消 ---
