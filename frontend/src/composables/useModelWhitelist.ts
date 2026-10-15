@@ -220,15 +220,19 @@ const minimaxModels = [
 ]
 
 // WorkBuddy（双域聚合网关，模型为上游转发标识）
+// 与后端 DefaultWorkbuddyModelIDs 同项同步（2026-10-13 只增不删地补齐六个 CN 目录真值）。
+// 上游新模型的头号通道已改为管理页「同步上游模型」（后端 /v3/config 动态拉取），
+// 本表只作同步前的预填候选，不再需要人工追上游版本。
 const workbuddyModels = [
-  'glm-5.2', 'glm-5.1', 'glm-5.3', 'glm-5.3-flash', 'glm-5v-turbo',
-  'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k3', 'kimi-k2.8-preview',
-  'minimax-m3',
-  'hy3', 'hy3-preview', 'hy4-preview', 'hy4-preview-x',
+  'glm-5.2', 'glm-5.1', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5v-turbo',
+  'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k3', 'kimi-k3-2', 'kimi-k2.8-preview',
+  'minimax-m3', 'minimax-m3-pay',
+  'hy3', 'hy3-x', 'hy3-preview', 'hy4-preview', 'hy4-preview-x',
   'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4.1-flash',
   'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
   'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex',
   'gemini-3.5-flash',
+  'step-5-preview', 'space-bunny',
   'auto'
 ]
 

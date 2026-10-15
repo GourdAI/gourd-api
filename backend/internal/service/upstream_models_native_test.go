@@ -135,7 +135,9 @@ func TestFetchNativeModelCatalogDispatchesQoderFetcher(t *testing.T) {
 }
 
 func TestFetchNativeModelCatalogLeavesOtherPlatformsToGenericPath(t *testing.T) {
-	for _, platform := range []string{PlatformWorkbuddy, PlatformOpenAI, PlatformAnthropic, PlatformGemini, ""} {
+	// workbuddy 已于 2026-10-13 从本列表移出：它现在有 /v3/config 专用路径（见
+	// workbuddy_models.go），继续当作「回落通用路径」会把已接通的同步又关掉。
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, ""} {
 		account := nativeTestAccount(5003, platform)
 		svc := &AccountTestService{cfg: modelSyncInsecureTestConfig()}
 		models, metadata, handled, err := svc.fetchNativeModelCatalog(context.Background(), account)
@@ -458,13 +460,15 @@ func TestFetchUpstreamSupportedModelsUsesNativePathWhenHandled(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// E. WorkBuddy 显式不支持
+// E. WorkBuddy 已接原生 /v3/config 路径，通用分支仅作兜底
 // ---------------------------------------------------------------------------
 
-func TestBuildUpstreamModelsRequestRejectsWorkbuddyWithActionableMessage(t *testing.T) {
-	// httpUpstream 非 nil，确保通用路径不会在「客户端未配置」就提前退出，
-	// 从而真正走到 buildUpstreamModelsRequest 的 workbuddy 分支。
-	svc := &AccountTestService{cfg: modelSyncInsecureTestConfig(), httpUpstream: &qoderFakeUpstream{}}
+func TestBuildUpstreamModelsRequestWorkbuddyBranchIsDefensiveOnly(t *testing.T) {
+	// 旧断言「workbuddy 必须拿到 no model list API / 维护静态表」已作废：2026-10-13
+	// 实测 /v3/config 在三个域名均存在（对照随机路径 404）且按身份下发目录。
+	// 本分支保留只为分派表一旦变动时仍给出可读原因，而不是落进 default 那句
+	// 「Unsupported platform: workbuddy」。
+	svc := &AccountTestService{cfg: modelSyncInsecureTestConfig()}
 	req, err := svc.buildUpstreamModelsRequest(context.Background(), &Account{
 		ID:          8001,
 		Platform:    PlatformWorkbuddy,
@@ -474,20 +478,24 @@ func TestBuildUpstreamModelsRequestRejectsWorkbuddyWithActionableMessage(t *test
 	require.Nil(t, req)
 	syncErr := requireUpstreamModelSyncError(t, err)
 	require.Equal(t, UpstreamModelSyncErrorUnsupported, syncErr.Kind)
-	require.Contains(t, syncErr.SafeMessage(), "no model list API")
 	require.Contains(t, syncErr.SafeMessage(), "WorkBuddy")
-	require.Contains(t, syncErr.SafeMessage(), "static model catalog")
+	require.Contains(t, syncErr.SafeMessage(), "/v3/config")
+	require.NotContains(t, syncErr.SafeMessage(), "Unsupported platform",
+		"不得落进 default 分支（那会把「已接原生路径」的平台说成未支持）")
 
-	// 整体走同步入口时也必须原样回该错误（不能落进 default 的「unsupported platform」）。
+	// 同步入口必须被原生路径接管（不再落进上面那个兜底分支）：httpUpstream 未配时
+	// 报的是原生路径的配置错误，而不是 unsupported。
 	catalog, err := svc.SyncUpstreamModelCatalog(context.Background(), &Account{
 		ID:          8001,
 		Platform:    PlatformWorkbuddy,
 		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"access_token": "wb-token"},
+		Credentials: map[string]any{"access_token": "wb-token", "realm": "cn"},
 	})
 	require.Nil(t, catalog)
-	require.Equal(t, UpstreamModelSyncErrorUnsupported, requireUpstreamModelSyncError(t, err).Kind)
-	require.Contains(t, err.Error(), "no model list API")
+	nativeErr := requireUpstreamModelSyncError(t, err)
+	require.Equal(t, UpstreamModelSyncErrorConfiguration, nativeErr.Kind,
+		"分派表已含 workbuddy，必须进原生路径；回到 unsupported 等于接又被关闭")
+	require.Contains(t, nativeErr.SafeMessage(), "Upstream HTTP client")
 }
 
 // ---------------------------------------------------------------------------

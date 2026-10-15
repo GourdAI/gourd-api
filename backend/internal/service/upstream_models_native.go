@@ -35,6 +35,9 @@ var nativeModelCatalogFetchers = map[string]func(s *AccountTestService) nativeMo
 	PlatformQoder: func(s *AccountTestService) nativeModelCatalogFetcher {
 		return s.fetchQoderUpstreamModels
 	},
+	PlatformWorkbuddy: func(s *AccountTestService) nativeModelCatalogFetcher {
+		return s.fetchWorkbuddyUpstreamModels
+	},
 }
 
 // fetchNativeModelCatalog 分派原生目录拉取。handled=false 表示该平台走通用路径。

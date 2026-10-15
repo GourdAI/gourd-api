@@ -295,7 +295,7 @@ describe('ModelWhitelistSelector', () => {
     syncUpstreamModels.mockRejectedValue({
       status: 400,
       reason: 'unsupported_platform',
-      message: 'WorkBuddy upstream exposes no model list API for personal accounts'
+      message: 'WorkBuddy model sync expects the native /v3/config catalog path'
     })
     const wrapper = mountSelector({ accountId: 46 })
 
@@ -303,7 +303,7 @@ describe('ModelWhitelistSelector', () => {
     await flushPromises()
 
     expect(showError).toHaveBeenCalledWith(
-      'admin.accounts.syncUpstreamModelsError:{"message":"WorkBuddy upstream exposes no model list API for personal accounts"}'
+      'admin.accounts.syncUpstreamModelsError:{"message":"WorkBuddy model sync expects the native /v3/config catalog path"}'
     )
     expect(showError).not.toHaveBeenCalledWith(
       expect.stringContaining('同步上游模型失败：同步上游模型失败')
@@ -369,8 +369,20 @@ describe('ModelWhitelistSelector', () => {
     expect(syncButton?.exists()).toBe(true)
   })
 
-  it('hides the upstream sync button for workbuddy (no upstream model list API)', () => {
+  // 2026-10-13：WorkBuddy 接通 /v3/config 动态目录（旧断言「没有上游模型列表 API」已推翻）。
+  it('shows the upstream sync button for workbuddy accounts', () => {
     const wrapper = mountSelector({ platform: 'workbuddy', accountId: 51 })
+
+    expect(findSyncButton(wrapper)).toBeDefined()
+    expect(wrapper.text()).toContain('admin.accounts.syncUpstreamModels')
+  })
+
+  // preview 只能递 api_key，而 WorkBuddy 读 credentials.access_token，必得配置错误。
+  it('hides the upstream sync button for workbuddy create-account preview', () => {
+    const wrapper = mountSelector({
+      platform: 'workbuddy',
+      syncCredentials: { platform: 'workbuddy', type: 'apikey', base_url: '', api_key: '' },
+    })
 
     expect(findSyncButton(wrapper)).toBeUndefined()
     expect(wrapper.text()).not.toContain('admin.accounts.syncUpstreamModels')

@@ -816,12 +816,13 @@ func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, acc
 	case account.IsAnthropic():
 		return s.buildAnthropicUpstreamModelsRequest(ctx, account)
 	case account.IsWorkbuddy():
-		// 刻意不给通用探测路径：WorkBuddy 上游没有面向个人账号的模型列表接口
-		// （/v2/models 等变体均不存在；唯一动态端点是**企业版**的
-		// /console/enterprises/{id}/config/models，个人账号无 enterpriseId 拿不到）。
-		// 文案写明原因与正确做法，否则管理员只会看到一句没头没尾的 unsupported platform。
+		// WorkBuddy 走 fetchNativeModelCatalog 的 /v3/config 专用路径（见
+		// workbuddy_models.go），正常不会调用到这里。保留本分支只为分派表一旦
+		// 变动时仍给出可读原因，而不是落进 default 那句「Unsupported platform」。
+		// 旧文案「上游没有面向个人账号的模型列表接口」已于 2026-10-13 实测推翻：
+		// /v3/config 在三个域名均真实存在（对照随机路径 404），只是目录按身份下发。
 		return nil, newUpstreamModelSyncUnsupportedError(
-			"WorkBuddy upstream exposes no model list API for personal accounts; maintain the static model catalog instead", nil,
+			"WorkBuddy model sync expects the native /v3/config catalog path", nil,
 		)
 	default:
 		return nil, newUpstreamModelSyncUnsupportedError(

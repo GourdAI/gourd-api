@@ -2926,6 +2926,12 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	// 固定协议平台（WorkBuddy / Trae / Qoder）：必须在下面的 Claude 兜底之前拦截。
+	if models := fixedProtocolAccountModels(account); len(models) > 0 {
+		response.Success(c, models)
+		return
+	}
+
 	// Handle Claude/Anthropic accounts
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {

@@ -30,20 +30,34 @@ const (
 
 // DefaultWorkbuddyModelIDs 是 WorkBuddy 官方目录的默认模型 ID，
 // 供 /v1/models 在尚未同步上游列表时回退，以及账号白名单预填。
+//
+// 本表是「同步之前的兜底」，不是权威源：上游目录现在由 /v3/config 动态下发
+// （见 workbuddy_models.go），“点同步只能拿到老模型”的报障就出在本表长期未跟进。
+// 2026-10-13 按本机 WorkBuddy 桌面端缓存（~/.workbuddy/cache/acc-product-config-v3.json，
+// agents[name=cli] 共 21 项）只增不删地补齐下面六个国内域真实可调条目：
+//   - hy3-x / glm-5.3-flashx：付费变体（上游确实可调，不是占位名）；
+//   - kimi-k3-2 / minimax-m3-pay：CN 目录里的真值 ID（“Kimi-K3”/“MiniMax-M3” 只是
+//     展示名）。旧的 kimi-k3 / minimax-m3 按「只增不删」保留（删除会动到存量
+//     分组/路由配置）；二者在 2026-10-13 的 CN 目录里零命中，是否仍可调用未实测。
+//   - step-5-preview / space-bunny：新上线模型。
 func DefaultWorkbuddyModelIDs() []string {
 	return []string{
 		"glm-5.2",
 		"glm-5.1",
 		"glm-5.3",
 		"glm-5.3-flash",
+		"glm-5.3-flashx",
 		"glm-5v-turbo",
 		"kimi-k2.7",
 		"kimi-k2.6",
 		"kimi-k2.5",
 		"kimi-k3",
+		"kimi-k3-2",
 		"kimi-k2.8-preview",
 		"minimax-m3",
+		"minimax-m3-pay",
 		"hy3",
+		"hy3-x",
 		"hy3-preview",
 		"hy4-preview",
 		"hy4-preview-x",
@@ -58,6 +72,8 @@ func DefaultWorkbuddyModelIDs() []string {
 		"gpt-5.4",
 		"gpt-5.3-codex",
 		"gemini-3.5-flash",
+		"step-5-preview",
+		"space-bunny",
 		"auto",
 	}
 }

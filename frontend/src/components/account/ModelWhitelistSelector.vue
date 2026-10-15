@@ -307,14 +307,15 @@ const upstreamSyncPlatforms = new Set([
   'minimax',
   'opencode_go',
   'qoder',
-  'trae'
+  'trae',
+  'workbuddy'
 ])
 
-// preview（新建未落库）同步只递 platform/type/base_url/api_key，而 Trae / Qoder 的
+// preview（新建未落库）同步只递 platform/type/base_url/api_key，而 Trae / Qoder / WorkBuddy 的
 // 拉取链路读的是 credentials.access_token / personal_access_token（Qoder 连 api_key
 // 都不认），走 preview 必定只能得到配置错误。不展示按钮比让人点了拿到 400 好；
 // 已建账号（accountId 分支）从库内取真凭据，仍然可用。
-const previewUnsupportedPlatforms = new Set(['trae', 'qoder'])
+const previewUnsupportedPlatforms = new Set(['trae', 'qoder', 'workbuddy'])
 
 const canSyncUpstream = computed(() => {
   if (props.accountId) {
