@@ -30,7 +30,7 @@ describe('UpstreamRequestIdHeaderField', () => {
     expect(text).toContain('admin.accounts.upstreamRequestIdHeaderHelp.intro')
     expect(text).toContain('admin.accounts.upstreamRequestIdHeaderHelp.examplesTitle')
     expect(text).toContain('X-Client-Request-ID')
-    expect(text).toContain('admin.accounts.upstreamRequestIdHeaderHelp.sub2apiNote')
+    expect(text).toContain('admin.accounts.upstreamRequestIdHeaderHelp.gourdApiNote')
     expect(text).toContain('X-Oneapi-Request-Id')
     expect(text).toContain('admin.accounts.upstreamRequestIdHeaderHelp.official:OpenAI')
     expect(text).toContain('x-request-id')

@@ -145,7 +145,6 @@ function mountModal(groups: any[] = []) {
         Icon: true,
         PlatformIcon: true,
         ProxySelector: true,
-        ProxyAdBanner: true,
         GroupSelector: GroupSelectorStub,
         ModelWhitelistSelector: ModelWhitelistSelectorStub,
         QuotaLimitCard: true,

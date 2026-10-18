@@ -96,7 +96,7 @@ vi.mock('@/stores', () => ({
     get cachedPublicSettings() {
       return appStoreState.cachedPublicSettings
     },
-    siteName: 'Sub2API',
+    siteName: 'Gourd API',
     siteLogo: '',
     docUrl: '',
     publicSettingsLoaded: true,

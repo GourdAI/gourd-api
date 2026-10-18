@@ -1,4 +1,4 @@
-﻿package handler
+package handler
 
 import (
 	"context"
@@ -152,7 +152,7 @@ func TestBuildKeyBillingInfoAppliesPeakMultiplier(t *testing.T) {
 	now := time.Date(2026, time.July, 12, 10, 0, 0, 0, timezone.Location())
 	userRate := 0.8
 
-	got := buildKeyBillingInfo(apiKey, userRate, now)
+	got := buildKeyBillingInfo(apiKey, userRate, now, keyBillingObjectLegacy)
 
 	require.Equal(t, 1.2, got.GroupRateMultiplier)
 	require.NotNil(t, got.UserRateMultiplier)
@@ -202,7 +202,7 @@ func TestKeyBillingInfoJSONKeepsZeroPeakMultiplierWhenEnabled(t *testing.T) {
 		},
 	}
 	now := time.Date(2026, time.July, 12, 12, 0, 0, 0, timezone.Location())
-	encoded, err := json.Marshal(buildKeyBillingInfo(apiKey, apiKey.Group.RateMultiplier, now))
+	encoded, err := json.Marshal(buildKeyBillingInfo(apiKey, apiKey.Group.RateMultiplier, now, keyBillingObjectLegacy))
 	require.NoError(t, err)
 
 	var fields map[string]json.RawMessage

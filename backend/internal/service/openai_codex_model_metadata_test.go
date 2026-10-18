@@ -400,7 +400,7 @@ func TestBuildCodexModelsManifestForGroupIntersectsDifferentMappedTargetsWithout
 		require.Len(t, models, 1)
 		require.Equal(t, "my-coder", models[0]["slug"])
 		require.Equal(t, "my-coder", models[0]["display_name"])
-		require.Equal(t, "Custom model routed through Sub2API.", models[0]["description"])
+		require.Equal(t, "Custom model routed through Gourd API.", models[0]["description"])
 		require.Equal(t, []string{"low", "medium", "high"}, effortsFromManifestModel(t, models[0]))
 		require.Equal(t, []any{"text"}, models[0]["input_modalities"])
 		require.EqualValues(t, 272_000, models[0]["context_window"])

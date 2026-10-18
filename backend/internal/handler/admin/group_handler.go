@@ -612,12 +612,22 @@ func (h *GroupHandler) GetByID(c *gin.Context) {
 // GetGroupModelAllowlistCandidates handles getting candidate model IDs for the group model allowlist.
 // GET /api/v1/admin/groups/:id/model-allowlist-candidates
 func (h *GroupHandler) GetGroupModelAllowlistCandidates(c *gin.Context) {
-	if h.rejectUnsupportedSimpleModeOperation(c, "advanced") {
-		return
-	}
 	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || groupID < 0 {
 		response.BadRequest(c, "Invalid group ID")
+		return
+	}
+
+	// 简单模式闸门按「是否触达某个分组的高级配置」分级，而不是一刀切：
+	//   - id > 0：读的是真实分组的高级候选集（含分组倍率/独占判定与组内账号的
+	//     model_mapping），属于分组管理能力，简单模式下仍然拒绝（既有契约，
+	//     见 group_handler_simple_mode_test.go）；
+	//   - id <= 0：与具体分组无关。service 层在该分支下**不读 groupRepo、也不读
+	//     accountRepo**（admin_group.go:86 的 id>0 与 :101 的 id<=0 两道早退），返回的是
+	//     平台默认模型目录（defaultModelsListCandidateIDs + 定价闸门）。
+	//     新建账号页的候选就来自这里；对它也 403 会让 WorkBuddy / Trae / Qoder
+	//     （前端静态表已删、目录只能来自接口）在简单模式下候选恒空。
+	if groupID > 0 && h.rejectUnsupportedSimpleModeOperation(c, "advanced") {
 		return
 	}
 

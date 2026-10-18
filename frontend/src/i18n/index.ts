@@ -1,10 +1,15 @@
 import { createI18n } from 'vue-i18n'
+import {
+  LOCALE_STORAGE_KEY,
+  LOCALE_STORAGE_KEY_LEGACY,
+  readStoredValueWithMigration,
+  writeStoredValueWithMigration
+} from '@/utils/storageKeys'
 
 type LocaleCode = 'en' | 'zh'
 
 type LocaleMessages = Record<string, any>
 
-const LOCALE_KEY = 'sub2api_locale'
 const DEFAULT_LOCALE: LocaleCode = 'en'
 
 const localeLoaders: Record<LocaleCode, () => Promise<{ default: LocaleMessages }>> = {
@@ -17,7 +22,7 @@ function isLocaleCode(value: string): value is LocaleCode {
 }
 
 function getDefaultLocale(): LocaleCode {
-  const saved = localStorage.getItem(LOCALE_KEY)
+  const saved = readStoredValueWithMigration(LOCALE_STORAGE_KEY, LOCALE_STORAGE_KEY_LEGACY)
   if (saved && isLocaleCode(saved)) {
     return saved
   }
@@ -66,7 +71,7 @@ export async function setLocale(locale: string): Promise<void> {
 
   await loadLocaleMessages(locale)
   i18n.global.locale.value = locale
-  localStorage.setItem(LOCALE_KEY, locale)
+  writeStoredValueWithMigration(LOCALE_STORAGE_KEY, locale, LOCALE_STORAGE_KEY_LEGACY)
   document.documentElement.setAttribute('lang', locale)
 
   // 同步更新浏览器页签标题，使其跟随语言切换

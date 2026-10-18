@@ -4,7 +4,7 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { allModels, buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import { allModels, buildModelMappingObject, DYNAMIC_CATALOG_PLATFORMS, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 // 下拉候选的唯一数据源是 allModels（由 allModelsList 派生），而 ModelWhitelistSelector
 // 用 `allModels.filter(m => platformModels.has(m.value))` 做交集。任何一个
@@ -29,9 +29,6 @@ const CATALOG_PLATFORMS = [
   'moonshot',
   'kimi',
   'opencode_go',
-  'workbuddy',
-  'qoder',
-  'trae',
   'doubao',
   'minimax',
   'baidu',
@@ -202,27 +199,14 @@ describe('useModelWhitelist', () => {
     })
   })
 
-  // Qoder 目录真值回归（2026-09-22 实测对齐上游 /api/v2/model/list；
-  // 来源：Qoder CN 客户端 model classes app 场景 14 项）。
-  it('qoder 模型列表与上游真实目录一致（14 项）', () => {
-    const models = getModelsByPlatform('qoder')
-
-    expect(models).toHaveLength(14)
-    expect(models).toEqual(expect.arrayContaining([
-      'auto',
-      'qmodel_38max', 'qfmodel',
-      'qmodel_latest', 'qmodel', 'q37fmodel',
-      'dmodel', 'dfmodel',
-      'gmodel', 'gfmodel', 'gm51model',
-      'kmodel_latest', 'kmodel',
-      'mmodel'
-    ]))
-  })
-
-  it('qoder 模型列表不含上游已不可用的旧 key', () => {
-    const models = getModelsByPlatform('qoder')
-
-    expect(models).not.toContain('q36fmodel')
+  // WorkBuddy / Trae / Qoder 的前端写死表已删除（2026-10 改造）：这三家的上游目录按
+  // 账号身份下发，写死值必然滞后，目录现在由接口提供（见 components/account/modelCatalog.ts）。
+  // 本用例是「不许把写死表加回来」的反向护栏。
+  it('workbuddy/qoder/trae have no hardcoded catalog and are flagged dynamic', () => {
+    for (const platform of ['workbuddy', 'qoder', 'trae']) {
+      expect(DYNAMIC_CATALOG_PLATFORMS.has(platform), `${platform} should be a dynamic catalog platform`).toBe(true)
+      expect(getModelsByPlatform(platform), `${platform} must not ship a hardcoded model table`).toEqual([])
+    }
   })
 
   it('every getModelsByPlatform platform branch is covered by allModels', () => {
@@ -241,13 +225,9 @@ describe('useModelWhitelist', () => {
   })
 
   it('网关平台独有模型可从 allModels 里选到', () => {
-    for (const model of ['Doubao-Seed-2.1-Pro', 'seed-code-pro-0430']) {
+    // 只保留仍写在前端的平台；trae/qoder/workbuddy 的 ID 已改由接口下发。
+    for (const model of ['longcat-2.0', 'gemini-3-pro-high', 'tab_flash_lite_preview']) {
       expect(allModelValues.has(model), `expected allModels to contain ${model}`).toBe(true)
     }
-    expect(allModelValues.has('qmodel_38max')).toBe(true)
-    expect(allModelValues.has('hy3-preview')).toBe(true)
-    expect(allModelValues.has('longcat-2.0')).toBe(true)
-    expect(allModelValues.has('gemini-3-pro-high')).toBe(true)
-    expect(allModelValues.has('tab_flash_lite_preview')).toBe(true)
   })
 })

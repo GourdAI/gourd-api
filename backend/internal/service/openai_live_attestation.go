@@ -73,7 +73,7 @@ func (c *liveAttestationAES) Decrypt(ciphertext string) (string, error) {
 func (s *OpenAIGatewayService) prepareLiveAttestation(ctx context.Context) (string, string, error) {
 	if s == nil || s.liveAttestation == nil {
 		return "", "", &LiveAttestationUnavailableError{
-			Reason: "Sub2API has no platform DeviceCheck provider",
+			Reason: "Gourd API has no platform DeviceCheck provider",
 		}
 	}
 	if s.liveAttestationCipher == nil {

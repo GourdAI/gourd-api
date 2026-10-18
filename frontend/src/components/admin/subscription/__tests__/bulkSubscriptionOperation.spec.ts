@@ -32,7 +32,7 @@ describe('bulk subscription operation identity', () => {
     // 总额池只有一份，reset_quota 不再携带 daily/weekly/monthly 窗口参数：
     // 规范化 payload 仅由 ids + action 构成，因此幂等坐标也只包含这两项。
     const request = { action: 'reset_quota' as const, subscription_ids: [1] }
-    const scope = `sub2api:admin:subscription-bulk:${adminId}:${JSON.stringify({ subscription_ids: [1], action: 'reset_quota' })}`
+    const scope = `gourd:admin:subscription-bulk:${adminId}:${JSON.stringify({ subscription_ids: [1], action: 'reset_quota' })}`
     sessionStorage.setItem(scope, 'saved-operation-key')
     const resumed = prepareBulkSubscriptionOperation(request)
     expect(resumed.key).toBe('saved-operation-key')

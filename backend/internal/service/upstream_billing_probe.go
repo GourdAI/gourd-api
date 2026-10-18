@@ -801,12 +801,24 @@ func (s *UpstreamBillingProbeService) updateSnapshot(
 	return writer.UpdateUpstreamBillingProbeSnapshot(ctx, account, snapshot, rateMultiplier)
 }
 
+// isAcceptedKeyBillingObject 列出上游倍率探测可接受的 object 标识（新品牌值 + 历史值）。
+func isAcceptedKeyBillingObject(object string) bool {
+	switch object {
+	case "gourd.key_billing", "sub2api.key_billing":
+		return true
+	default:
+		return false
+	}
+}
+
 func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
 	var response upstreamBillingProbeResponse
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, err
 	}
-	if response.Object != "sub2api.key_billing" || response.SchemaVersion != 1 || response.BillingScope != "token" {
+	// object 接受两个取值：本实例与旧版对端在 /v1/sub2api/billing 上返回历史值，
+	// 新版对端可能已经改返回 gourd.key_billing。两边都收，避免升级顺序造成同步默默失效。
+	if !isAcceptedKeyBillingObject(response.Object) || response.SchemaVersion != 1 || response.BillingScope != "token" {
 		return nil, fmt.Errorf("unexpected billing response schema")
 	}
 	if response.GroupRateMultiplier == nil || response.ResolvedRateMultiplier == nil ||

@@ -14,6 +14,18 @@ func persistAccountCredentials(ctx context.Context, repo AccountRepository, acco
 		return nil
 	}
 
+	// 安全不变量:临时账号（ID<=0，如管理端「同步上游模型」preview 用未落库凭据
+	// 构造的账号对象）绝不落库。这类对象由 handler 现场拼装、只用于一次上游探测，
+	// 但其内部链路（Trae 换票 / Qoder jobToken 交换 / WorkBuddy 刷新 / Qoder 身份
+	// 自愈）都会调用本函数写回轮换后的凭据。不加这道守卫时，写库表现为
+	// 「UPDATE accounts ... WHERE id = 0」命中 0 行 → ErrAccountNotFound：
+	// 既白跑一个事务，又可能把一次本来成功的目录拉取冒泡成同步失败。
+	// 内存凭据仍然更新（本次请求立即可用），只是不持久化 —— 因为压根没有对应行。
+	if account.ID <= 0 {
+		account.Credentials = shallowCopyMap(credentials)
+		return nil
+	}
+
 	// 安全不变量:spark 影子账号恒不持凭据(凭据透传母账号)。这是凭据写入的唯一汇聚点
 	// (token 刷新 / 订阅补全 / CRS 创建后刷新等全部经此),在此对影子早返 no-op 是
 	// defense-in-depth——即便某条上游路径漏判,也不会把凭据落到影子行(外审第6轮 P1)。

@@ -194,8 +194,8 @@
 
   // Setup Wizard
   setup: {
-    title: 'Sub2API Setup',
-    description: 'Configure your Sub2API instance',
+    title: 'Gourd API Setup',
+    description: 'Configure your Gourd API instance',
     database: {
       title: 'Database Configuration',
       description: 'Connect to your PostgreSQL database',

@@ -3024,26 +3024,61 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 		Platform     string            `json:"platform" binding:"required"`
 		Type         string            `json:"type" binding:"required"`
 		BaseURL      string            `json:"base_url"`
-		APIKey       string            `json:"api_key" binding:"required"`
+		APIKey       string            `json:"api_key"`
 		ModelMapping map[string]string `json:"model_mapping"`
+		// Credentials 为固定协议平台（WorkBuddy / Trae / Qoder）开启：这三个平台的
+		// 目录拉取读的是 credentials.access_token / personal_token / realm / uid 等字段
+		// （而不是 OpenAI 形态的 api_key），以前只递 api_key 导致新建页同步按钮要么隐藏、
+		// 要么必 400，管理员只能先建号再进编辑页拉一次。只接受白名单键（见
+		// previewSyncCredentialKeys），不允许借此注入任意凭据结构。
+		Credentials map[string]any `json:"credentials"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+
+	credentials := make(map[string]any, len(req.Credentials)+4)
+	for key, value := range req.Credentials {
+		if allowed, ok := previewSyncCredentialKeys[strings.TrimSpace(key)]; ok {
+			if text := previewSyncCredentialString(value); text != "" {
+				credentials[allowed] = text
+			}
+		}
+	}
+
+	// 旧调用方（OpenAI / Anthropic / Gemini 等通用平台）只传 api_key，继续优先取
+	// 顶格字段；base_url 同理（顶格值覆盖 credentials 里的同名值，保持既有语义）。
+	if apiKey := strings.TrimSpace(req.APIKey); apiKey != "" {
+		credentials["api_key"] = apiKey
+	}
+	if baseURL := strings.TrimSpace(req.BaseURL); baseURL != "" {
+		credentials["base_url"] = baseURL
+	}
+
 	modelMapping := make(map[string]any, len(req.ModelMapping))
 	for sourceModel, upstreamModel := range req.ModelMapping {
 		modelMapping[sourceModel] = upstreamModel
 	}
+	if len(modelMapping) > 0 {
+		credentials["model_mapping"] = modelMapping
+	}
+
+	// 至少要有一个可用身份：要么有 api_key（通用平台），要么有 access_token / PAT
+	// （固定协议平台）。缺全部凭据时直接 400，避免打到下游链路里报一堆
+	// 「service is not configured」这类对管理员无意义的错误。
+	if credentials["api_key"] == nil &&
+		credentials["access_token"] == nil &&
+		credentials["personal_token"] == nil &&
+		credentials["refresh_token"] == nil {
+		response.BadRequest(c, "Missing credentials: provide api_key or access_token")
+		return
+	}
 
 	tempAccount := &service.Account{
-		Platform: req.Platform,
-		Type:     req.Type,
-		Credentials: map[string]any{
-			"api_key":       req.APIKey,
-			"base_url":      req.BaseURL,
-			"model_mapping": modelMapping,
-		},
+		Platform:    req.Platform,
+		Type:        req.Type,
+		Credentials: credentials,
 	}
 
 	if h.accountTestService == nil {

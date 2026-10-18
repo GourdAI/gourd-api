@@ -307,3 +307,43 @@ func TestGroupHandlerSimpleModeBlocksAdvancedOperations(t *testing.T) {
 		})
 	}
 }
+
+// 简式模式下的模型候选闸门是**分级**的：只读平台默认目录（id=0）必须放行，
+// 否则新建 WorkBuddy / Trae / Qoder 账号时拿不到候选（这三家前端静态表已删除，
+// 目录只能来自本接口），而 id>0 读的是具体分组的高级候选集，仍然拦。
+func TestGroupModelAllowlistCandidatesSimpleModeSplitsByGroupID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newStubAdminService()
+	r := newSimpleModeGroupRouter(svc)
+
+	request := func(idParam, platform string) *httptest.ResponseRecorder {
+		t.Helper()
+		target := "/groups/" + idParam + "/model-allowlist-candidates"
+		if platform != "" {
+			target += "?platform=" + platform
+		}
+		res := httptest.NewRecorder()
+		r.ServeHTTP(res, httptest.NewRequest(http.MethodGet, target, nil))
+		return res
+	}
+
+	// id=0：平台默认目录，不触及任何分组配置 → 简式模式下可用，且 platform 正常透传。
+	res := request("0", service.PlatformOpenAI)
+	require.Equal(t, http.StatusOK, res.Code, res.Body.String())
+	require.Contains(t, res.Body.String(), "gpt-5.5")
+
+	// id>0：具体分组的高级候选集 → 仍然 403（既有契约不得因本次放行而弱化）。
+	blocked := request("1", service.PlatformOpenAI)
+	require.Equal(t, http.StatusForbidden, blocked.Code, blocked.Body.String())
+	require.Contains(t, blocked.Body.String(), "SIMPLE_MODE_OPERATION_UNSUPPORTED")
+
+	// 分组 ID 非法时在两种模式下都先报 400：参数校验优先于模式门禁，
+	// 否则管理员拼错 URL 时会被一个不相关的 403 误导。
+	invalid := request("abc", "")
+	require.Equal(t, http.StatusBadRequest, invalid.Code, invalid.Body.String())
+	negative := request("-1", "")
+	require.Equal(t, http.StatusBadRequest, negative.Code, negative.Body.String())
+
+	// 放行路径不得让下游误以为走了高级分组能力。
+	require.Zero(t, svc.advancedGroupOperationCalls)
+}

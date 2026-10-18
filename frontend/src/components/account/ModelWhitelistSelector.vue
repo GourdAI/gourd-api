@@ -47,6 +47,9 @@
           />
         </div>
         <div class="max-h-52 overflow-auto">
+          <div v-if="usesDynamicCatalog && dynamicLoading" class="px-3 py-4 text-center text-sm text-gray-500">
+            {{ t('admin.accounts.modelCatalogLoading') }}
+          </div>
           <div
             v-for="model in filteredModels"
             :key="model.value"
@@ -72,7 +75,13 @@
                 </svg>
               </span>
               <ModelIcon :model="model.value" size="18px" />
-              <span class="truncate text-gray-900 dark:text-white">{{ model.value }}</span>
+              <span class="truncate text-gray-900 dark:text-white" :title="model.label !== model.value ? model.label : undefined">
+                {{ model.value }}
+              </span>
+              <span
+                v-if="model.label && model.label !== model.value"
+                class="min-w-0 shrink truncate text-xs text-gray-400 dark:text-gray-500"
+              >{{ model.label }}</span>
             </button>
             <button
               type="button"
@@ -85,8 +94,8 @@
               <Icon name="copy" size="sm" />
             </button>
           </div>
-          <div v-if="filteredModels.length === 0" class="px-3 py-4 text-center text-sm text-gray-500">
-            {{ t('admin.accounts.noMatchingModels') }}
+          <div v-if="filteredModels.length === 0 && !dynamicLoading" class="px-3 py-4 text-center text-sm text-gray-500">
+            {{ dynamicEmptyHint }}
           </div>
         </div>
       </div>
@@ -96,10 +105,12 @@
     <div class="mb-4 flex flex-wrap gap-2">
       <button
         type="button"
+        data-testid="fill-related-models"
+        :disabled="catalogLoading"
         @click="fillRelated"
-        class="rounded-lg border border-blue-200 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/30"
+        class="rounded-lg border border-blue-200 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/30"
       >
-        {{ t('admin.accounts.fillRelatedModels') }}
+        {{ catalogLoading ? t('admin.accounts.modelCatalogLoading') : t('admin.accounts.fillRelatedModels') }}
       </button>
       <button
         v-if="canSyncUpstream"
@@ -118,76 +129,6 @@
       >
         {{ t('admin.accounts.clearAllModels') }}
       </button>
-    </div>
-
-    <!-- Upstream Candidates (require explicit confirmation) -->
-    <div
-      v-if="upstreamCandidates.length > 0"
-      data-testid="upstream-candidates"
-      class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 dark:border-emerald-800 dark:bg-emerald-900/10"
-    >
-      <div class="mb-2 flex items-center justify-between gap-2">
-        <span class="text-xs font-medium text-emerald-700 dark:text-emerald-400">
-          {{ t('admin.accounts.upstreamCandidatesTitle', { count: upstreamCandidates.length }) }}
-        </span>
-        <span class="flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            data-testid="add-all-upstream-candidates"
-            @click="addAllUpstreamCandidates"
-            class="rounded border border-emerald-200 px-2 py-1 text-xs text-emerald-600 hover:bg-emerald-100 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-900/30"
-          >
-            {{ t('admin.accounts.addAllUpstreamCandidates') }}
-          </button>
-          <button
-            type="button"
-            data-testid="dismiss-upstream-candidates"
-            @click="dismissUpstreamCandidates"
-            class="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 dark:hover:bg-dark-500 dark:hover:text-gray-300"
-            :title="t('admin.accounts.dismissUpstreamCandidates')"
-            :aria-label="t('admin.accounts.dismissUpstreamCandidates')"
-          >
-            <Icon name="x" size="xs" class="h-3.5 w-3.5" :stroke-width="2" />
-          </button>
-        </span>
-      </div>
-      <div class="max-h-52 overflow-auto">
-        <div
-          v-for="candidate in upstreamCandidates"
-          :key="candidate.id"
-          data-testid="upstream-candidate"
-          class="flex items-center justify-between gap-2 py-1"
-        >
-          <span class="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300">
-            <ModelIcon :model="candidate.id" size="14px" class="shrink-0" />
-            <!-- 候选行是管理员唯一能看到「上游上新了什么」的地方，只示 config_name
-                 很难判断是不是自己要的模型，因此补上上游展示名与上下文窗口。
-                 两段文本都必须 min-w-0 + truncate：上游名字长度不可控，
-                 不做约束会在窄屏撑破整行、把「添加」按钮顶出可视区。 -->
-            <span
-              class="min-w-0 truncate font-medium"
-              :title="candidate.displayName || candidate.id"
-            >{{ candidate.displayName || candidate.id }}</span>
-            <span
-              v-if="candidate.displayName"
-              class="min-w-0 flex-1 truncate font-mono text-gray-400 dark:text-gray-500"
-              :title="candidate.id"
-            >{{ candidate.id }}</span>
-            <span
-              v-if="candidate.contextWindow"
-              class="shrink-0 text-gray-400 dark:text-gray-500"
-            >{{ formatContextWindow(candidate.contextWindow) }}</span>
-          </span>
-          <button
-            type="button"
-            :data-testid="`add-upstream-candidate:${candidate.id}`"
-            @click="addUpstreamCandidate(candidate.id)"
-            class="shrink-0 rounded border border-emerald-200 px-2 py-0.5 text-xs text-emerald-600 hover:bg-emerald-100 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-900/30"
-          >
-            {{ t('admin.accounts.addCandidateToSelected') }}
-          </button>
-        </div>
-      </div>
     </div>
 
     <!-- Custom Model Input -->
@@ -221,13 +162,19 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { accountsAPI } from '@/api/admin/accounts'
 import type { SyncUpstreamPreviewParams } from '@/api/admin/accounts'
+import { fetchCatalogModels } from '@/components/account/modelCatalog'
 import { useClipboard } from '@/composables/useClipboard'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
+import { allModels, getModelsByPlatform, DYNAMIC_CATALOG_PLATFORMS } from '@/composables/useModelWhitelist'
 import { extractApiErrorMessage } from '@/utils/apiError'
 
 const { t } = useI18n()
+
+interface ModelOption {
+  value: string
+  label: string
+}
 
 const props = defineProps<{
   modelValue: string[]
@@ -238,7 +185,9 @@ const props = defineProps<{
     platform: string
     type: string
     base_url?: string
-    api_key: string
+    api_key?: string
+    model_mapping?: Record<string, string>
+    credentials?: Record<string, unknown>
   }
 }>()
 
@@ -255,29 +204,18 @@ const searchQuery = ref('')
 const customModel = ref('')
 const isComposing = ref(false)
 const isSyncingUpstream = ref(false)
-const upstreamCandidates = ref<UpstreamCandidate[]>([])
 
-// 候选同时携带上游展示名与上下文窗口：上游直出的 display_name 已随 metadata
-// 返回，不在候选里展示等于白产出（管理员只能对着 config_name 猜）。
-type UpstreamCandidate = {
-  id: string
-  displayName?: string
-  contextWindow?: number
-}
+// 动态目录（WorkBuddy / Trae / Qoder）：这三家的模型表由上游按身份下发，前端不再
+// 写死（2026-10 改造）。候选来源优先级：
+//   1. 已落库账号（accountId）→ GET /admin/accounts/:id/models，后端返回
+//      「平台默认目录 + 上一轮同步快照 + model_mapping 键」的并集；
+//   2. 新建流程（无 accountId）→ GET /admin/groups/0/model-allowlist-candidates
+//      ?platform=xxx，返回后端权威默认表。
+// 拉到的条目按 value 去重合并进 staticOptions，所以上游上新后无需改前端代码。
+const dynamicOptions = ref<ModelOption[]>([])
+const dynamicLoading = ref(false)
+const dynamicLoadedKey = ref('')
 
-// 同步结果不能自动写进已选白名单（上游可能含内部实验 / 已下线通道），
-// 因此只暂存为候选；账号上下文或平台集变化意味着候选已不属于当前表单，必须丢弃。
-watch(
-  () => [
-    props.accountId,
-    props.platform,
-    props.platforms?.join(',') ?? '',
-    props.syncCredentials?.platform ?? ''
-  ] as const,
-  () => {
-    upstreamCandidates.value = []
-  }
-)
 const normalizedPlatforms = computed(() => {
   const rawPlatforms =
     props.platforms && props.platforms.length > 0
@@ -295,6 +233,23 @@ const normalizedPlatforms = computed(() => {
   )
 })
 
+// 显式选中的动态平台（不含 composite 兜底）：它决定「填充相关模型」能写入什么，
+// 因为「填充」是**批量改动白名单**，不能把全平台并集灌进去（见 fillRelated）。
+const explicitDynamicPlatforms = computed(() =>
+  normalizedPlatforms.value.filter(platform => DYNAMIC_CATALOG_PLATFORMS.has(platform.toLowerCase()))
+)
+
+// 动态目录的目标平台（只影响**候选下拉**，不扩大填充范围）：
+//   - 选了具体平台且属于三家固定协议网关 → 按平台拉；
+//   - 完全没传 platform（如内容审核的模型过滤器）→ 拉 composite 并集，
+//     保证写死表删除后这三家的 ID 仍出现在候选里；拉不到就退回静态表，不影响原有行为。
+const dynamicTargetPlatforms = computed(() => {
+  if (explicitDynamicPlatforms.value.length > 0) return explicitDynamicPlatforms.value
+  return normalizedPlatforms.value.length === 0 ? ['composite'] : []
+})
+
+const usesDynamicCatalog = computed(() => dynamicTargetPlatforms.value.length > 0)
+
 const upstreamSyncPlatforms = new Set([
   'anthropic',
   'openai',
@@ -311,12 +266,11 @@ const upstreamSyncPlatforms = new Set([
   'workbuddy'
 ])
 
-// preview（新建未落库）同步只递 platform/type/base_url/api_key，而 Trae / Qoder / WorkBuddy 的
-// 拉取链路读的是 credentials.access_token / personal_access_token（Qoder 连 api_key
-// 都不认），走 preview 必定只能得到配置错误。不展示按钮比让人点了拿到 400 好；
-// 已建账号（accountId 分支）从库内取真凭据，仍然可用。
-const previewUnsupportedPlatforms = new Set(['trae', 'qoder', 'workbuddy'])
-
+// preview（新建未落库）同步的凭据门槛：通用平台走 api_key；WorkBuddy / Trae /
+// Qoder 走 credentials.access_token（或 Qoder 的 PAT）。后端 SyncUpstreamModelsPreview
+// 已同时接收两类入参，并对临时账号（ID=0）跳过写库。
+// 集合复用 DYNAMIC_CATALOG_PLATFORMS：这三家既是「目录靠接口拉」也是「凭据靠票」，
+// 分开写两份就会在新加固定协议平台时只改其中一处而静默失效。
 const canSyncUpstream = computed(() => {
   if (props.accountId) {
     if (normalizedPlatforms.value.length === 0) return true
@@ -324,12 +278,23 @@ const canSyncUpstream = computed(() => {
   }
   if (props.syncCredentials) {
     const platform = props.syncCredentials.platform.toLowerCase()
-    return upstreamSyncPlatforms.has(platform) && !previewUnsupportedPlatforms.has(platform)
+    if (!upstreamSyncPlatforms.has(platform)) return false
+    if (DYNAMIC_CATALOG_PLATFORMS.has(platform)) {
+      const credentials = props.syncCredentials.credentials ?? {}
+      const hasToken = (key: string) => typeof credentials[key] === 'string' && (credentials[key] as string).trim() !== ''
+      return (
+        hasToken('access_token') ||
+        hasToken('accessToken') ||
+        hasToken('personal_token') ||
+        hasToken('personalToken')
+      )
+    }
+    return Boolean(props.syncCredentials.api_key && props.syncCredentials.api_key.trim())
   }
   return false
 })
 
-const availableOptions = computed(() => {
+const staticOptions = computed<ModelOption[]>(() => {
   if (normalizedPlatforms.value.length === 0) {
     return allModels
   }
@@ -344,6 +309,17 @@ const availableOptions = computed(() => {
   return allModels.filter(model => allowedModels.has(model.value))
 })
 
+const availableOptions = computed<ModelOption[]>(() => {
+  const seen = new Set<string>()
+  const merged: ModelOption[] = []
+  for (const option of [...staticOptions.value, ...dynamicOptions.value]) {
+    if (seen.has(option.value)) continue
+    seen.add(option.value)
+    merged.push(option)
+  }
+  return merged
+})
+
 const filteredModels = computed(() => {
   const query = searchQuery.value.toLowerCase().trim()
   if (!query) return availableOptions.value
@@ -352,9 +328,88 @@ const filteredModels = computed(() => {
   )
 })
 
+const dynamicEmptyHint = computed(() =>
+  usesDynamicCatalog.value && availableOptions.value.length === 0
+    ? t('admin.accounts.modelCatalogEmpty')
+    : t('admin.accounts.noMatchingModels')
+)
+
+const catalogLoading = computed(() => dynamicLoading.value)
+
+function catalogCacheKey(): string {
+  return props.accountId
+    ? `account:${props.accountId}`
+    : `platform:${dynamicTargetPlatforms.value.join(',')}`
+}
+
+/** 拉取动态目录。已加载过同一目标则直接复用（避免每次开下拉都打后端）。 */
+async function loadDynamicCatalog(force = false): Promise<ModelOption[]> {
+  if (!usesDynamicCatalog.value) return []
+  const key = catalogCacheKey()
+  if (!force && dynamicLoadedKey.value === key) return dynamicOptions.value
+
+  dynamicLoading.value = true
+  try {
+    let options: ModelOption[]
+    if (props.accountId) {
+      // 已落库账号：后端 GET /admin/accounts/:id/models 返的是「平台默认目录 + 上一轮
+      // 同步快照 + model_mapping 键」。但配了映射后它**只列映射键**（见
+      // fixed_protocol_models.go），直接拿它当候选就会退化成「已选的就是全部候选」，
+      // 管理员无法从下拉里新选一个上游型号。因此这里同时并一份平台默认目录。
+      const [models, defaults] = await Promise.all([
+        accountsAPI.getAvailableModels(props.accountId).catch(() => []),
+        Promise.all(
+          dynamicTargetPlatforms.value.map(target => fetchCatalogModels(target, force).catch(() => [] as string[]))
+        ).then(lists => lists.flat())
+      ])
+      const byId = new Map<string, ModelOption>()
+      for (const id of defaults) byId.set(id, { value: id, label: id })
+      for (const model of models) {
+        const id = (model.id || '').trim()
+        if (!id) continue
+        byId.set(id, { value: id, label: (model.display_name || '').trim() || id })
+      }
+      options = Array.from(byId.values())
+    } else {
+      const lists = await Promise.all(
+        dynamicTargetPlatforms.value.map(target => fetchCatalogModels(target, force).catch(() => [] as string[]))
+      )
+      options = lists.flat().map(id => ({ value: id, label: id }))
+    }
+    // 同一个目标可能已经手输过自定义条目，保留它们以免刷新后候选倒退。
+    for (const model of props.modelValue) {
+      if (!options.some(option => option.value === model)) {
+        options.push({ value: model, label: model })
+      }
+    }
+    dynamicOptions.value = options
+    dynamicLoadedKey.value = key
+  } catch (error) {
+    const message = extractApiErrorMessage(error, t('admin.accounts.syncUpstreamModelsFailed'))
+    appStore.showError(t('admin.accounts.modelCatalogLoadError', { message }))
+  } finally {
+    dynamicLoading.value = false
+  }
+  return dynamicOptions.value
+}
+
+// 账号 / 平台变化后缓存失效：候选必须重新解析，否则编辑 B 账号时显示 A 的目录。
+watch(
+  () => [props.accountId ?? 0, normalizedPlatforms.value.join(',')] as const,
+  () => {
+    dynamicLoadedKey.value = ''
+    if (usesDynamicCatalog.value) void loadDynamicCatalog()
+  },
+  { immediate: true }
+)
+
 const toggleDropdown = () => {
   showDropdown.value = !showDropdown.value
-  if (!showDropdown.value) searchQuery.value = ''
+  if (!showDropdown.value) {
+    searchQuery.value = ''
+  } else if (usesDynamicCatalog.value && dynamicOptions.value.length === 0) {
+    void loadDynamicCatalog()
+  }
 }
 
 const removeModel = (model: string) => {
@@ -388,18 +443,43 @@ const handleEnter = () => {
   if (!isComposing.value) addCustom()
 }
 
-const fillRelated = () => {
+/**
+ * 「同步最新支持模型」：候选 = 显式平台的静态表 ∪ 显式动态平台的接口目录。
+ *
+ * 两条纪律（都是旧版语义，改造时必须守住）：
+ * 1. **只认显式选中的平台**。没传 platform 的调用方（内容审核的模型过滤器）旧版是
+ *    静默 no-op；若把候选下拉用的 composite 并集灌进来，点一次按钮就会往过滤规则里
+ *    塞进上百个模型 ID —— 那是一次意外的批量写入，不是「填充相关模型」。
+ * 2. **静态平台不能被动态目录顶掉**。批量编辑可同时选中 openai + trae，旧版两者都填；
+ *    若用 `fetched.length > 0` 做三元互斥，trae 目录一旦拉到就会让 openai 静态表整个消失。
+ */
+const fillRelated = async () => {
+  const candidates: string[] = normalizedPlatforms.value.flatMap(platform => getModelsByPlatform(platform))
+  if (explicitDynamicPlatforms.value.length > 0) {
+    const fetched = await loadDynamicCatalog(true)
+    candidates.push(...fetched.map(option => option.value))
+  }
+
   const newModels = [...props.modelValue]
-  for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
-      if (!newModels.includes(model)) {
-        newModels.push(model)
-      }
-    }
+  for (const model of candidates) {
+    if (!newModels.includes(model)) newModels.push(model)
+  }
+  if (newModels.length === props.modelValue.length) {
+    appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: candidates.length }))
+    return
   }
   emit('update:modelValue', newModels)
 }
 
+/**
+ * 「同步上游支持的模型」：结果**直接写入白名单**。
+ *
+ * 旧实现在这里停一步、把上游目录放进「候选区」等管理员逐条确认。实际使用中
+ * 后端已把不可调条目过滤掉（Trae 的 config_switch=false / is_invisible_to_user /
+ * 空 display_name，WorkBuddy 的非对话条目），剩下的就是该账号真能用的模型，
+ * 逐条点确认只是把一次点击变成 N 次。因此改为直接落进白名单，管理员要删可在
+ * 已选标签上点 ×。
+ */
 const syncUpstreamModels = async () => {
   if (isSyncingUpstream.value) return
   if (!props.accountId && !props.syncCredentials) return
@@ -409,10 +489,8 @@ const syncUpstreamModels = async () => {
     let result
     if (props.accountId) {
       result = await accountsAPI.syncUpstreamModels(props.accountId)
-    } else if (props.syncCredentials) {
-      result = await accountsAPI.syncUpstreamModelsPreview(props.syncCredentials as SyncUpstreamPreviewParams)
     } else {
-      return
+      result = await accountsAPI.syncUpstreamModelsPreview(props.syncCredentials as SyncUpstreamPreviewParams)
     }
 
     const upstreamModels = result.models.map(model => model.trim()).filter(Boolean)
@@ -421,48 +499,36 @@ const syncUpstreamModels = async () => {
       return
     }
 
+    // 同步结果同时是下拉候选：把上游展示名/新模型并进动态目录，避免刚同步完
+    // 又在下拉里看不到它们。
+    const metadata = result.metadata ?? {}
+    const syncedOptions: ModelOption[] = upstreamModels.map(model => ({
+      value: model,
+      label: metadata[model]?.display_name?.trim() || model
+    }))
+    const mergedOptions = new Map(dynamicOptions.value.map(option => [option.value, option]))
+    for (const option of syncedOptions) mergedOptions.set(option.value, option)
+    dynamicOptions.value = Array.from(mergedOptions.values())
+    dynamicLoadedKey.value = catalogCacheKey()
+
+    const added = upstreamModels.filter(model => !props.modelValue.includes(model))
     if (!props.accountId) {
       emit('upstream-synced')
     }
-
-    // 已在已选白名单里的不进入候选；重复点同步做并集合并，不覆盖已有候选。
-    const metadata = result.metadata ?? {}
-    const pending: UpstreamCandidate[] = upstreamModels
-      .filter(model => !props.modelValue.includes(model))
-      .map(model => {
-        const meta = metadata[model]
-        return {
-          id: model,
-          displayName: meta?.display_name?.trim() || undefined,
-          contextWindow: meta?.context_window || meta?.max_context_window || undefined
-        }
-      })
-    if (pending.length > 0) {
-      const merged = new Map(upstreamCandidates.value.map(candidate => [candidate.id, candidate]))
-      for (const candidate of pending) {
-        // 新轮同步拿到的元数据更贴近上游现状，覆盖旧暂存项。
-        merged.set(candidate.id, candidate)
-      }
-      upstreamCandidates.value = Array.from(merged.values())
+    if (added.length > 0) {
+      emit('update:modelValue', [...props.modelValue, ...added])
     }
 
     const warnings = result.warnings ?? []
-    const hasPartialMetadata = warnings.some(
-      warning => warning.code === 'upstream_model_metadata_partial'
-    )
-    const hasIncompleteMetadata = warnings.some(
-      warning => warning.code === 'upstream_model_metadata_incomplete'
-    )
+    const hasPartialMetadata = warnings.some(w => w.code === 'upstream_model_metadata_partial')
+    const hasIncompleteMetadata = warnings.some(w => w.code === 'upstream_model_metadata_incomplete')
     if (hasIncompleteMetadata) {
       appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataIncomplete'))
       return
     }
-    if (pending.length > 0) {
+    if (added.length > 0) {
       appStore.showSuccess(
-        t('admin.accounts.syncUpstreamModelsPending', {
-          count: pending.length,
-          total: upstreamModels.length
-        })
+        t('admin.accounts.syncUpstreamModelsSuccess', { count: added.length, total: upstreamModels.length })
       )
     } else {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: upstreamModels.length }))
@@ -478,36 +544,6 @@ const syncUpstreamModels = async () => {
   } finally {
     isSyncingUpstream.value = false
   }
-}
-
-const addUpstreamCandidate = (model: string) => {
-  upstreamCandidates.value = upstreamCandidates.value.filter(candidate => candidate.id !== model)
-  if (!props.modelValue.includes(model)) {
-    emit('update:modelValue', [...props.modelValue, model])
-  }
-}
-
-const addAllUpstreamCandidates = () => {
-  const newModels = [...props.modelValue]
-  for (const candidate of upstreamCandidates.value) {
-    if (!newModels.includes(candidate.id)) {
-      newModels.push(candidate.id)
-    }
-  }
-  upstreamCandidates.value = []
-  emit('update:modelValue', newModels)
-}
-
-const dismissUpstreamCandidates = () => {
-  upstreamCandidates.value = []
-}
-
-// 上下文窗口折成 k 单位展示（256000 → 256k；不整除保留一位小数）。
-const formatContextWindow = (tokens: number) => {
-  if (!Number.isFinite(tokens) || tokens <= 0) return ''
-  if (tokens < 1000) return `${tokens}`
-  const value = tokens / 1000
-  return `${Number.isInteger(value) ? value : value.toFixed(1)}k`
 }
 
 const clearAll = () => {

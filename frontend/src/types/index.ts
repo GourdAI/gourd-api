@@ -1,5 +1,5 @@
 /**
- * Core Type Definitions for Sub2API Frontend
+ * Core Type Definitions for Gourd API Frontend
  */
 
 // ==================== Common Types ====================
@@ -1060,7 +1060,9 @@ export interface TempUnschedulableStatus {
 }
 
 export interface UpstreamBillingData {
-  object: 'sub2api.key_billing'
+  // 上游倍率探测响应的 object 标识：后端同时接受现行值与历史值
+  // （见 backend/internal/service/upstream_billing_probe.go 的 isAcceptedKeyBillingObject）。
+  object: 'gourd.key_billing' | 'sub2api.key_billing'
   schema_version: 1
   billing_scope: 'token'
   group_rate_multiplier: number

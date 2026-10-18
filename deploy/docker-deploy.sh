@@ -16,11 +16,11 @@
 # Usage:
 #   # Recommended: download this script, then run it inside an empty deployment
 #   # directory (the script writes its files into the current directory)
-#   curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh -o docker-deploy.sh
+#   curl -sSL https://raw.githubusercontent.com/GourdAI/gourd-api/main/deploy/docker-deploy.sh -o docker-deploy.sh
 #   bash docker-deploy.sh
 #
 #   # One-liner alternative (the script prompts for nothing)
-#   curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/GourdAI/gourd-api/main/deploy/docker-deploy.sh | bash
 #
 # Options:
 #   --no-start    Prepare deployment files only; do not start services

@@ -399,9 +399,15 @@ import {
   resolveAffiliateReferralCode
 } from '@/utils/oauthAffiliate'
 import type { LoginAgreementDocument } from '@/types'
+import {
+  LOGIN_AGREEMENT_STORAGE_KEY,
+  LOGIN_AGREEMENT_STORAGE_KEY_LEGACY,
+  readStoredValueWithMigration,
+  writeStoredValueWithMigration,
+  clearStoredValueWithMigration
+} from '@/utils/storageKeys'
 
 const { t, locale } = useI18n()
-const LOGIN_AGREEMENT_STORAGE_KEY = 'sub2api_login_agreement_consent'
 
 // ==================== Router & Stores ====================
 
@@ -440,7 +446,7 @@ const aliyunCaptchaEnabled = ref<boolean>(false)
 const aliyunCaptchaSceneId = ref<string>('')
 const aliyunCaptchaPrefix = ref<string>('')
 const aliyunCaptchaRegion = ref<string>('cn')
-const siteName = ref<string>('Sub2API')
+const siteName = ref<string>('Gourd API')
 const linuxdoOAuthEnabled = ref<boolean>(false)
 const wechatOAuthEnabled = ref<boolean>(false)
 const oidcOAuthEnabled = ref<boolean>(false)
@@ -577,7 +583,7 @@ onMounted(async () => {
     aliyunCaptchaSceneId.value = settings.aliyun_captcha_scene_id || ''
     aliyunCaptchaPrefix.value = settings.aliyun_captcha_prefix || ''
     aliyunCaptchaRegion.value = settings.aliyun_captcha_region || 'cn'
-    siteName.value = settings.site_name || 'Sub2API'
+    siteName.value = settings.site_name || 'Gourd API'
     linuxdoOAuthEnabled.value = settings.linuxdo_oauth_enabled
     wechatOAuthEnabled.value = isWeChatWebOAuthEnabled(settings)
     oidcOAuthEnabled.value = settings.oidc_oauth_enabled
@@ -655,7 +661,7 @@ function hasAcceptedLoginAgreement(revision: string): boolean {
     return false
   }
   try {
-    const raw = localStorage.getItem(LOGIN_AGREEMENT_STORAGE_KEY)
+    const raw = readStoredValueWithMigration(LOGIN_AGREEMENT_STORAGE_KEY, LOGIN_AGREEMENT_STORAGE_KEY_LEGACY)
     if (!raw) {
       return false
     }
@@ -668,12 +674,13 @@ function hasAcceptedLoginAgreement(revision: string): boolean {
 
 function acceptLoginAgreement(): void {
   if (loginAgreementRevision.value) {
-    localStorage.setItem(
+    writeStoredValueWithMigration(
       LOGIN_AGREEMENT_STORAGE_KEY,
       JSON.stringify({
         revision: loginAgreementRevision.value,
         accepted_at: new Date().toISOString()
-      })
+      }),
+      LOGIN_AGREEMENT_STORAGE_KEY_LEGACY
     )
   }
   agreementAccepted.value = true
@@ -681,7 +688,7 @@ function acceptLoginAgreement(): void {
 }
 
 function rejectLoginAgreement(): void {
-  localStorage.removeItem(LOGIN_AGREEMENT_STORAGE_KEY)
+  clearStoredValueWithMigration(LOGIN_AGREEMENT_STORAGE_KEY, LOGIN_AGREEMENT_STORAGE_KEY_LEGACY)
   agreementAccepted.value = false
   showAgreementModal.value = false
   appStore.showWarning(t('legal.loginAgreementPrompt.registerRejectedWarning'))

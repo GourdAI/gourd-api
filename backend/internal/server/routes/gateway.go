@@ -202,6 +202,9 @@ func RegisterGatewayRoutes(
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
 	gateway.Use(gin.HandlerFunc(apiKeyAuth))
+	// 计费信息端点：/v1/gourd/billing 为现行路径；/v1/sub2api/billing 为历史路径，
+	// 保留给尚未升级的下游实例探测（旧对端硬校验 object 字符串，故路径与 object 同时保留）。
+	gateway.GET("/gourd/billing", h.Gateway.KeyBillingInfo)
 	gateway.GET("/sub2api/billing", h.Gateway.KeyBillingInfo)
 	gateway.Use(effectiveGroup)
 	gateway.Use(groupModelAllowlist)

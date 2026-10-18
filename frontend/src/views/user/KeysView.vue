@@ -2127,7 +2127,7 @@ const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType) => {
       };
     }
   })`
-  const providerName = (publicSettings.value?.site_name || 'sub2api').trim() || 'sub2api'
+  const providerName = (publicSettings.value?.site_name || 'Gourd API').trim() || 'Gourd API'
   const deeplink = buildCcSwitchImportDeeplink({
     baseUrl,
     platform,

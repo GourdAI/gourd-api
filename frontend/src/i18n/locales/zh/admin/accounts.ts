@@ -125,7 +125,7 @@
         ungrouped: '未分组',
         hint: '显示格式为“分组名 / 基础分 / 粘性加分”。基础分按当前筛选条件限定的候选账号计算，包含优先级、负载、排队、错误率、首包延迟、重置窗口、额度余量、计费倍率等因子；粘性加分只在开启粘性加权时用于 previous_response_id 或 session_hash。分数越大越优先。'
       },
-      usageWindowsHint: '“5h / 7d”是上游账号（如 OpenAI ChatGPT、Claude）官方的滚动用量窗口限制，由上游对账号设定，并非 sub2api 配置，也与你映射的模型无关。窗口滚动到期后用量会自动重置，无法在 sub2api 端解除该限制。',
+      usageWindowsHint: '“5h / 7d”是上游账号（如 OpenAI ChatGPT、Claude）官方的滚动用量窗口限制，由上游对账号设定，并非 Gourd API 配置，也与你映射的模型无关。窗口滚动到期后用量会自动重置，无法在 Gourd API 端解除该限制。',
       ollamaCloud: {
         title: 'Ollama Cloud 用量',
         sessionSecurityHint: '浏览器会话会加密落库，且只发送到固定的 Ollama 官方设置页。',
@@ -176,7 +176,7 @@
         }
       },
       upstreamBilling: {
-        trustWarning: '此倍率由上游站点针对当前 API Key 自行声明。Sub2API 无法验证该值是否与实际扣费一致；上游站点或中间代理可能返回伪造、过期或被篡改的数据。请结合账单、余额变化和实际用量自行核验。',
+        trustWarning: '此倍率由上游站点针对当前 API Key 自行声明。Gourd API 无法验证该值是否与实际扣费一致；上游站点或中间代理可能返回伪造、过期或被篡改的数据。请结合账单、余额变化和实际用量自行核验。',
         autoProbe: '自动探测上游声明倍率',
         autoProbeHint: '启用后按全局周期刷新上游声明倍率；此开关本身不会修改账号倍率。',
         syncRate: '同步上游声明倍率',
@@ -672,7 +672,7 @@
         claude: 'Claude',
         grokRequests: '请求',
         grokTokens: 'Token',
-        grokFreeQuota24hHint: '按 sub2api 近 24 小时本地 Token 用量估算（上限 {limit}）',
+        grokFreeQuota24hHint: '按 Gourd API 近 24 小时本地 Token 用量估算（上限 {limit}）',
         grokWeeklyUsage: '周额度已用 {percent}%',
         grokUsed: '已用 $',
         grokBalance: '余额 $',
@@ -863,7 +863,7 @@
       upstreamRequestIdHeaderHelp: {
         intro: '填写直接上游在响应头中声明请求标识的头名，记录到用量明细的“上游ID”列；留空则不记录。',
         examplesTitle: '常见取值',
-        sub2apiNote: '对应对方用量明细的请求ID列',
+        gourdApiNote: '对应对方用量明细的请求ID列',
         official: '{platform} 官方 API'
       },
       // OpenAI specific hints
@@ -996,8 +996,8 @@
         searchTestHint:
           '独立网页搜索探测（与网关 /v1/web_search 语义一致），不是带 tools 的自由对话。',
         ttsTextLabel: 'TTS 文本',
-        ttsTextPlaceholder: '例如：Hello from Sub2API connectivity test.',
-        ttsTextDefault: 'Hello from Sub2API account connectivity test.',
+        ttsTextPlaceholder: '例如：Hello from Gourd API connectivity test.',
+        ttsTextDefault: 'Hello from Gourd API account connectivity test.',
         ttsTestHint: '独立调用 /v1/tts（language=en）；成功时显示音频字节数。',
         sttTestHint: '独立调用 /v1/stt，使用合成静音 WAV；成功表示接口可达。',
         realtimeTestHint:
@@ -1064,11 +1064,9 @@
       syncUpstreamModelsError: '同步上游模型失败：{message}',
       syncUpstreamModelsMetadataIncomplete: '模型 ID 已同步，但未能更新任何能力元数据。',
       syncUpstreamModelsMetadataPartial: '已更新部分模型的能力元数据；其余模型能力仍不完整。',
-      upstreamCandidatesTitle: '上游候选模型（{count}）——尚未加入已选',
-      addAllUpstreamCandidates: '全部添加',
-      addCandidateToSelected: '添加到已选',
-      dismissUpstreamCandidates: '清空候选',
-      syncUpstreamModelsPending: '发现 {count} 个待确认的上游新模型（上游共 {total} 个）',
+      modelCatalogLoading: '加载模型目录...',
+      modelCatalogEmpty: '模型目录为空：先点「同步上游支持的模型」拉取真实目录',
+      modelCatalogLoadError: '获取模型目录失败：{message}',
       clearAllModels: '清除所有模型',
       customModelName: '自定义模型名称',
       enterCustomModelName: '输入自定义模型名称',
@@ -1078,7 +1076,7 @@
       poolMode: '池模式',
       poolModeHint: '上游为账号池时启用，错误不标记本地账号状态',
       poolModeInfo:
-        '启用后，上游 429/403/401 错误将自动重试而不标记账号限流或错误，适用于上游指向另一个 sub2api 实例的场景。',
+        '启用后，上游 429/403/401 错误将自动重试而不标记账号限流或错误，适用于上游指向另一个 Gourd API 实例的场景。',
       poolModeRetryCount: '同账号重试次数',
       poolModeRetryCountHint: '仅在池模式下生效。0 表示不原地重试；默认 {default}，最大 {max}。',
       poolModeRetryStatusCodes: '同账号重试状态码',

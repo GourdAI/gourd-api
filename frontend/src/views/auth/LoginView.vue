@@ -251,9 +251,15 @@ import type {
 } from '@/types'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { clearAllAffiliateReferralCodes } from '@/utils/oauthAffiliate'
+import {
+  LOGIN_AGREEMENT_STORAGE_KEY,
+  LOGIN_AGREEMENT_STORAGE_KEY_LEGACY,
+  readStoredValueWithMigration,
+  writeStoredValueWithMigration,
+  clearStoredValueWithMigration
+} from '@/utils/storageKeys'
 
 const { t } = useI18n()
-const LOGIN_AGREEMENT_STORAGE_KEY = 'sub2api_login_agreement_consent'
 
 // ==================== Router & Stores ====================
 
@@ -443,7 +449,7 @@ function hasAcceptedLoginAgreement(revision: string): boolean {
     return false
   }
   try {
-    const raw = localStorage.getItem(LOGIN_AGREEMENT_STORAGE_KEY)
+    const raw = readStoredValueWithMigration(LOGIN_AGREEMENT_STORAGE_KEY, LOGIN_AGREEMENT_STORAGE_KEY_LEGACY)
     if (!raw) {
       return false
     }
@@ -456,12 +462,13 @@ function hasAcceptedLoginAgreement(revision: string): boolean {
 
 function acceptLoginAgreement(): void {
   if (loginAgreementRevision.value) {
-    localStorage.setItem(
+    writeStoredValueWithMigration(
       LOGIN_AGREEMENT_STORAGE_KEY,
       JSON.stringify({
         revision: loginAgreementRevision.value,
         accepted_at: new Date().toISOString()
-      })
+      }),
+      LOGIN_AGREEMENT_STORAGE_KEY_LEGACY
     )
   }
   agreementAccepted.value = true
@@ -469,7 +476,7 @@ function acceptLoginAgreement(): void {
 }
 
 function rejectLoginAgreement(): void {
-  localStorage.removeItem(LOGIN_AGREEMENT_STORAGE_KEY)
+  clearStoredValueWithMigration(LOGIN_AGREEMENT_STORAGE_KEY, LOGIN_AGREEMENT_STORAGE_KEY_LEGACY)
   agreementAccepted.value = false
   showAgreementModal.value = false
   appStore.showWarning(t('legal.loginAgreementPrompt.loginRejectedWarning'))

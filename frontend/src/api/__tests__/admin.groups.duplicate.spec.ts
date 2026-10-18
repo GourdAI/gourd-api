@@ -79,10 +79,10 @@ describe('admin group duplicate API', () => {
     expect(post.mock.calls[1][2].headers).toEqual({
       'Idempotency-Key': 'group-duplicate-8-55-22222222-2222-4222-8222-222222222222'
     })
-    expect(sessionStorage.getItem('sub2api:admin:group-duplicate:7:55')).toBe(
+    expect(sessionStorage.getItem('gourd:admin:group-duplicate:7:55')).toBe(
       firstAdminHeaders['Idempotency-Key']
     )
-    expect(sessionStorage.getItem('sub2api:admin:group-duplicate:8:55')).toBeNull()
+    expect(sessionStorage.getItem('gourd:admin:group-duplicate:8:55')).toBeNull()
   })
 
   it('does not persist or reuse keys when the current user cannot be parsed', async () => {

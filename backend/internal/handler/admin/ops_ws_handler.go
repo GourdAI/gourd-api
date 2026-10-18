@@ -48,9 +48,13 @@ var upgrader = websocket.Upgrader{
 		return isAllowedOpsWSOrigin(r)
 	},
 	// Subprotocol negotiation:
-	// - The frontend passes ["sub2api-admin", "jwt.<token>"].
-	// - We always select "sub2api-admin" so the token is never echoed back in the handshake response.
-	Subprotocols: []string{"sub2api-admin"},
+	// - The frontend passes ["gourd-admin", "jwt.<token>"].
+	// - We always select the base protocol (never "jwt.*") so the token is not echoed back in
+	//   the handshake response.
+	// - "sub2api-admin" is kept as a legacy fallback: browser-cached old frontend bundles still
+	//   offer it, and the upgrader selects the first mutually supported protocol, so dropping it
+	//   would break the realtime Ops page for anyone holding a stale index.html.
+	Subprotocols: []string{"gourd-admin", "sub2api-admin"},
 }
 
 const (

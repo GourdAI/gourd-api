@@ -219,49 +219,22 @@ const minimaxModels = [
   'abab5.5-chat', 'abab5.5s-chat'
 ]
 
-// WorkBuddy（双域聚合网关，模型为上游转发标识）
-// 与后端 DefaultWorkbuddyModelIDs 同项同步（2026-10-13 只增不删地补齐六个 CN 目录真值）。
-// 上游新模型的头号通道已改为管理页「同步上游模型」（后端 /v3/config 动态拉取），
-// 本表只作同步前的预填候选，不再需要人工追上游版本。
-const workbuddyModels = [
-  'glm-5.2', 'glm-5.1', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5v-turbo',
-  'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k3', 'kimi-k3-2', 'kimi-k2.8-preview',
-  'minimax-m3', 'minimax-m3-pay',
-  'hy3', 'hy3-x', 'hy3-preview', 'hy4-preview', 'hy4-preview-x',
-  'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4.1-flash',
-  'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
-  'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex',
-  'gemini-3.5-flash',
-  'step-5-preview', 'space-bunny',
-  'auto'
-]
-
-// Qoder（双域 chat 网关，模型为上游转发标识；auto 为智能路由入口）
-// 与后端 DefaultQoderModelIDs 对齐：Qoder CN 客户端 model classes 目录真值（14 项，
-// 2026-09-22 实测对齐上游 /api/v2/model/list；少了 kmodel_latest/gfmodel/q37fmodel，
-// q36fmodel 等旧 key 已上游不可用）。
-const qoderModels = [
-  'auto',
-  'qmodel_38max', 'qfmodel',
-  'qmodel_latest', 'qmodel', 'q37fmodel',
-  'dmodel', 'dfmodel',
-  'gmodel', 'gfmodel', 'gm51model',
-  'kmodel_latest', 'kmodel',
-  'mmodel'
-]
-
-// Trae（字节 Trae IDE 代理，双域聚合网关；auto 为智能路由入口）
-// 与后端默认模型目录对齐（上游转发标识，大小写沿用上游原文）。
-const traeModels = [
-  'glm-5.3', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-5v-turbo',
-  'glm-4.7', 'glm-4.6',
-  'qwen-3.7-plus', 'qwen-3.6-plus', 'qwen-3.5', 'qwen3-coder',
-  'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2',
-  'DeepSeek-V4-Pro', 'DeepSeek-V4-Flash', 'deepseek-V3.1',
-  'minimax-m3', 'minimax-m2.7',
-  'Doubao-Seed-2.1-Pro', 'Doubao-Seed-2.0-Code', 'seed-code-pro-0430',
-  'auto'
-]
+// WorkBuddy / Qoder / Trae 的模型目录**不再在前端写死**（2026-10 改造）。
+// 这三家是固定协议聚合网关，上游按账号身份下发目录（WorkBuddy /v3/config、Trae
+// get_detail_param、Qoder /api/v2/model/list），写死表必然滞后：上游上新后管理员
+// 只能「先建号 → 再进编辑页点同步」，白做一遍。
+// 现在这三平台的候选来自后端权威默认表（GET /admin/groups/0/model-allowlist-candidates
+// ?platform=xxx）与上游实时目录（POST /admin/accounts/{id}/models/sync-upstream），
+// 详见 ModelWhitelistSelector.vue 与 handler/admin/fixed_protocol_models.go。
+/**
+ * 需要动态拉取模型目录的平台（前端无静态真值），同时也是这三家「凭据形态」的判定集
+ * （走 access_token / personal_token 而不是 OpenAI 形态的 api_key）。
+ * **这里是唯一的字面量来源**：modelCatalog.ts 的 isDynamicCatalogPlatform、
+ * CreateAccountModal 的 preview 凭据分支、ModelWhitelistSelector 的同步按钮启用条件
+ * 全部仍到此集合。早期出现过三处各自硬编码同一组平台名的情况，一旦新增固定协议
+ * 平台就会只改其中一处而静默失效。
+ */
+export const DYNAMIC_CATALOG_PLATFORMS = new Set(['workbuddy', 'qoder', 'trae'])
 
 // OpenCode Go（聚合网关目录，模型为上游转发标识）
 const opencodeGoModels = [
@@ -328,9 +301,6 @@ const allModelsList: string[] = [
   ...doubaoModels,
   ...minimaxModels,
   ...opencodeGoModels,
-  ...workbuddyModels,
-  ...qoderModels,
-  ...traeModels,
   ...baiduModels,
   ...sparkModels,
   ...hunyuanModels,
@@ -520,9 +490,13 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'moonshot':
     case 'kimi': return moonshotModels
     case 'opencode_go': return opencodeGoModels
-    case 'workbuddy': return workbuddyModels
-    case 'qoder': return qoderModels
-    case 'trae': return traeModels
+    // workbuddy / qoder / trae：静态表已删除（见 DYNAMIC_CATALOG_PLATFORMS 说明），
+    // 目录由接口提供；这里返回空数组而不是走 default 的 claude 兜底 —— 否则
+    // 调用方会把 Claude 模型当成这三平台的候选（同 2026-10-13 后端修掉的那个 bug）。
+    // 这三家恒返回 []，因此 fillRelated 的静态那一路对它们没有贡献，只能靠接口目录。
+    case 'workbuddy':
+    case 'qoder':
+    case 'trae': return []
     case 'doubao': return doubaoModels
     case 'minimax': return minimaxModels
     case 'baidu': return baiduModels

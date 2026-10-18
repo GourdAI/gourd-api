@@ -3639,10 +3639,7 @@
       </div>
 
       <div>
-        <div class="mb-1 flex items-center gap-2">
-          <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
-          <ProxyAdBanner />
-        </div>
+        <label class="input-label">{{ t('admin.accounts.proxy') }}</label>
         <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
       </div>
 
@@ -4576,9 +4573,9 @@ import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestId
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
-import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
+import { fetchDefaultModelCatalog, isDynamicCatalogPlatform } from '@/components/account/modelCatalog'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
@@ -5367,16 +5364,90 @@ function onCnPresetSelect(preset: { mode: CnAccountMode; protocol: CnApiProtocol
   apiKeyBaseUrl.value = preset.url
 }
 
+// 默认模型预填：静态平台直接取本地表；WorkBuddy / Trae / Qoder 的本地表已删除
+// （上游上新后写死值必然滞后），改为异步拉后端权威默认目录。
+// 拉不到就留空——空白名单在网关语义是「不限制模型」，比预填一批上游已经下线的
+// 旧型号更安全。async 期间平台可能被切走，因此用 platform 快照防竞态。
+function applyDefaultModelCatalog(platform: string) {
+  if (!isDynamicCatalogPlatform(platform)) {
+    allowedModels.value = [...getModelsByPlatform(platform)]
+    return
+  }
+  allowedModels.value = []
+  fetchDefaultModelCatalog(platform)
+    .then(models => {
+      if (form.platform !== platform) return
+      if (modelRestrictionMode.value !== 'whitelist') return
+      allowedModels.value = models
+    })
+    .catch(() => {
+      // 接口失败保持空白（=不限制），不把错误当成「没有模型」。
+    })
+}
+
 const syncPreviewCredentials = computed(() => {
-  if (!apiKeyValue.value) return undefined
-  const baseUrl = isMultiProtocolPlatform.value && apiProtocol.value === 'adaptive'
-    ? adaptiveBaseUrls.value.chat_completions.trim() || apiKeyBaseUrl.value.trim()
-    : apiKeyBaseUrl.value.trim()
   const modelMapping = buildModelMappingObject(
     modelRestrictionMode.value,
     allowedModels.value,
     modelMappings.value
   )
+
+  // WorkBuddy / Qoder / Trae：这三家的目录拉取读的是身份票据（access_token /
+  // personal_token / realm / uid / device_id 等），不是 api_key。直接把表单里已有的
+  // 凭据按同一构造器（与提交时同一个 buildXxxCredentials，避免两处字段漂移）交给
+  // preview；后端只接受白名单键，且临时账号（ID=0）不写库。
+  if (isDynamicCatalogPlatform(form.platform)) {
+    const baseUrl = apiKeyBaseUrl.value.trim() || defaultPreviewBaseUrl(form.platform)
+    const credentialFields =
+      form.platform === 'workbuddy'
+        ? buildWorkbuddyCredentials({
+            accessToken: workbuddyAccessToken.value,
+            refreshToken: workbuddyRefreshToken.value,
+            realm: workbuddyRealm.value,
+            uid: workbuddyUid.value,
+            enterpriseId: workbuddyEnterpriseId.value,
+            deviceToken: workbuddyDeviceToken.value,
+            baseUrl
+          })
+        : form.platform === 'qoder'
+          ? buildQoderCredentials({
+              accessToken: qoderAccessToken.value,
+              refreshToken: qoderRefreshToken.value,
+              expiresAt: '',
+              deviceToken: '',
+              uid: qoderUid.value,
+              realm: qoderRealm.value,
+              baseUrl,
+              nickname: qoderNickname.value
+            })
+          : buildTraeCredentials({
+              accessToken: traeAccessToken.value,
+              refreshToken: traeRefreshToken.value,
+              realm: traeRealm.value,
+              uid: traeUid.value,
+              deviceId: traeDeviceId.value,
+              machineId: traeMachineId.value,
+              baseUrl,
+              billingBaseUrl: traeBillingBaseUrl.value,
+              ideVersionCode: traeIdeVersionCode.value,
+              expiresAt: traeExpiresAt.value,
+              refreshExpiresAt: traeRefreshExpiresAt.value
+            })
+    // model_mapping 走顶格字段（后端按 map[string]string 处理），credentials 只放标量
+    // 凭据：后端的凭据白名单会把对象值直接丢弃，写在 credentials 里等于白送。
+    return {
+      platform: form.platform,
+      type: form.type,
+      base_url: baseUrl || undefined,
+      credentials: credentialFields,
+      ...(modelMapping ? { model_mapping: modelMapping } : {})
+    }
+  }
+
+  if (!apiKeyValue.value) return undefined
+  const baseUrl = isMultiProtocolPlatform.value && apiProtocol.value === 'adaptive'
+    ? adaptiveBaseUrls.value.chat_completions.trim() || apiKeyBaseUrl.value.trim()
+    : apiKeyBaseUrl.value.trim()
   return {
     platform: form.platform,
     type: form.type,
@@ -5385,6 +5456,15 @@ const syncPreviewCredentials = computed(() => {
     ...(modelMapping ? { model_mapping: modelMapping } : {})
   }
 })
+
+// 这三家的凭据字段不存 api_key，模型同步按钮的启用条件也按票据判定（见
+// ModelWhitelistSelector 的 canSyncUpstream）。平台集合用 isDynamicCatalogPlatform（单一来源）。
+function defaultPreviewBaseUrl(platform: string): string {
+  if (platform === 'workbuddy') return defaultWorkBuddyBaseUrl(workbuddyRealm.value)
+  if (platform === 'qoder') return defaultQoderBaseUrl(qoderRealm.value)
+  if (platform === 'trae') return defaultTraeBaseUrl(traeRealm.value)
+  return ''
+}
 
 const editQuotaLimit = ref<number | null>(null)
 const editQuotaDailyLimit = ref<number | null>(null)
@@ -5825,7 +5905,7 @@ watch(
         .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
         .catch(() => { tlsFingerprintProfiles.value = [] })
       // Modal opened - fill related models
-      allowedModels.value = [...getModelsByPlatform(form.platform)]
+      applyDefaultModelCatalog(form.platform)
       // Antigravity: 默认使用映射模式并填充默认映射
       if (form.platform === 'antigravity') {
         antigravityModelRestrictionMode.value = 'mapping'
@@ -6055,7 +6135,7 @@ watch(
   [modelRestrictionMode, () => form.platform],
   ([newMode]) => {
     if (newMode === 'whitelist') {
-      allowedModels.value = [...getModelsByPlatform(form.platform)]
+      applyDefaultModelCatalog(form.platform)
     }
   }
 )

@@ -30,9 +30,9 @@ const examples = computed<HeaderExample[]>(() => {
   const items: HeaderExample[] = []
   if (props.type === 'apikey') {
     items.push({
-      label: 'sub2api',
+      label: 'Gourd API',
       header: 'X-Client-Request-ID',
-      note: t('admin.accounts.upstreamRequestIdHeaderHelp.sub2apiNote')
+      note: t('admin.accounts.upstreamRequestIdHeaderHelp.gourdApiNote')
     })
     items.push({ label: 'new-api / one-api', header: 'X-Oneapi-Request-Id' })
   }

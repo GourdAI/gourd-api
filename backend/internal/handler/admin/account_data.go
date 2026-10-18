@@ -18,10 +18,16 @@ import (
 )
 
 const (
-	dataType       = "sub2api-data"
-	legacyDataType = "sub2api-bundle"
-	dataVersion    = 1
-	dataPageCap    = 1000
+	// dataType 是当前实例导入时认可的规范值。
+	dataType = "gourd-api-data"
+	// legacyDataType / legacySub2APIDataType 保留为"只读"兼容：历史导出的备份文件
+	// （以及旧版本实例导出的文件）里带的是旧 type 字面量。导出侧不写 type 字段
+	// （见 DataPayload.Type 的 omitempty），因此这里放宽不会影响本实例产物，
+	// 仅用于避免旧备份导入失败。
+	legacyDataType        = "sub2api-bundle"
+	legacySub2APIDataType = "sub2api-data"
+	dataVersion           = 1
+	dataPageCap           = 1000
 )
 
 type DataPayload struct {
@@ -640,7 +646,7 @@ func parseIncludeProxies(c *gin.Context) (bool, error) {
 }
 
 func validateDataHeader(payload DataPayload) error {
-	if payload.Type != "" && payload.Type != dataType && payload.Type != legacyDataType {
+	if payload.Type != "" && payload.Type != dataType && payload.Type != legacyDataType && payload.Type != legacySub2APIDataType {
 		return fmt.Errorf("unsupported data type: %s", payload.Type)
 	}
 	if payload.Version != 0 && payload.Version != dataVersion {

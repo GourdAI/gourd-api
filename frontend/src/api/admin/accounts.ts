@@ -193,7 +193,7 @@ export async function create(accountData: CreateAccountRequest): Promise<Account
 const duplicateOperationKeys = new Map<number, string>()
 
 function duplicateOperationStorageKey(id: number): string {
-  return `sub2api:admin:account-duplicate:${id}`
+  return `gourd:admin:account-duplicate:${id}`
 }
 
 function getStoredDuplicateOperationKey(id: number): string | null {
@@ -642,8 +642,14 @@ export interface SyncUpstreamPreviewParams {
   platform: string
   type: string
   base_url?: string
-  api_key: string
+  api_key?: string
   model_mapping?: Record<string, string>
+  /**
+   * 固定协议平台（WorkBuddy / Trae / Qoder）的身份字段：这三个平台的目录拉取读的是
+   * access_token / personal_token / realm / uid / device_token 等凭据，而不是 OpenAI 形态的
+   * api_key。后端只接受白名单键（见 handler/admin/preview_sync_credentials.go）。
+   */
+  credentials?: Record<string, unknown>
 }
 
 /**
