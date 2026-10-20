@@ -467,13 +467,13 @@ func (e *traeStreamError) Error() string {
 // 实现方必须自行收敛 ctx 并保证幂等（上游重发错误帧时会多次触发）。
 type traeSSEBusinessErrorHook func(code, message string)
 
-// traeNewSSEReader 把上游 Trae SSE 包装为规范化 OpenAI CC SSE 流（io.Reader）。
-func traeNewSSEReader(r io.Reader, meta traeStreamMeta) io.Reader {
+// traeNewSSEReader 把上游 Trae SSE 包装为规范化 OpenAI CC SSE 流。
+func traeNewSSEReader(r io.Reader, meta traeStreamMeta) *traeSSEReader {
 	return traeNewSSEReaderWithErrorHook(r, meta, nil)
 }
 
 // traeNewSSEReaderWithErrorHook 同 traeNewSSEReader，额外注册业务错误帧观察回调。
-func traeNewSSEReaderWithErrorHook(r io.Reader, meta traeStreamMeta, hook traeSSEBusinessErrorHook) io.Reader {
+func traeNewSSEReaderWithErrorHook(r io.Reader, meta traeStreamMeta, hook traeSSEBusinessErrorHook) *traeSSEReader {
 	if r == nil {
 		r = bytes.NewReader(nil)
 	}
@@ -487,6 +487,57 @@ type traeSSEReader struct {
 	pending  bytes.Buffer // 已产出、待消费的规范化帧字节
 	finished bool
 	errSeen  bool // 错误帧已上报，避免同一错误重入回调
+	probed   bool // traeProbeFirstFrame 已执行（幂等守卫）
+}
+
+// traeProbeFirstFrame 预读首个语义帧，用于在「尚未向客户端写出任何字节」这个唯一
+// 可换号窗口里判定失败原因（调用方是 sendTraeUpstreamRequest 的流式分支）。
+//
+// 返回非 nil 表示：上游首帧即业务错误，且该错误分类允许换号（见
+// traeFailoverableBusinessError）。此时**刻意不产出 error 帧**——一旦写出，
+// streamRawChatCompletions 的 clientOutputStarted 会置真，而那里的换号分支硬要求
+// 「未写出任何字节」，错误帧本身又因携带 error 字段被 silent-refusal 检测判为
+// 「有语义内容、可以放行」，于是必然把上游失败原样透给客户端且永不换号
+// （openai_gateway_chat_completions_raw.go 的 writeLine/IsTruncated 两道闸门）。
+// 返回 nil 表示可继续按正常流转发：已产出的帧留在缓冲区里，调用方直接把本 reader
+// 接到下游即可，一字节都不会丢。
+//
+// 无论短路与否都会先经 reportBusinessError 上报（落账号状态 + Ops），否则被短路的
+// 错误帧就再没人观察，账号也不会被拉黑。
+func (rd *traeSSEReader) traeProbeFirstFrame() error {
+	if rd == nil || rd.probed {
+		return nil
+	}
+	rd.probed = true
+	for rd.pending.Len() == 0 && !rd.finished {
+		ev, ok := rd.scanner.next()
+		if !ok {
+			rd.finish()
+			return nil
+		}
+		frames, err := rd.state.normalizeTraeEvent(ev)
+		if err != nil {
+			rd.reportBusinessError(err)
+			// 首帧即错（pending 为空已由循环条件保证）且可换号：短路。
+			//
+			// 【为何短路时仍然把错误帧写进 pending】错误帧在内存里从未写出给客户端，
+			// 不影响「零字节可换号」的前提；但调用方一旦没能构造出换号错误（理论上不可达，
+			// 两处同源于 classifyTraeBusinessError；万一判据分叉），把本 reader 交给下游时
+			// 错误帧仍会照常下发，而不是退化成「空回复」这类更难排查的沉默故障。
+			if rd.state.validFrames() == 0 && traeFailoverableBusinessError(err) {
+				rd.finish()
+				return err
+			}
+			rd.finish()
+			return nil
+		}
+		for _, frame := range frames {
+			if raw, merr := json.Marshal(frame); merr == nil {
+				rd.writeFrame(string(raw))
+			}
+		}
+	}
+	return nil
 }
 
 func (rd *traeSSEReader) Read(p []byte) (int, error) {
@@ -540,7 +591,13 @@ func (rd *traeSSEReader) writeFrame(payload string) {
 //
 // 上游给出流内 error 时**不补 [DONE]**：否则「HTTP 200 + 错误帧」会被上层的截断
 // 检测判为正常结束（见 openai_raw_stream_truncation.go 认 [DONE] 即 sawDone），
-// 失败会被记成成功、按 0 token 出账，账号也不换号不落状态。
+// 失败会被记成成功、按 0 token 出账、不落账号状态。
+//
+// 【勘误】此处旧注释声称「上层据此按截断处理并可换号」——只对**已有正文后出错**
+// 成立（那时客户端已拿到部分回答，换号与否都无从 replay）。对「首帧即错」这一
+// Trae 积分耗尽的主要形态，错误帧会立即把 clientOutputStarted 置真，上层的换号
+// 分支就此锁死，永远把上游原文透给客户端。真正能换号的窗口由
+// traeProbeFirstFrame 在写出任何字节之前抢占，别再把本注释当作「已支持换号」的依据。
 func (rd *traeSSEReader) finish() {
 	if rd.finished {
 		return

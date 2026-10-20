@@ -890,6 +890,16 @@ func TestOllamaCloudUsageRefreshUsesFixedURLCookieAndNoRedirects(t *testing.T) {
 	require.Equal(t, "wos-session=browser-secret", upstream.lastRequest.Header.Get("Cookie"))
 	require.NotContains(t, upstream.lastRequest.Header.Get("Cookie"), "tracking")
 	require.Empty(t, upstream.lastRequest.Header.Get("Authorization"))
+	// 防封纪律：本请求携浏览器导出的会话 Cookie，UA 必须是浏览器形态。
+	// “浏览器 Cookie + 工具自报 UA” 是反爬/Cloudflare 最典型的自动化特征；
+	// 历史上这里是 sub2api-ollama-usage/1，把它改成 gourd-* 同样错（只是换了品牌名）。
+	// 不锁定具体 Chrome 版本（那不是契约），只锁定“像浏览器”且“不像工具”。
+	usageUA := upstream.lastRequest.Header.Get("User-Agent")
+	require.Contains(t, usageUA, "Mozilla/5.0", "ollama settings scrape must look like a browser")
+	require.NotContains(t, usageUA, "sub2api")
+	require.NotContains(t, usageUA, "gourd")
+	require.NotContains(t, usageUA, "ollama-usage")
+	require.NotContains(t, usageUA, "Go-http-client", "must not leak the Go runtime default UA")
 	require.True(t, HTTPUpstreamRedirectsDisabled(upstream.lastRequest.Context()))
 }
 

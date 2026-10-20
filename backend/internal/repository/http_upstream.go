@@ -166,6 +166,10 @@ type httpUpstreamService struct {
 	openAIHTTP2Fallbacks sync.Map
 	// pacer 账号级出站节奏控制（最小间隔+抖动）；nil 表示禁用。
 	pacer *accountPacer
+	// gate 进程级（跨账号）出站闸门；nil 表示禁用。
+	// 与 pacer 互补：pacer 只管同一账号，管不到同一出口 IP 上的聚合流量与
+	// 无账号上下文的出站（换票/OAuth/探针常传 accountID=0）。
+	gate *upstreamGlobalGate
 }
 
 // NewHTTPUpstream 创建通用 HTTP 上游服务
@@ -186,8 +190,36 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 			time.Duration(cfg.Gateway.AccountMinRequestIntervalMs)*time.Millisecond,
 			time.Duration(cfg.Gateway.AccountRequestJitterMs)*time.Millisecond,
 		)
+		gate := newUpstreamGlobalGate(
+			time.Duration(cfg.Gateway.UpstreamMinIntervalMs)*time.Millisecond,
+			time.Duration(cfg.Gateway.UpstreamRequestJitterMs)*time.Millisecond,
+			cfg.Gateway.UpstreamMaxConcurrentRequests,
+		)
+		if gate != nil {
+			// 排队上限单独赋值：不改构造签名，避开已把该构造器写为 3 参的全部调用点。
+			gate.maxWait = time.Duration(cfg.Gateway.UpstreamGateWaitTimeoutMs) * time.Millisecond
+		}
+		svc.gate = gate
 	}
 	return svc
+}
+
+// acquireUpstreamGate 占用一个进程级出站名额（并发槽位 + 最小间隔）。
+// 未启用时返回 no-op 释放函数（恒非 nil），调用方可无条件调用。
+//
+// 释放时机约定（与 anti-api 的 Semaphore(1) 关键差异）：并发槽位必须等到
+// **响应体关闭**才释放，否则流式（SSE）请求在拿到响应头后就放闸，
+// 「同时在途上游流数」这个约束会形同虚设。调用方须把 release 同时挂到
+// 三条出口：请求出错、客户端获取失败、以及 wrapTrackedBody 的 onClose。
+func (s *httpUpstreamService) acquireUpstreamGate(req *http.Request) (func(), error) {
+	if s == nil || s.gate == nil {
+		return func() {}, nil
+	}
+	ctx := context.Background()
+	if req != nil {
+		ctx = req.Context()
+	}
+	return s.gate.acquire(ctx)
 }
 
 // paceAccount 在出站前应用账号级节奏控制。未启用或账号缺失时零开销放行。
@@ -225,6 +257,12 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 			return nil, err
 		}
 	}
+	// 进程级出站闸门（默认禁用）。排在账号节奏之后：账号节奏可能长时间等待，
+	// 若先占全局并发槽位再等账号间隔，槽位会被空耗，反而放大排队。
+	releaseGate, err := s.acquireUpstreamGate(req)
+	if err != nil {
+		return nil, err
+	}
 	profile := service.HTTPUpstreamProfileDefault
 	if req != nil {
 		profile = service.HTTPUpstreamProfileFromContext(req.Context())
@@ -233,6 +271,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	// 获取或创建对应的客户端，并标记请求占用
 	entry, err := s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
 	if err != nil {
+		releaseGate()
 		return nil, err
 	}
 
@@ -245,6 +284,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 		// 请求失败，立即减少计数
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
+		releaseGate()
 		return nil, err
 	}
 	s.recordOpenAIHTTP2Success(profile, entry.protocolMode, entry.proxyKey)
@@ -254,10 +294,19 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 
 	// 包装响应体，在关闭时自动减少计数并更新时间戳
 	// 这确保了流式响应（如 SSE）在完全读取前不会被淘汰
+	// 全局闸门槽位同样在此释放 —— 流式响应必须在整个流读完后才放行下一个出站。
 	resp.Body = wrapTrackedBody(resp.Body, func() {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
+		releaseGate()
 	})
+	// 防御性兜底。注意：走标准库时此分支不可达 —— net/http 的 Client.Do 在 err==nil
+	// 前提下保证 resp.Body 非 nil（自定义 RoundTripper 返回 nil Body 时标准库会填入
+	// io.NopCloser("")，见 net/http/client.go）。保留只做一次 nil 判断，为测试桩与
+	// 未来可能注入的自定义 transport 兜底。
+	if resp.Body == nil {
+		releaseGate()
+	}
 
 	return resp, nil
 }
@@ -301,9 +350,17 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 			return nil, err
 		}
 	}
+	// 进程级出站闸门（默认禁用；与 Do 同语义，槽位到响应体关闭才释放）。
+	// 此处不会与 Do 重复占用：profile==nil 与 plain-HTTP 两个分支都在本函数开头
+	// 就转发给 Do 并直接 return，走不到这里。
+	releaseGate, err := s.acquireUpstreamGate(req)
+	if err != nil {
+		return nil, err
+	}
 
 	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile, upstreamProfile)
 	if err != nil {
+		releaseGate()
 		slog.Debug("tls_fingerprint_acquire_client_failed", "account_id", accountID, "error", err)
 		return nil, err
 	}
@@ -314,6 +371,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
+		releaseGate()
 		slog.Debug("tls_fingerprint_request_failed", "account_id", accountID, "error", err)
 		return nil, err
 	}
@@ -323,7 +381,12 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	resp.Body = wrapTrackedBody(resp.Body, func() {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
+		releaseGate()
 	})
+	// 与 Do 同形的防御性兜底（标准库路径不可达，见 Do 中的注释）。
+	if resp.Body == nil {
+		releaseGate()
+	}
 
 	return resp, nil
 }
@@ -539,8 +602,16 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, upstreamProfile)
-	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
+	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀。
+	//
+	// 防封加固修正：键中必须包含 profile 的形状摘要。此前只按
+	// (isolation, proxy, accountID) 组键，而 profile 是每次调用现解析的，于是
+	// 「把账号从模板 A 改绑到 B」时缓存命中的仍是按 A 建好的 Transport，
+	// 新模板要等该条目空闲被淘汰（默认 900s）才生效 —— 表现为改了没生效、
+	// 也不报错，且这期间实际交出的 ClientHello 与面板显示不一致（chimera）。
+	// profile 为 nil 时 CacheKey() 返回空串，键形态与本改动前的 "tls:<base>" 等价语义
+	// （多一段 "|fp:" 后缀，不影响与普通客户端的隔离）。
+	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault) + "|fp:" + profile.CacheKey()
 	poolKey := buildPoolKey(settings, upstreamProtocolModeDefault) + ":tls"
 
 	now := time.Now()
@@ -1466,29 +1537,80 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 }
 
 // trackedBody 带跟踪功能的响应体包装器
-// 在 Close 时执行回调，用于更新请求计数
+// 在 Close 或「读到结束」时执行回调，用于递减请求计数并归还进程级出站闸门槽位。
 type trackedBody struct {
 	io.ReadCloser // 原始响应体
 	once          sync.Once
-	onClose       func() // 关闭时的回调函数
+	onClose       func() // 结束时的回调函数（幂等，至多执行一次）
 }
 
-// Close 关闭响应体并执行回调
-// 使用 sync.Once 确保回调只执行一次
+// Close 关闭响应体并执行回调。
+// 与 Read 的结束判定共用同一个 once，因此 Close 与读完叠加也不会重复递减。
 func (b *trackedBody) Close() error {
 	err := b.ReadCloser.Close()
-	if b.onClose != nil {
-		b.once.Do(b.onClose)
-	}
+	b.fire()
 	return err
 }
 
-// wrapTrackedBody 包装响应体以跟踪关闭事件
-// 用于在响应体关闭时更新 inFlight 计数
+// Read 读取响应体；只要读到结束信号（io.EOF 或任何读错误）就触发回调。
+//
+// WHY：回调承担「递减 entry.inFlight」与「归还闸门槽位」两件事，而原实现只认 Close。
+// 一旦下游把 resp.Body 再包一层且不转发 Close，回调就永远不执行 —— 本仓三家聊天出站
+// 的流式成功路径正是这种形态：trae_client.go:204、qoder_client.go:225、
+// workbuddy_client.go:191 都写 `resp.Body = io.NopCloser(<归一化 reader>)`，而这些
+// 归一化 reader 的构造器形参只有 io.Reader（trae_sse.go:471、qoder_sse.go:286、
+// workbuddy_sse.go:64），Closer 在类型层就已丢失；上层 defer resp.Body.Close()
+// （trae_gateway.go:68、workbuddy_gateway.go:103）关的是 NopCloser，等于 no-op。
+// 结果每个流式请求净泄漏一个槽位且永不回收，启用 upstream_max_concurrent_requests
+// 后表现为实例级出站全部阻塞。
+//
+// 这里把契约从「必须 Close」放宽为「Close 或读完」：EOF 是响应体已完整消费的确定
+// 信号，此刻放行下一个出站是准确的；非 EOF 的读错误同样意味着本次事务结束（连接层
+// 错误不可恢复），不释放就会把异常场景变成永久泄漏。两者都走 once，
+// 因此与后续的 Close 叠加也不会重复递减。
+//
+// 仍未覆盖的形态（实测确认，不是推理）：调用方**既不 Close 也不读完**就丢弃响应体。
+// 典型场景是客户端中途断开：三家归一化 reader 停止被读，既不会到 EOF（上游还在发），
+// 也不会触发真正的 Close（外层是 io.NopCloser）——槽位仍会泄漏一个。本层无法修它：
+// 没有任何信号送到 trackedBody。两道可用的兼容措施：
+//   - 首选：启用 gateway.upstream_gate_wait_timeout_ms，把「永久阻塞」降级为可观察失败；
+//   - 彻底：让三家流式路径改为**包住**原 ReadCloser（仓内范式 openai_gateway_forward.go:1094），
+//     而不是用 io.NopCloser 丢弃它。那属跨模块改动，本次未做。
+//
+// inFlight 语义变化需留意：现在 EOF 也会递减它（原先只在 Close），而 inFlight>0 是
+// 「活跃请求不被淘汰」的保护（evictIdleLocked）。这段窗口内连接可能正被 Transport
+// 归还复用，但它已不再持有响应体；且淘汰还额外要求 lastUsed 超过空闲 TTL，而 EOF 同时
+// 刷新了 lastUsed，因此不会中断进行中的请求。换来的好处是顺带修掉了历史遗留的
+// inFlight 泄漏（调用方漏 Close 时计数永久偏高）。
+//
+// 语义变化需留意：inFlight 会在 EOF 时提前递减（早于 Close），而 inFlight>0 是
+// 「活跃请求不被淘汰」的保护。这段窗口内连接可能正在被 Transport 归还复用，但它已
+// 不再持有响应体；且淘汰逻辑只对空闲条目动手，因此不会中断已完成的请求。换来的是
+// 同时修掉了历史遗留的 inFlight 泄漏（调用方漏 Close 时计数永久偏高）。
+func (b *trackedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.fire()
+	}
+	return n, err
+}
+
+// fire 至多执行一次回调。
+func (b *trackedBody) fire() {
+	if b.onClose != nil {
+		b.once.Do(b.onClose)
+	}
+}
+
+// wrapTrackedBody 包装响应体以跟踪「本次出站结束」事件
+// 用于递减 inFlight 计数并归还进程级闸门槽位。
+//
+// 结束信号包含 Close、读到 io.EOF 以及任何读错误 —— 见 trackedBody.Read 的注释：
+// 只认 Close 会被下游「包一层但不转发 Close」的写法永久卡住。
 //
 // 参数:
 //   - body: 原始响应体
-//   - onClose: 关闭时的回调函数
+//   - onClose: 结束时的回调函数（实现内部保证至多执行一次）
 //
 // 返回:
 //   - io.ReadCloser: 包装后的响应体

@@ -678,6 +678,56 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGeneric
 	require.Equal(s.T(), time.Duration(0), transport.ResponseHeaderTimeout, "OpenAI TLS path should not inherit generic header timeout")
 }
 
+// TestTLSProfileChangeRebuildsClient 防封加固修正（C1）：换绑 TLS 指纹模板必须重建缓存条目。
+//
+// 旧实现的缓存键只含 (isolation, proxy, accountID)，而 profile 是每次调用现解析的，
+// 于是“把账号从模板 A 改绑到 B”会命中按 A 建好的 Transport，新模板要等条目空闲
+// 被淘汰（默认 900s）才生效 —— 改了没生效也不报错，且这期间实际 ClientHello 与面板不一致。
+func (s *HTTPUpstreamSuite) TestTLSProfileChangeRebuildsClient() {
+	svc := s.newService()
+
+	profileA := &tlsfingerprint.Profile{
+		Name:         "Profile A",
+		CipherSuites: []uint16{0x1301, 0x1302},
+	}
+	profileB := &tlsfingerprint.Profile{
+		Name:         "Profile B",
+		CipherSuites: []uint16{0x1302, 0x1301},
+	}
+
+	entryA1, err := svc.getClientEntryWithTLS("", 91, 1, profileA, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+
+	// 同一模板重复解析：必须复用，不得每请求重建（否则连接池失去意义）。
+	entryA2, err := svc.getClientEntryWithTLS("", 91, 1, profileA, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	require.Same(s.T(), entryA1, entryA2, "same account with same profile must reuse the cached client")
+
+	// 换模板：必须重建。
+	entryB, err := svc.getClientEntryWithTLS("", 91, 1, profileB, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	require.NotSame(s.T(), entryA1, entryB, "switching TLS fingerprint profile must rebuild the cached client")
+
+	// 换回原模板：仍得到 A 自己的条目（每个形状各自一份，互不串味）。
+	entryA3, err := svc.getClientEntryWithTLS("", 91, 1, profileA, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	require.Same(s.T(), entryA1, entryA3, "switching back must reuse the original per-profile entry")
+	require.NotSame(s.T(), entryA3, entryB)
+}
+
+// TestTLSProfileChangeRebuildsClientForOtherAccounts 账号维度仍隔离：
+// 不同账号用同一模板不得共享条目（本仓默认 account_proxy 隔离）。
+func (s *HTTPUpstreamSuite) TestTLSProfileChangeRebuildsClientForOtherAccounts() {
+	svc := s.newService()
+	profile := &tlsfingerprint.Profile{Name: "Shared", CipherSuites: []uint16{0x1301}}
+
+	entry1, err := svc.getClientEntryWithTLS("", 101, 1, profile, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	entry2, err := svc.getClientEntryWithTLS("", 102, 1, profile, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	require.NotSame(s.T(), entry1, entry2, "TLS entries must stay per-account under account isolation")
+}
+
 func (s *HTTPUpstreamSuite) TestOpenAIProfileHTTP2DisabledUsesHTTP1Transport() {
 	s.cfg.Gateway = config.GatewayConfig{
 		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{Enabled: false},

@@ -143,6 +143,77 @@ func TestResolveTLSProfile_RandomStillPicksTemplate(t *testing.T) {
 		"random with an empty template table must fall back to the platform default")
 }
 
+// multiTemplateService 构造一个含三个模板的服务，用于验证「随机档」的选取稳定性。
+// 单模板夹具抓不到“每请求重随机”这个缺陷（永远只有一个可能结果），故必须多模板。
+func multiTemplateService() *TLSFingerprintProfileService {
+	return NewTLSFingerprintProfileService(&tlsFPStubRepo{profiles: []*model.TLSFingerprintProfile{
+		{ID: 11, Name: "Template Eleven", CipherSuites: []uint16{0x1301}},
+		{ID: 22, Name: "Template TwentyTwo", CipherSuites: []uint16{0x1302}},
+		{ID: 33, Name: "Template ThirtyThree", CipherSuites: []uint16{0x1303}},
+	}}, nil)
+}
+
+func randomProfileAccount(id int64, platform string) *Account {
+	return &Account{
+		ID:       id,
+		Platform: platform,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"enable_tls_fingerprint":     true,
+			"tls_fingerprint_profile_id": float64(-1),
+		},
+	}
+}
+
+// TestResolveTLSProfile_RandomIsStablePerAccount 防封加固修正（C2）：「随机模板」
+// 不得每次出站重抛。原实现 profiles[rand.IntN(len)] 会让同一账号在不同请求里交出
+// 不同 ClientHello，形状高频漂移本身就是风控特征，也与本包“形状自洽”纪律直接矛盾。
+// 正确语义：同账号恒定。
+func TestResolveTLSProfile_RandomIsStablePerAccount(t *testing.T) {
+	svc := multiTemplateService()
+	account := randomProfileAccount(4242, PlatformAnthropic)
+
+	first := svc.ResolveTLSProfile(account)
+	require.NotNil(t, first)
+	require.Contains(t, []string{"Template Eleven", "Template TwentyTwo", "Template ThirtyThree"}, first.Name)
+
+	for i := 0; i < 200; i++ {
+		got := svc.ResolveTLSProfile(account)
+		require.NotNil(t, got)
+		require.Equal(t, first.Name, got.Name,
+			"random tier must be stable per account across resolutions (iteration %d)", i)
+	}
+}
+
+// TestResolveTLSProfile_RandomSpreadsAcrossAccounts 另一面：同账号恒定不能答成
+// “所有账号拿同一个模板”，那就退化成了固定档，跨账号形状完全一致反而是号池特征。
+// 20 个账号里至少应命中 2 个不同模板（三个模板的确定性散列分布）。
+func TestResolveTLSProfile_RandomSpreadsAcrossAccounts(t *testing.T) {
+	svc := multiTemplateService()
+	names := make(map[string]struct{}, 3)
+	for id := int64(1); id <= 20; id++ {
+		profile := svc.ResolveTLSProfile(randomProfileAccount(id, PlatformAnthropic))
+		require.NotNil(t, profile)
+		names[profile.Name] = struct{}{}
+	}
+	require.GreaterOrEqual(t, len(names), 2, "random tier must vary across accounts, not collapse to one template")
+}
+
+// TestResolveTLSProfile_RandomFallsBackWhenTemplateDeleted 取锁间隙模板被删完时，
+// 必须按平台回落而不是 panic，且不能吞掉账号的“已启用指纹”意图。
+func TestResolveTLSProfile_RandomFallsBackWhenTemplateDeleted(t *testing.T) {
+	svc := multiTemplateService()
+	account := randomProfileAccount(9, PlatformOpenAI)
+	require.NotNil(t, svc.ResolveTLSProfile(account))
+
+	// 模板表清空（等效于所有模板被删）
+	svc.setLocalCache(nil)
+	profile := svc.ResolveTLSProfile(account)
+	require.NotNil(t, profile)
+	require.Equal(t, tlsfingerprint.ProfileNameCodexRustls, profile.Name,
+		"empty template table with random tier must fall back to the platform default")
+}
+
 // TestResolveTLSProfile_MissingTemplateIDFallsBackToPlatform 绑定了不存在的模板 ID 时，
 // 按平台回落（历史上会静默变成 Node 默认）。
 func TestResolveTLSProfile_MissingTemplateIDFallsBackToPlatform(t *testing.T) {

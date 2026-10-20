@@ -258,7 +258,7 @@ func TestQoderSSEReaderErrorHookFiresOnBusinessError(t *testing.T) {
 	var gotCodes []string
 	var gotMsgs []string
 	var mu sync.Mutex
-	reader := newQoderSSEReaderWithErrorHook(strings.NewReader(upstream), "", func(code, message string) {
+	reader := newQoderSSEReaderWithErrorHook(strings.NewReader(upstream), "", func(code, message string, _ *int) {
 		mu.Lock()
 		defer mu.Unlock()
 		gotCodes = append(gotCodes, code)
@@ -303,7 +303,13 @@ func qoderStateErrorUpstream(t *testing.T, code, message string) *httptest.Serve
 
 // TestSendQoderUpstreamStreamingQuotaErrorMarksAccount 核心回归（用户场景）：
 // 流式请求收到 HTTP 200 + 流内 110 错误帧 → 账号被标记临时不可调度（次日 0 点），
-// 面板不再误报「正常」。
+// 面板不再误报「正常」，且**本请求就换号**而不是把上游原文透给客户端。
+//
+// 【断言翻转说明】本用例原先断言 `require.NoError` 并检查「客户端仍收到 CC error 帧 +
+// 恰好一个 [DONE]」——那是把缺陷当成了规格：首帧即错时透错就意味着本请求必失败，
+// 只有下一个请求才被绕开（「有时报错、有时正常」的真实成因）。
+// 帧透传与 [DONE] 计数的覆盖已移到「已有正文后出错」场景（见本文件
+// TestSendQoderUpstreamRepeatedErrorFramesMarkOnce 与 qoder_stream_failover_test.go）。
 func TestSendQoderUpstreamStreamingQuotaErrorMarksAccount(t *testing.T) {
 	t.Parallel()
 	server := qoderStateErrorUpstream(t, "110", "You have used up today's request quota. Please try again tomorrow.")
@@ -322,10 +328,12 @@ func TestSendQoderUpstreamStreamingQuotaErrorMarksAccount(t *testing.T) {
 	c := newWorkbuddyTestGinContext()
 	resp, err := svc.sendQoderUpstreamRequest(context.Background(), c, account,
 		[]byte(`{"model":"auto","messages":[{"role":"user","content":"ping"}]}`), true)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	// 消费规范化流：触发 reader 回调（真实网关中由下游读流驱动）。
-	body, _ := io.ReadAll(resp.Body)
+	require.Nil(t, resp, "短路后不得把坏死流交给下游")
+	var foErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &foErr, "首帧即额度错误必须包成 UpstreamFailoverError（否则本请求不换号）")
+	require.True(t, foErr.ShouldRetryNextAccount())
+	require.Equal(t, http.StatusTooManyRequests, foErr.StatusCode)
+	require.False(t, c.Writer.Written(), "换号前不得向客户端写出任何字节")
 
 	tempCalls, until, reason, errorCalls, _ := repo.snapshot()
 	require.Equal(t, 1, tempCalls, "流内 110 错误帧必须落临时不可调度")
@@ -333,12 +341,8 @@ func TestSendQoderUpstreamStreamingQuotaErrorMarksAccount(t *testing.T) {
 	require.True(t, until.Equal(timezone.StartOfDay(time.Now()).AddDate(0, 0, 1)), "恢复时间=次日 0 点")
 	require.Contains(t, reason, "110")
 
-	// 客户端仍收到兼容的 CC error 帧（落状态不得改变对外协议），且恰好一个 [DONE]。
-	require.Contains(t, string(body), `"error"`, "必须透传 CC error 帧")
-	require.Contains(t, string(body), `"code":"110"`)
-	require.Equal(t, 1, strings.Count(string(body), "data: [DONE]"), "恰好一个 [DONE]")
-
 	// Ops 上游错误事件必须落库（此前无任何断言守护，整段 append 可被删而测试全过）。
+	// 【换号与拉黑是两件事】短路不得让可观测与账号状态丢失。
 	opsEvents := requireQoderOpsEvents(t, c, 1)
 	require.Equal(t, http.StatusOK, opsEvents[0].UpstreamStatusCode,
 		"真实传输码必须是 200（非 0 才能让 skip_monitoring 透传规则命中）")
@@ -360,7 +364,8 @@ func requireQoderOpsEvents(t *testing.T, c *gin.Context, want int) []*OpsUpstrea
 	return events
 }
 
-// TestSendQoderUpstreamStreamingSessionErrorMarksAccountEvent 流式 105 → 错误态。
+// TestSendQoderUpstreamStreamingSessionErrorMarksAccount 流式 105 → 错误态 + 本请求换号。
+// （原先断言 NoError：首帧即登录失效时本请求只能透错，只有下一个请求才被绕开。）
 func TestSendQoderUpstreamStreamingSessionErrorMarksAccount(t *testing.T) {
 	t.Parallel()
 	server := qoderStateErrorUpstream(t, "105", "Login expired")
@@ -379,9 +384,11 @@ func TestSendQoderUpstreamStreamingSessionErrorMarksAccount(t *testing.T) {
 	c := newWorkbuddyTestGinContext()
 	resp, err := svc.sendQoderUpstreamRequest(context.Background(), c, account,
 		[]byte(`{"model":"auto","messages":[{"role":"user","content":"ping"}]}`), true)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	_, _ = io.ReadAll(resp.Body)
+	require.Nil(t, resp, "会话类首帧错误同样短路（换下一张号可能就能成）")
+	var foErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &foErr)
+	require.Equal(t, http.StatusUnauthorized, foErr.StatusCode, "会话类映射 401")
+	require.Empty(t, foErr.ResponseHeaders.Get("Retry-After"), "登录态靠人工重登，给等待时长会误导反复重试")
 
 	tempCalls, _, _, errorCalls, msg := repo.snapshot()
 	require.Equal(t, 0, tempCalls)
@@ -445,13 +452,25 @@ func TestProcessQoderTestStreamQuotaErrorMarksTempUnschedulable(t *testing.T) {
 
 // --- 本次 code review 补强：数字型 code 端到端 / 重复帧去重 / unknown 码留痕 ---
 
-// qoderNumericCodeUpstream 假上游：发**数字型** code 的错误帧（{"code":110} 而非
-// {"code":"110"}），errorFrames 控制重发次数（验证去重）。
-func qoderNumericCodeUpstream(t *testing.T, code int, message string, errorFrames int) *httptest.Server {
+// qoderContentThenErrorUpstream 假上游：**先出一帧正文**，再出 errorFrames 个数字型
+// code 错误帧（{"code":110} 而非 {"code":"110"}），errorFrames 控制重发次数（验证去重）。
+//
+// 为何必须前置正文：首帧即错现在会被 qoderProbeFirstFrame 短路换号（那是本次修复的
+// 目标行为，由 qoder_stream_failover_test.go 正向覆盖），而本函数的两个调用方各自
+// 保护另外的不变式——数字型 code 被正确识别并转帧、同一请求内只处置一次——两者
+// 都要求流被完整消费。已有正文后 probe 不再短路，错误帧照旧逐帧透传。
+func qoderContentThenErrorUpstream(t *testing.T, code int, message string, errorFrames int) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "agent_chat_generation") {
 			w.Header().Set("Content-Type", "text/event-stream")
+			content := map[string]any{
+				"headers":         map[string]any{},
+				"body":            `{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"partial"}}]}`,
+				"statusCodeValue": 200,
+			}
+			rawContent, _ := json.Marshal(content)
+			_, _ = w.Write([]byte("data: " + string(rawContent) + "\n\n"))
 			inner := fmt.Sprintf(`{"code":%d,"message":%q}`, code, message)
 			env := map[string]any{"headers": map[string]any{}, "body": inner, "statusCodeValue": 200}
 			raw, _ := json.Marshal(env)
@@ -470,9 +489,10 @@ func qoderNumericCodeUpstream(t *testing.T, code int, message string, errorFrame
 // TestSendQoderUpstreamNumericCodeMarksAccount 回归（review P0-1）：数字型内层 code
 // 必须走完整链路落状态。修复前帧解析层只做 .(string) 断言，数字型错误帧被当
 // 正常内容帧透传 → hook 不触发 → 账号仍显示「正常」。
+// （前置一帧正文：首帧即错现在走换号短路，而本用例要验的是数字型解析与落状态。）
 func TestSendQoderUpstreamNumericCodeMarksAccount(t *testing.T) {
 	t.Parallel()
-	server := qoderNumericCodeUpstream(t, 110, "Daily usage limit reached", 1)
+	server := qoderContentThenErrorUpstream(t, 110, "Daily usage limit reached", 1)
 	repo := &qoderStateRecordingRepo{}
 	svc := newWorkbuddyTestService(&workbuddyTestUpstream{client: server.Client()}, repo)
 	account := &Account{
@@ -492,6 +512,7 @@ func TestSendQoderUpstreamNumericCodeMarksAccount(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
+	require.Contains(t, string(body), "partial", "已产出的正文不得因换号改造而丢失")
 	require.Contains(t, string(body), `"code":"110"`, "数字型 code 必须被转成 CC error 帧")
 	tempCalls, _, reason, errorCalls, _ := repo.snapshot()
 	require.Equal(t, 1, tempCalls, "数字型 110 必须落临时不可调度")
@@ -507,7 +528,7 @@ func TestSendQoderUpstreamNumericCodeMarksAccount(t *testing.T) {
 // 其它账号的 failover 记录（入库上限从新往回保留）。
 func TestSendQoderUpstreamRepeatedErrorFramesMarkOnce(t *testing.T) {
 	t.Parallel()
-	server := qoderNumericCodeUpstream(t, 105, "Login expired", 3)
+	server := qoderContentThenErrorUpstream(t, 105, "Login expired", 3)
 	repo := &qoderStateRecordingRepo{}
 	svc := newWorkbuddyTestService(&workbuddyTestUpstream{client: server.Client()}, repo)
 	account := &Account{
@@ -546,7 +567,7 @@ func TestMarkQoderAccountUnknownCodeStillRecordsOps(t *testing.T) {
 	account := &Account{ID: 937, Platform: PlatformQoder}
 
 	c := newWorkbuddyTestGinContext()
-	svc.markQoderAccountFromBusinessError(context.Background(), c, account, "418", "quota exceeded")
+	svc.markQoderAccountFromBusinessError(context.Background(), c, account, "418", "quota exceeded", nil)
 
 	tempCalls, _, _, errorCalls, _ := repo.snapshot()
 	require.Equal(t, 0, tempCalls, "字典外码不得落状态")
@@ -558,11 +579,11 @@ func TestMarkQoderAccountUnknownCodeStillRecordsOps(t *testing.T) {
 	require.Contains(t, opsEvents[0].Message, "code=418")
 
 	// 同一码重复上报不重复留痕。
-	svc.markQoderAccountFromBusinessError(context.Background(), c, account, "418", "quota exceeded")
+	svc.markQoderAccountFromBusinessError(context.Background(), c, account, "418", "quota exceeded", nil)
 	requireQoderOpsEvents(t, c, 1)
 
 	// 不同码仍各自留痕（不能一刷到底）。
-	svc.markQoderAccountFromBusinessError(context.Background(), c, account, "429", "rate limited")
+	svc.markQoderAccountFromBusinessError(context.Background(), c, account, "429", "rate limited", nil)
 	requireQoderOpsEvents(t, c, 2)
 }
 

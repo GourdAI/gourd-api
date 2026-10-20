@@ -136,7 +136,14 @@ func TestAccountFromServiceShallow_TLSFingerprintAllPlatforms(t *testing.T) {
 			require.Nil(t, gotDisabled.EnableTLSFingerprint)
 			require.Nil(t, gotDisabled.TLSFingerprintProfileID)
 
-			// 随机模板（-1）保持不输出，行为与改动前一致
+			// 随机模板（-1）**必须原样输出**。
+			//
+			// 旧断言写的是“保持不输出，行为与改动前一致”——那是把一个真实缺陷固化成了规格。
+			// 后果链（前端已逐行核对）：后端不下发 -1 → EditAccountModal.vue 取
+			// account.tls_fingerprint_profile_id 得 undefined → 下拉框显示成“默认模板”；
+			// 管理员随后任何使该区块进入写回分支的改动，都会因为面板拿到的是 null 而走
+			// delete 分支，把账号上存在的 -1 静默抹成默认模板。面板显示与库内配置不一致，
+			// 且丢配置不报错 —— 正是防封加固最不该出现的“看起来没生效也没报错”。
 			randomProfile := &service.Account{
 				ID: 3, Platform: platform, Type: service.AccountTypeOAuth,
 				Extra: map[string]any{
@@ -146,7 +153,9 @@ func TestAccountFromServiceShallow_TLSFingerprintAllPlatforms(t *testing.T) {
 			}
 			gotRandom := AccountFromServiceShallow(randomProfile)
 			require.NotNil(t, gotRandom.EnableTLSFingerprint)
-			require.Nil(t, gotRandom.TLSFingerprintProfileID)
+			require.NotNil(t, gotRandom.TLSFingerprintProfileID,
+				"random tier (-1) is a real account configuration and must be echoed back")
+			require.Equal(t, int64(-1), *gotRandom.TLSFingerprintProfileID)
 		})
 	}
 }

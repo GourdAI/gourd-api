@@ -177,7 +177,7 @@ func (s *OpenAIGatewayService) sendTraeUpstreamRequest(ctx context.Context, c *g
 	// 两条消费路径均接入分级落状态（口径对齐 qoder_client.go）：流式经 reader 回调；
 	// 非流式在聚合失败后检查错误对象。
 	if clientStream {
-		resp.Body = io.NopCloser(traeNewSSEReaderWithErrorHook(resp.Body,
+		reader := traeNewSSEReaderWithErrorHook(resp.Body,
 			traeStreamMeta{Model: traeRequestedModel(ccBody)},
 			func(code, message string) {
 				// 回调运行于下游读流 goroutine（脱离入站 ctx 取消链），落状态使用分离
@@ -185,7 +185,23 @@ func (s *OpenAIGatewayService) sendTraeUpstreamRequest(ctx context.Context, c *g
 				healCtx, releaseHealCtx := detachUpstreamContext(ctx)
 				defer releaseHealCtx()
 				s.markTraeAccountFromBusinessError(healCtx, c, account, code, message)
-			}))
+			})
+		// 【同请求换号】预读首帧：上游首帧即「额度耗尽 / 会话失效 / 风控」类业务错误时，
+		// 本请求还没向客户端写出任何字节——这是唯一能透明换号的窗口。把错误包成
+		// UpstreamFailoverError 交给 handler 的换号循环（账号状态已由上面的回调落过）。
+		//
+		// 为什么不能「直接透错、靠上层的截断检测换号」：错误帧一经写出就把
+		// clientOutputStarted 置真（raw 路径的缓冲闸门把 sawError 列为放行条件），而那里
+		// 的换号分支硬要求「未写出任何字节」，结果必然是把上游原文透给客户端且永不
+		// 换号。probe 的全部意义就是把错误帧挡在这个窗口之外；不需要换号时（首帧是
+		// 正常内容，或 4001 一类确定失败）已读出的帧留在缓冲区里，一字节不丢。
+		if probeErr := reader.traeProbeFirstFrame(); probeErr != nil {
+			if foErr := newTraeStreamFailoverError(probeErr, time.Now()); foErr != nil {
+				_ = resp.Body.Close()
+				return nil, foErr
+			}
+		}
+		resp.Body = io.NopCloser(reader)
 		resp.Header.Set("Content-Type", "text/event-stream")
 		return resp, nil
 	}
@@ -201,6 +217,10 @@ func (s *OpenAIGatewayService) sendTraeUpstreamRequest(ctx context.Context, c *g
 			healCtx, releaseHealCtx := detachUpstreamContext(ctx)
 			defer releaseHealCtx()
 			s.markTraeAccountFromBusinessError(healCtx, c, account, streamErr.Code, streamErr.Message)
+			// 非流式同理：聚合体全在内存，响应尚未开始写出，可安全换号。
+			if foErr := newTraeStreamFailoverError(aggErr, time.Now()); foErr != nil {
+				return nil, foErr
+			}
 		}
 		return nil, aggErr
 	}

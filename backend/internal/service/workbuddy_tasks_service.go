@@ -570,7 +570,7 @@ func (s *WorkBuddyTasksService) workbuddyTasksSend(
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	applyWorkbuddyBillingHeaders(req, account.GetWorkbuddyCredentials(), account, account.GetWorkbuddyRealm())
-	resp, err := s.credits.httpUpstream.Do(req, s.credits.resolveWorkbuddyProxyURL(ctx, account), account.ID, maxInt(account.Concurrency, 1))
+	resp, err := s.credits.workbuddyDo(req, s.credits.resolveWorkbuddyProxyURL(ctx, account), account)
 	if err != nil {
 		return nil, fmt.Errorf("workbuddy tasks transport error: %w", err)
 	}

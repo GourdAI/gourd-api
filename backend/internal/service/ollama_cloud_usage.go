@@ -39,7 +39,14 @@ const (
 	// floor inside the SQL due filter.
 	OllamaCloudUsageMinFetchInterval = ollamaCloudUsageMinIntervalMinutes * time.Minute
 
-	ollamaCloudUsageSettingsURL            = "https://ollama.com/settings"
+	ollamaCloudUsageSettingsURL = "https://ollama.com/settings"
+	// ollamaCloudUsageUserAgent 是拉取 ollama.com/settings 页面用的浏览器 UA。
+	//
+	// 为何必须是浏览器形态：该请求携的是管理员从自己浏览器导出的会话 Cookie
+	// （wos-session）。“浏览器 Cookie + 工具自报 UA” 是反爬/Cloudflare 最典型的
+	// 自动化特征（我最初把它改成 gourd-ollama-usage 是错的：换了品牌名，仍是在自报工具身份）。
+	// 与 admin_service.go 的 proxyQualityClientUserAgent 保持同一 Chrome 形态，不引入新字符串。
+	ollamaCloudUsageUserAgent              = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 	ollamaCloudUsageDefaultIntervalMinutes = 60
 	ollamaCloudUsageMinIntervalMinutes     = 15
 	ollamaCloudUsageMaxIntervalMinutes     = 24 * 60
@@ -902,7 +909,11 @@ func (s *OllamaCloudUsageService) refreshLoadedAccount(ctx context.Context, acco
 	}
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	req.Header.Set("Cookie", cookie)
-	req.Header.Set("User-Agent", "sub2api-ollama-usage/1")
+	// 防封修正：这个请求携的是**用户浏览器导出的会话 Cookie**，UA 必须与 Cookie 的来源一致。
+	// 旧值 "sub2api-ollama-usage/1"（我一度改成的 "gourd-ollama-usage/1" 同样错）是工具自报身份：
+	// “浏览器 Cookie + 非浏览器 UA” 是 Cloudflare/反爬最高信号的自动化特征，比不带 UA 更差。
+	// 这里也不引入新字符串：与 admin_service.go 的 proxyQualityClientUserAgent 保持同一 Chrome 形态。
+	req.Header.Set("User-Agent", ollamaCloudUsageUserAgent)
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "request_failed", 0, false)

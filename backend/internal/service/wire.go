@@ -356,14 +356,18 @@ func ProvideCNProviderBalanceCheckService(
 	return svc
 }
 
-// ProvideWorkBuddyCreditsService 构造 WorkBuddy 积分查询/签到服务。
+// ProvideWorkBuddyCreditsService 构造 WorkBuddy 积分查询/签到服务，并注入 TLS 指纹
+// 模板服务（防封加固：使 billing/chat 域换票不再“只限速不交指纹”）。
 func ProvideWorkBuddyCreditsService(
 	accountRepo AccountRepository,
 	proxyRepo ProxyRepository,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
+	tlsFPProfileService *TLSFingerprintProfileService,
 ) *WorkBuddyCreditsService {
-	return NewWorkBuddyCreditsService(accountRepo, proxyRepo, httpUpstream, cfg)
+	svc := NewWorkBuddyCreditsService(accountRepo, proxyRepo, httpUpstream, cfg)
+	svc.SetTLSFingerprintProfileService(tlsFPProfileService)
+	return svc
 }
 
 // ProvideWorkBuddyCheckinService 构造并启动每日签到任务。
@@ -379,14 +383,18 @@ func ProvideWorkBuddyCheckinService(
 	return svc
 }
 
-// ProvideQoderCreditsService 构造 Qoder 积分查询/活动 Credits 领取服务。
+// ProvideQoderCreditsService 构造 Qoder 积分查询/活动 Credits 领取服务，并注入
+// TLS 指纹模板服务（防封加固）。
 func ProvideQoderCreditsService(
 	accountRepo AccountRepository,
 	proxyRepo ProxyRepository,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
+	tlsFPProfileService *TLSFingerprintProfileService,
 ) *QoderCreditsService {
-	return NewQoderCreditsService(accountRepo, proxyRepo, httpUpstream, cfg)
+	svc := NewQoderCreditsService(accountRepo, proxyRepo, httpUpstream, cfg)
+	svc.SetTLSFingerprintProfileService(tlsFPProfileService)
+	return svc
 }
 
 // ProvideQoderCheckinService 构造并启动 Qoder 每日活动 Credits 领取任务。
@@ -402,14 +410,18 @@ func ProvideQoderCheckinService(
 	return svc
 }
 
-// ProvideTraeCreditsService 构造 Trae 积分查询 / 每日签到服务。
+// ProvideTraeCreditsService 构造 Trae 积分查询 / 每日签到服务，并注入 TLS 指纹
+// 模板服务（防封加固：UG 域签到/余额不再“只限速不交指纹”）。
 func ProvideTraeCreditsService(
 	accountRepo AccountRepository,
 	proxyRepo ProxyRepository,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
+	tlsFPProfileService *TLSFingerprintProfileService,
 ) *TraeCreditsService {
-	return NewTraeCreditsService(accountRepo, proxyRepo, httpUpstream, cfg)
+	svc := NewTraeCreditsService(accountRepo, proxyRepo, httpUpstream, cfg)
+	svc.SetTLSFingerprintProfileService(tlsFPProfileService)
+	return svc
 }
 
 // ProvideTraeCheckinService 构造并启动 Trae 每日签到任务。

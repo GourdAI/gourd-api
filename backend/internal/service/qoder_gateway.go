@@ -278,7 +278,7 @@ func (s *AccountTestService) processQoderTestStream(c *gin.Context, account *Acc
 			// openAIAccountStateContext（WithoutCancel + 超时），与请求路径一致。
 			errorCode, _ := errData["code"].(string)
 			resolvedCode, class := resolveQoderBusinessErrorCode(errorCode, errorMsg)
-			applyQoderBusinessErrorClass(c.Request.Context(), s.accountRepo, account, resolvedCode, class, errorMsg)
+			applyQoderBusinessErrorClass(c.Request.Context(), s.accountRepo, account, resolvedCode, class, errorMsg, nil)
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Qoder API error: %s", errorMsg))
 		}
 

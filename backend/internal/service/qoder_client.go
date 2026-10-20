@@ -193,14 +193,39 @@ func (s *OpenAIGatewayService) sendQoderUpstreamRequest(ctx context.Context, c *
 	// 仍显示「正常」、调度器持续选用。此处两条消费路径均接入分级落状态
 	// （流式经 reader 回调；非流式在聚合失败/成功帧内检查）。
 	if clientStream {
-		resp.Body = io.NopCloser(newQoderSSEReaderWithErrorHook(resp.Body, modelKey,
-			func(code, message string) {
+		reader := newQoderSSEReaderWithErrorHook(resp.Body, modelKey,
+			func(code, message string, retryAfterSeconds *int) {
 				// 回调运行于下游读流 goroutine（脱离入站 ctx 取消链），落状态
 				// 使用分离 context，避免客户端提前断开时丢标记。
 				healCtx, releaseHealCtx := detachUpstreamContext(ctx)
 				defer releaseHealCtx()
-				s.markQoderAccountFromBusinessError(healCtx, c, account, code, message)
-			}))
+				s.markQoderAccountFromBusinessError(healCtx, c, account, code, message, retryAfterSeconds)
+			})
+		// 【同请求换号】预读首帧：上游首帧即「额度耗尽 / 登录失效 / 无访问资格」类
+		// 业务错误时，本请求还没向客户端写出任何字节——这是唯一能透明换号的窗口。
+		// 不预读的必然结果：错误帧一经写出就把 clientOutputStarted 置真，上层换号
+		// 分支就此锁死，本次只能透上游原文，只有下一个请求才被 SetTempUnschedulable
+		// 绕开（表现为「有时报错、有时正常」）。
+		if probeErr := reader.qoderProbeFirstFrame(); probeErr != nil {
+			if foErr := newQoderStreamFailoverError(probeErr, time.Now()); foErr != nil {
+				_ = resp.Body.Close()
+				// 与非流式聚合同一个 wrapper：两条路径的 Error() 文本均保留 code 与上游
+				// 原文（裸 UpstreamFailoverError 只会给出「upstream error: 429 (failover)」，
+				// 同一错误在流式/非流式下留下两种日志会干扰排障），同时两种 errors.As
+				// 判据（failover / 信封）都成立。
+				return nil, &qoderStreamFailoverError{fo: *foErr, env: reader.bizErr}
+			}
+		}
+		// 【先正文后错】预读只能短路「首帧即错」；已产出正文后出错不能换号（会重放
+		// 输出），但归一化器恒补 [DONE] 使上层把本次当成功——因此在流读完（错误帧
+		// 确实已交付）时补记一次失败。
+		// 【不能靠「读不到 EOF」排除客户端断开】raw 路径在客户端断开后仍会继续把
+		// 上游排空到 EOF（openai_gateway_chat_completions_raw.go 的 writeLine 只是
+		// 不再写出），所以 EOF 不等于「客户端看到了错误」；断开场景由
+		// qoderMarkDeliveredInBandError 里的 ctx 取消判定负责拦住。
+		resp.Body = io.NopCloser(newQoderSSEDeliveryReader(reader, func() {
+			s.qoderMarkDeliveredInBandError(c, account, reader)
+		}))
 		resp.Header = resp.Header.Clone()
 		resp.Header.Set("Content-Type", "text/event-stream")
 		return resp, nil
@@ -218,8 +243,16 @@ func (s *OpenAIGatewayService) sendQoderUpstreamRequest(ctx context.Context, c *
 		var env *errQoderUpstreamEnvelope
 		if errors.As(aggErr, &env) {
 			healCtx, releaseHealCtx := detachUpstreamContext(ctx)
-			s.markQoderAccountFromBusinessError(healCtx, c, account, env.Code, env.Message)
+			s.markQoderAccountFromBusinessError(healCtx, c, account, env.Code, env.Message, env.RetryAfterSeconds)
 			releaseHealCtx()
+			// 非流式可安全换号：聚合体全在内存，响应尚未开始写出。包成 failover
+			// 错误后 handler 会换到下一个 Qoder 号重试，而不是本次直接失败。
+			if foErr := newQoderStreamFailoverError(aggErr, time.Now()); foErr != nil {
+				// 外层包一个双判据错误：handler 靠 errors.As 取 UpstreamFailoverError 换号，
+				// 而既有调用方/测试靠 isQoderUpstreamEnvelopeError 区分「上游业务错」与
+				// 「本地读错」，只返裸 failover 错误会让那条判据失效。
+				return nil, &qoderStreamFailoverError{fo: *foErr, env: env}
+			}
 		}
 		return nil, aggErr
 	}

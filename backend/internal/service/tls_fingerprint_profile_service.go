@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
-	"math/rand/v2"
+	"crypto/sha256"
+	"encoding/binary"
+	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -145,27 +148,54 @@ func (s *TLSFingerprintProfileService) GetProfileByID(id int64) *tlsfingerprint.
 	return nil
 }
 
-// getRandomProfile 从本地缓存中随机选择一个 Profile
-func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profile {
+// pickStableRandomProfile 为「随机模板」（tls_fingerprint_profile_id == -1）按账号锚定选一个模板。
+//
+// 防封加固修正：原实现是 profiles[rand.IntN(len(profiles))]，每次出站现抛 ——
+// 同一个账号在这一秒交 Node 形状、下一秒交另一个形状。指纹的意义在于"这是同一台客户端"，
+// 形状高频漂移本身就是风控最易识别的自动化特征（也与本包 profiles.go 反复强调的
+// "传输层形状要与 HTTP 层身份自洽"直接矛盾）。
+//
+// 新语义：**同账号恒定、跨账号互异、跨重启可复现** —— 用 sha256(盐 + 账号ID) 取模选模板，
+// 与本仓既有纪律同源（geminicli.InstallationID、workbuddyDeriveAccountStableID、
+// traeFingerprintSeed 都是"固定盐、账号间互异、跨重启稳定"的派生）。
+//
+// 候选集必须按模板 ID 升序取：localCache 是 map，直接 range 的遍历顺序是随机的，
+// 那么即便索引确定，"第 i 个模板"指向谁仍会逐次变化 —— 那等于把随机换了一个更隐蔽的位置。
+//
+// 返回 nil 表示模板表为空，调用方按平台回落内置默认。
+func (s *TLSFingerprintProfileService) pickStableRandomProfile(accountID int64) *tlsfingerprint.Profile {
+	if accountID <= 0 {
+		return nil
+	}
+
+	s.localMu.RLock()
+	if len(s.localCache) == 0 {
+		s.localMu.RUnlock()
+		return nil
+	}
+	ids := make([]int64, 0, len(s.localCache))
+	for id, p := range s.localCache {
+		if p == nil || p.ID <= 0 {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	s.localMu.RUnlock()
+
+	if len(ids) == 0 {
+		return nil
+	}
+	slices.Sort(ids)
+	sum := sha256.Sum256([]byte("tlsfp:random:" + strconv.FormatInt(accountID, 10)))
+	idx := binary.BigEndian.Uint64(sum[:8]) % uint64(len(ids))
+
 	s.localMu.RLock()
 	defer s.localMu.RUnlock()
-
-	if len(s.localCache) == 0 {
-		return nil
+	// 二次查找：取锁间隙模板可能已被删除，此时回落平台默认而非 panic。
+	if p := s.localCache[ids[idx]]; p != nil {
+		return p.ToTLSProfile()
 	}
-
-	// 收集所有 profile
-	profiles := make([]*model.TLSFingerprintProfile, 0, len(s.localCache))
-	for _, p := range s.localCache {
-		if p != nil {
-			profiles = append(profiles, p)
-		}
-	}
-	if len(profiles) == 0 {
-		return nil
-	}
-
-	return profiles[rand.IntN(len(profiles))].ToTLSProfile()
+	return nil
 }
 
 // ResolveTLSProfile 根据 Account 的配置解析出运行时 TLS Profile
@@ -173,7 +203,9 @@ func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profil
 // 逻辑：
 //  1. 未启用 TLS 指纹 → 返回 nil（不伪装）
 //  2. 启用 + 绑定了 profile_id → 从缓存查找对应 profile
-//  3. 启用 + 未绑定或找不到 → 按平台返回内置默认 Profile
+//  3. 启用 + 绑定了 tls_fingerprint_profile_id == -1 → 按账号锚定选一个模板
+//     （同账号恒定，跨账号互异；不逐次重抛，见 pickStableRandomProfile）
+//  4. 启用 + 未绑定或找不到 → 按平台返回内置默认 Profile
 //
 // 第 3 步必须按平台区分：传输层指纹要与该平台上真实官方客户端的 TLS 栈同源，否则与
 // HTTP 层声明的客户端身份互相矛盾（比不伪装更容易被判为异常）。
@@ -190,8 +222,8 @@ func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsf
 		}
 	}
 	if id == -1 {
-		// 随机选择一个 profile
-		if p := s.getRandomProfile(); p != nil {
+		// 随机档：按账号锚定，保证同账号的形状跨请求、跨重启都稳定。
+		if p := s.pickStableRandomProfile(account.ID); p != nil {
 			return p
 		}
 	}

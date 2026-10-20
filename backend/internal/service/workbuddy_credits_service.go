@@ -152,6 +152,23 @@ type WorkBuddyCreditsService struct {
 	httpUpstream HTTPUpstream
 	cfg          *config.Config
 	flight       singleflight.Group
+
+	// tlsFPProfileService 解析账号绑定的 TLS 指纹模板（防封加固）。
+	// billing/chat 域出站经 workbuddyDo 分派；nil 时退回普通 Do，行为与改动前一致。
+	tlsFPProfileService *TLSFingerprintProfileService
+}
+
+// SetTLSFingerprintProfileService 注入 TLS 指纹模板服务（防封加固）。
+func (s *WorkBuddyCreditsService) SetTLSFingerprintProfileService(svc *TLSFingerprintProfileService) {
+	if s != nil {
+		s.tlsFPProfileService = svc
+	}
+}
+
+// workbuddyDo 是 billing/chat 域出站分派：账号启用 TLS 指纹则走 DoWithTLS，
+// 否则保持普通 Do。超时/取消由 req 自身 context 驱动；并发度保持历史口径。
+func (s *WorkBuddyCreditsService) workbuddyDo(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	return doUpstreamWithOptionalTLSConcurrency(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account, maxInt(account.Concurrency, 1))
 }
 
 // NewWorkBuddyCreditsService 构造 WorkBuddy 积分/签到服务。
@@ -468,7 +485,7 @@ func (s *WorkBuddyCreditsService) refreshWorkbuddyCreditsToken(ctx context.Conte
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	applyWorkbuddyRefreshHeaders(req, creds, account, account.GetWorkbuddyRealm())
-	resp, err := s.httpUpstream.Do(req, s.resolveWorkbuddyProxyURL(ctx, account), account.ID, maxInt(account.Concurrency, 1))
+	resp, err := s.workbuddyDo(req, s.resolveWorkbuddyProxyURL(ctx, account), account)
 	if err != nil {
 		return fmt.Errorf("workbuddy token refresh transport error: %w", err)
 	}
@@ -619,7 +636,7 @@ func (s *WorkBuddyCreditsService) workbuddyBillingRequestOnce(
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	applyWorkbuddyBillingHeaders(req, account.GetWorkbuddyCredentials(), account, account.GetWorkbuddyRealm())
 
-	resp, err := s.httpUpstream.Do(req, s.resolveWorkbuddyProxyURL(ctx, account), account.ID, maxInt(account.Concurrency, 1))
+	resp, err := s.workbuddyDo(req, s.resolveWorkbuddyProxyURL(ctx, account), account)
 	if err != nil {
 		return nil, fmt.Errorf("workbuddy billing transport error: %w", err)
 	}

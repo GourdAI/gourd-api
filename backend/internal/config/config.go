@@ -985,6 +985,28 @@ type GatewayConfig struct {
 	// AccountRequestJitterMs: 账号级出站节奏的随机抖动上限（毫秒）。
 	// 每次等待叠加一个 [0, jitter) 的随机增量，避免多账号在同一毫秒刻度上周期性出站。
 	AccountRequestJitterMs int `mapstructure:"account_request_jitter_ms"`
+	// UpstreamMinIntervalMs: **进程级**出站最小间隔（毫秒），0 表示禁用（默认）。
+	// 账号级节奏管不到「同一出口 IP 上多账号聚合流量」与「无账号上下文的出站（换票/OAuth/探针）」，
+	// 而上游风控最常封的维度是 IP/ASN。启用后本实例所有上游出站共享该间隔下限。
+	// ⚠️ 这是实例级全局约束，会直接压低吞吐：请按出口 IP 数量谨慎取值，
+	// 不要照抄本地单人代理（如 anti-api 硬编码 1000ms）的做法。
+	// 注意：等待会消耗请求剩余超时预算，取值应远小于 gateway 超时。
+	UpstreamMinIntervalMs int `mapstructure:"upstream_min_interval_ms"`
+	// UpstreamRequestJitterMs: 进程级出站间隔的随机抖动上限（毫秒），仅与
+	// UpstreamMinIntervalMs 配合生效。固定节拍本身是机器特征，故抖动独立可配。
+	UpstreamRequestJitterMs int `mapstructure:"upstream_request_jitter_ms"`
+	// UpstreamMaxConcurrentRequests: 进程级上游出站并发上限，0 表示不限制（默认）。
+	// 与 anti-api 的 `Semaphore(1)` 同构但可配：本仓是多租户网关，硬编码串行会把
+	// 整个实例钉在 1 req/s。长流（SSE）在响应体关闭前持续占槽，因此该值同时
+	// 约束「同时在途的上游流数量」，取值需按并发会话数估算。
+	UpstreamMaxConcurrentRequests int `mapstructure:"upstream_max_concurrent_requests"`
+	// UpstreamGateWaitTimeoutMs: 进程级闸门**排队**的独立上限（毫秒），0 表示不限（默认）。
+	// 仅在 upstream_min_interval_ms / upstream_max_concurrent_requests 任一生效时有意义。
+	// 默认不限的原因：正常请求应由自己的超时预算支配。但本仓三家流式出站走了
+	// detachUpstreamContext（context.WithoutCancel）以保护落库与扣费，入站 server 又
+	// 不设读写超时，一旦出站槽位被长期占用，排队就变成「无界且客户端断开也不可解」。
+	// 启用本项可把这种局面降级为可观察、可恢复的上游失败，而不是整个网关拖死只能重启。
+	UpstreamGateWaitTimeoutMs int `mapstructure:"upstream_gate_wait_timeout_ms"`
 	// ConnectionPoolIsolation: 上游连接池隔离策略（proxy/account/account_proxy）
 	ConnectionPoolIsolation string `mapstructure:"connection_pool_isolation"`
 	// ForceCodexCLI: 强制将 OpenAI `/v1/responses` 请求按 Codex CLI 处理。
@@ -2583,6 +2605,11 @@ func setDefaults() {
 	// 对齐 anti-api 的账号级节流思路，用于降低“同账号高频自动化流量”被风控识别的概率。
 	viper.SetDefault("gateway.account_min_request_interval_ms", 0)
 	viper.SetDefault("gateway.account_request_jitter_ms", 0)
+	// 进程级出站闸门（防封加固）：默认全禁用，保持零行为变更。
+	viper.SetDefault("gateway.upstream_min_interval_ms", 0)
+	viper.SetDefault("gateway.upstream_request_jitter_ms", 0)
+	viper.SetDefault("gateway.upstream_max_concurrent_requests", 0)
+	viper.SetDefault("gateway.upstream_gate_wait_timeout_ms", 0)
 	viper.SetDefault("gateway.connection_pool_isolation", ConnectionPoolIsolationAccountProxy)
 	// HTTP 上游连接池配置（针对 5000+ 并发用户优化）
 	viper.SetDefault("gateway.max_idle_conns", 2560)          // 最大空闲连接总数（高并发场景可调大）
@@ -3468,6 +3495,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.AccountRequestJitterMs < 0 || c.Gateway.AccountRequestJitterMs > 600000 {
 		return fmt.Errorf("gateway.account_request_jitter_ms must be between 0-600000 milliseconds")
+	}
+	if c.Gateway.UpstreamMinIntervalMs < 0 || c.Gateway.UpstreamMinIntervalMs > 600000 {
+		return fmt.Errorf("gateway.upstream_min_interval_ms must be between 0-600000 milliseconds")
+	}
+	if c.Gateway.UpstreamRequestJitterMs < 0 || c.Gateway.UpstreamRequestJitterMs > 600000 {
+		return fmt.Errorf("gateway.upstream_request_jitter_ms must be between 0-600000 milliseconds")
+	}
+	if c.Gateway.UpstreamMaxConcurrentRequests < 0 {
+		return fmt.Errorf("gateway.upstream_max_concurrent_requests must be non-negative")
+	}
+	if c.Gateway.UpstreamGateWaitTimeoutMs < 0 || c.Gateway.UpstreamGateWaitTimeoutMs > 600000 {
+		return fmt.Errorf("gateway.upstream_gate_wait_timeout_ms must be between 0-600000 milliseconds")
 	}
 	if c.Gateway.StreamDataIntervalTimeout < 0 {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be non-negative")

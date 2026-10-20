@@ -16,8 +16,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -157,6 +161,106 @@ func applyTraeBusinessErrorClass(ctx context.Context, repo AccountRepository, ac
 			logger.L().Warn("trae restricted error mark failed",
 				zap.Int64("account_id", account.ID), zap.String("code", code), zap.Error(err))
 		}
+	}
+}
+
+// traeFailoverErrorClass 报告一个流内业务错误是否应让本请求换号重试。
+//
+// 判定直接复用 classifyTraeBusinessError 的分级（不另建一套口径，避免两处对同一
+// 错误码给出矛盾结论）：
+//   - quota / session / restrict 都是**这一张号**的局部问题（额度耗尽、票失效、
+//     被风控），换号能直接解决 → 换；
+//   - unknown（典型 4001）是**请求级/通道级**确定失败：所有 Trae 号共用同一出站
+//     function，换号只会把同一个错再打一遍，白耗一次上游往返。
+//   - none（无码/code "0"）不是错误 → 不换。
+func traeFailoverErrorClass(class traeUpstreamErrorClass) bool {
+	switch class {
+	case traeErrorClassQuota, traeErrorClassSession, traeErrorClassRestrict:
+		return true
+	default:
+		return false
+	}
+}
+
+// traeFailoverableBusinessError 报告该流内错误是否值得在「尚未向客户端写出任何
+// 字节」的窗口里换号重试（见 traeSSEReader.traeProbeFirstFrame）。
+func traeFailoverableBusinessError(err error) bool {
+	var streamErr *traeStreamError
+	if !errors.As(err, &streamErr) || streamErr == nil {
+		return false
+	}
+	return traeFailoverErrorClass(classifyTraeBusinessError(streamErr.Code))
+}
+
+// newTraeStreamFailoverError 把流内业务错误包成换号错误。
+//
+// 调用前提：本请求尚未向客户端写出任何字节（由 probe 保证），否则换号会重放输出。
+// 账号状态与 Ops 事件已由 markTraeAccountFromBusinessError 落过，本函数不再重复记录。
+//
+// 字段取向（与 handler 消费端对齐，openai_chat_completions.go 的 failover 分支）：
+//   - RetryableOnSameAccount=false：1005/1001/4015 对**这张号**是确定态，同账号重试
+//     只是多花一次上游往返，直接换号；也因此不会误触发 TempUnscheduleRetryableError。
+//   - Stage=Inference（非 AccountAuth）：避开 credentialFailoverClientResponse 把文案
+//     改写成与 Trae 无关的 Grok 口径，走 mapUpstreamError 的语义映射。
+//   - StatusCode 按分类取 429/401/403，耗尽后下发给客户端的文案与排障语义对齐；
+//     ResponseBody 仍携带上游原文（经 sanitize）供错误透传规则匹配与 Ops 记录。
+func newTraeStreamFailoverError(err error, now time.Time) *UpstreamFailoverError {
+	var streamErr *traeStreamError
+	if !errors.As(err, &streamErr) || streamErr == nil {
+		return nil
+	}
+	code := strings.TrimSpace(streamErr.Code)
+	class := classifyTraeBusinessError(code)
+	if !traeFailoverErrorClass(class) {
+		return nil
+	}
+
+	statusCode := http.StatusBadGateway
+	switch class {
+	case traeErrorClassQuota:
+		statusCode = http.StatusTooManyRequests
+	case traeErrorClassSession:
+		statusCode = http.StatusUnauthorized
+	case traeErrorClassRestrict:
+		statusCode = http.StatusForbidden
+	}
+
+	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(streamErr.Message))
+	if message == "" {
+		message = "Trae upstream returned an in-stream error"
+	}
+	if code != "" {
+		message = message + " (code=" + code + ")"
+	}
+
+	headers := http.Header{}
+	if class == traeErrorClassQuota {
+		// 额度按自然日/自然月重置，与 SetTempUnschedulable 的次日 0 点同口径；
+		// 上限 7 天由 handler 的 isSafeRetryAfter 把关，本值不会超 24h。
+		if delta := traeQuotaRecoveryUntil(now).Sub(now); delta > 0 {
+			headers.Set("Retry-After", strconv.FormatInt(int64(math.Ceil(delta.Seconds())), 10))
+		}
+	}
+
+	body, marshalErr := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"type":    "upstream_error",
+			"code":    code,
+			"message": message,
+		},
+	})
+	if marshalErr != nil {
+		body = []byte(`{"error":{"type":"upstream_error","message":"Trae upstream error"}}`)
+	}
+
+	return &UpstreamFailoverError{
+		StatusCode:        statusCode,
+		ResponseBody:      body,
+		ResponseHeaders:   headers,
+		Stage:             GatewayFailureStageInference,
+		Scope:             GatewayFailureScopeAccount,
+		Reason:            GatewayFailureReason("trae_" + string(class)),
+		NextAccountAction: NextAccountRetry,
 	}
 }
 

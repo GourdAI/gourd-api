@@ -348,7 +348,11 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		enabled := true
 		out.EnableTLSFingerprint = &enabled
 	}
-	if profileID := a.GetTLSFingerprintProfileID(); profileID > 0 {
+	// 指纹模板回显（防封加固修正）：这里此前只收 >0，于是选了「随机模板」（-1）的账号
+	// 在编辑面板被显示成「默认模板」，管理员下一次保存就把 -1 静默改写成默认（0）——
+	// 一个真实存在的配置被 UI 吞掉。负数哨兵同样是账号的有效配置，必须原样回显。
+	// 未绑定（0）仍保持不下发（由前端渲染为「默认模板」选项），以免改变既有报文形态。
+	if profileID := a.GetTLSFingerprintProfileID(); profileID != 0 {
 		out.TLSFingerprintProfileID = &profileID
 	}
 

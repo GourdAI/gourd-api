@@ -45,6 +45,11 @@ type errQoderUpstreamEnvelope struct {
 	StatusCode int
 	Code       string
 	Message    string
+	// RetryAfterSeconds 是上游在错误对象里与 code **同层**给出的等待秒数（如排队类
+	// 10605 的 retryAfterSeconds）。必须单独携带： Message 只存 message 字段，从
+	// message 文本里找不到同层兄弟字段（实测会退到 30s 回落值）。
+	// nil = 上游未给（与给 0 不等价）。
+	RetryAfterSeconds *int
 }
 
 func (e *errQoderUpstreamEnvelope) Error() string {
@@ -77,6 +82,29 @@ type qoderBizError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Detail  string `json:"detail"`
+	// RetryAfterSeconds 取自与 code 同层的 retryAfterSeconds（与 Message 解耦，
+	// 见 errQoderUpstreamEnvelope.RetryAfterSeconds 注释）。
+	RetryAfterSeconds *int
+}
+
+// qoderInnerRetryAfterSeconds 从错误对象里取 retryAfterSeconds。
+// 返回 nil 表示上游未给该字段（与给 0 不等价：给 0 = 明确告知不用等）。
+func qoderInnerRetryAfterSeconds(obj map[string]any) *int {
+	raw, ok := obj["retryAfterSeconds"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case float64:
+		n := int(v)
+		return &n
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			i := int(n)
+			return &i
+		}
+	}
+	return nil
 }
 
 // qoderInnerBusinessCode 从内层对象提取业务错误码。上游同时存在字符串型
@@ -128,11 +156,17 @@ func qoderParseDataFrame(payload string) *qoderSSEData {
 		return data
 	}
 	data.Inner, _ = json.Marshal(data.InnerObject)
-	// 业务错误：{"code":"115",...} / {"code":115,...} —— code 非 "0" 且非空即错误。
+	// 业务错误：三种已知形态（code 非 "0" 且非空即错误）：
+	//   1. 内层顶层码：{"code":"115",...} / {"code":115,...}
+	//   2. OpenAI 惯用嵌套体：{"error":{"code":"110","message":"..."}}
+	//   3. 仅文本：{"message":"今日额度已用尽"}
+	// 【为何必须识别 2/3】它们不携带顶层 code，只认形态 1 会让整帧被当成正常内容
+	// 逐键透传（qoderFrameToCCChunk 原样拷贝所有键），既不转 CC error 帧、也不触发
+	// 落状态回调、更不会被 probe 短路 → 客户端报错、面板记成功、调度继续选同一张号。
 	if code := qoderInnerBusinessCode(data.InnerObject); code != "" {
 		msg, _ := data.InnerObject["message"].(string)
 		detail, _ := data.InnerObject["detail"].(string)
-		biz := &qoderBizError{Code: code, Message: msg, Detail: detail}
+		biz := &qoderBizError{Code: code, Message: msg, Detail: detail, RetryAfterSeconds: qoderInnerRetryAfterSeconds(data.InnerObject)}
 		if biz.Message == "" {
 			// 某些错误形态只带 message/detail 其一；退化为整对象文本。
 			if raw, err := json.Marshal(data.InnerObject); err == nil {
@@ -140,8 +174,49 @@ func qoderParseDataFrame(payload string) *qoderSSEData {
 			}
 		}
 		data.BusinessErr = biz
+	} else if nested := qoderInnerNestedError(data.InnerObject); nested != nil {
+		data.BusinessErr = nested
+	} else if qoderInnerBareMessageError(data.InnerObject) {
+		msg, _ := data.InnerObject["message"].(string)
+		data.BusinessErr = &qoderBizError{Code: "", Message: msg}
 	}
 	return data
+}
+
+// qoderInnerNestedError 识别 OpenAI 惯用的嵌套错误体 {"error":{"code":..,"message":..}}。
+// error 为 null / 非对象 / 空对象时不算错误（部分兼容上游恒带 "error": null）。
+func qoderInnerNestedError(obj map[string]any) *qoderBizError {
+	raw, ok := obj["error"].(map[string]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	code := qoderInnerBusinessCode(raw)
+	msg, _ := raw["message"].(string)
+	detail, _ := raw["detail"].(string)
+	if code == "" && strings.TrimSpace(msg) == "" {
+		return nil
+	}
+	// 顶层 type 常为 "chat.completion.chunk"，错误体无类型时补个可识别形态。
+	if code == "" {
+		code = "upstream_error"
+	}
+	return &qoderBizError{Code: code, Message: msg, Detail: detail, RetryAfterSeconds: qoderInnerRetryAfterSeconds(raw)}
+}
+
+// qoderInnerBareMessageError 识别「只带 message、无任何内容字段」的错误帧。
+// 【必须有内容闸门】有 choices/delta/usage/id 任一字段就是正常帧，不能因为带了
+// 一个 message 键就判错（Qoder 上游会把护栏提示等文本当正常内容回吐）。
+func qoderInnerBareMessageError(obj map[string]any) bool {
+	msg, ok := obj["message"].(string)
+	if !ok || strings.TrimSpace(msg) == "" {
+		return false
+	}
+	for _, key := range []string{"choices", "usage", "delta", "id", "content", "output"} {
+		if _, has := obj[key]; has {
+			return false
+		}
+	}
+	return true
 }
 
 // qoderResponseModel 计算回写给客户端的响应 model：仅当实际出站模型为 Qoder
@@ -222,18 +297,26 @@ func newQoderSSEReader(r io.Reader, sentModel string) io.Reader {
 	return newQoderSSEReaderWithErrorHook(r, sentModel, nil)
 }
 
-// qoderSSEBusinessErrorHook 是流式路径业务错误帧的观察回调（code/message 为
-// 上游原始业务错误）。回调在归一化帧写入前调用，供网关落账号状态（额度类
-// 错误自动避让等）；不得阻断/修改帧内容本身。
+// qoderSSEBusinessErrorHook 是流式路径业务错误帧的观察回调。回调在归一化帧写入前
+// 调用，供网关落账号状态（额度类错误自动避让等）；不得阻断/修改帧内容本身。
+//
+// 参数：code/message 为上游原始业务错误；retryAfterSeconds 为与 code **同层**的
+// 等待秒数（nil = 上游未给）。
+// 【为何要带 retryAfterSeconds】Message 只存上游的 message **字段**，排队类错误
+// （10605）的等待秒数住在同层的兄弟字段里，只靠 (code, message) 会把上游明说的
+// 30s/86400s 丢成回落值，冷却时长与 Retry-After 都会跟上游脱钩。
 //
 // 上游可能只发一个错误帧后直接关闭（无 [DONE]）：回调可能被触发一次或
 // 多次（帧重发防御），落状态操作需幂等（SetTempUnschedulable/SetError 均为
 // 幂等 upsert，见仓库实现）。
-type qoderSSEBusinessErrorHook func(code, message string)
+type qoderSSEBusinessErrorHook func(code, message string, retryAfterSeconds *int)
 
 // newQoderSSEReaderWithErrorHook 同 newQoderSSEReader，额外注册业务错误帧观察
 // 回调（nil 时行为与旧版完全一致：仅透传 CC error 帧，不落状态）。
-func newQoderSSEReaderWithErrorHook(r io.Reader, sentModel string, hook qoderSSEBusinessErrorHook) io.Reader {
+//
+// 返回具体类型（而非 io.Reader）是因为 qoderProbeFirstFrame 必须能被调用方拿到——
+// 换号窗口只存在于「尚未向客户端写出任何字节」之前，晚一步就无从判定。
+func newQoderSSEReaderWithErrorHook(r io.Reader, sentModel string, hook qoderSSEBusinessErrorHook) *qoderSSEReader {
 	if r == nil {
 		r = strings.NewReader("")
 	}
@@ -244,6 +327,39 @@ func newQoderSSEReaderWithErrorHook(r io.Reader, sentModel string, hook qoderSSE
 	}
 }
 
+// qoderProbeFirstFrame 预读首个语义帧，在「尚未向客户端写出任何字节」这个唯一
+// 可换号窗口里判定失败原因（调用方是 sendQoderUpstreamRequest 的流式分支）。
+//
+// 返回非 nil 表示：上游首帧即业务错误，且该分类允许换号（见
+// qoderFailoverableBusinessError）。此时**刻意不把 error 帧当作正常流交给下游**——
+// 错误帧一经写出就把 raw 路径的 clientOutputStarted 置真（缓冲闸门把 sawError 列为
+// 放行条件），而那里的换号分支硬要求「未写出任何字节」，结果必然是把上游原文透给
+// 客户端且本请求永不换号，只有下一个请求才被 SetTempUnschedulable 绕开（表现为
+// 「有时报错、有时正常」）。
+//
+// 返回 nil 表示可继续按正常流转发：已产出的帧留在缓冲区里，调用方直接把本 reader
+// 接到下游即可，一字节都不会丢。
+//
+// 无论短路与否，落状态与 Ops 事件都已由 writeFrame 内的 onBizErr 回调完成（账号
+// 拉黑与换号是两件事，不能因为能换号就漏掉落状态）。
+func (r *qoderSSEReader) qoderProbeFirstFrame() error {
+	if r == nil || r.probed {
+		return nil
+	}
+	r.probed = true
+	for r.pending.Len() == 0 && !r.finished {
+		r.pump()
+	}
+	if r.bizErr != nil && r.contentFrames == 0 && qoderFailoverableBusinessError(r.bizErr) {
+		// 【不丢字节】错误帧只是「还没写出」，仍在缓冲区里：调用方一旦没能把它包成
+		// 换号错误（两处判据同源于 classifyQoderBusinessError，但万一分叉），交给下游
+		// 时错误帧照常下发，而不是退化成「空回复」这类更难排查的沉默故障。
+		r.finish()
+		return r.bizErr
+	}
+	return nil
+}
+
 // qoderSSEReader 拉取式规范化 SSE 读取器。
 type qoderSSEReader struct {
 	br          *bufio.Reader
@@ -252,6 +368,15 @@ type qoderSSEReader struct {
 	sentModel   string
 	validFrames int
 	finished    bool
+	// contentFrames 已产出的**正文**帧数（不含错误帧）。它是「语义字节已交给客户端、
+	// 换号会造成重复输出」的唯一可靠判据：validFrames 把错误帧也计数在内（见
+	// writeFrame），拿它当依据会把「首帧即错」误判成「已有正文」而放弃换号。
+	contentFrames int
+	// bizErr 首个业务错误帧的结构化形态（供 probe 判定换号；只保留第一个，
+	// 与 onBizErr 的请求级去重口径一致）。
+	bizErr *errQoderUpstreamEnvelope
+	// probed qoderProbeFirstFrame 已执行（幂等守卫：第二次不得重复读流）。
+	probed bool
 	// onBizErr 业务错误帧观察回调（可选；见 qoderSSEBusinessErrorHook）。
 	onBizErr qoderSSEBusinessErrorHook
 }
@@ -294,15 +419,26 @@ func (r *qoderSSEReader) writeFrame(payload string) {
 	data := qoderParseDataFrame(payload)
 	if data == nil {
 		// 非 JSON 帧：原样透传（不二次错误化），但不计入有效帧。
+		// 计入正文：字节已产出给客户端，此时换号会造成重复输出，probe 必须放弃短路。
+		r.contentFrames++
 		r.pending.WriteString("data: " + payload + "\n\n")
 		return
 	}
 	r.validFrames++
 	if data.BusinessErr != nil {
+		// 记录首个业务错误供 qoderProbeFirstFrame 判定（错误帧不增加 contentFrames）。
+		if r.bizErr == nil {
+			r.bizErr = &errQoderUpstreamEnvelope{
+				StatusCode:        data.Envelope.StatusCodeValue,
+				Code:              data.BusinessErr.Code,
+				Message:           data.BusinessErr.Message,
+				RetryAfterSeconds: data.BusinessErr.RetryAfterSeconds,
+			}
+		}
 		// 信封/业务错误 → 先通知观察回调（账号状态处置），再转 CC error 帧
 		// （客户端可识别形态）。回调失败不得影响帧透传。
 		if r.onBizErr != nil {
-			r.onBizErr(data.BusinessErr.Code, data.BusinessErr.Message)
+			r.onBizErr(data.BusinessErr.Code, data.BusinessErr.Message, data.BusinessErr.RetryAfterSeconds)
 		}
 		errFrame := map[string]any{
 			"error": map[string]any{
@@ -328,6 +464,7 @@ func (r *qoderSSEReader) writeFrame(payload string) {
 	if err != nil {
 		return
 	}
+	r.contentFrames++
 	r.pending.WriteString("data: " + string(raw) + "\n\n")
 }
 
@@ -422,7 +559,7 @@ func aggregateQoderSSE(r io.Reader, sentModel string) ([]byte, *OpenAIUsage, err
 		// 业务错误优先：code 非 "0" 非空即中断（字符串/数字两种形态同口径）。
 		if code := qoderInnerBusinessCode(inner); code != "" {
 			msg, _ := inner["message"].(string)
-			return &errQoderUpstreamEnvelope{StatusCode: 200, Code: code, Message: msg}
+			return &errQoderUpstreamEnvelope{StatusCode: 200, Code: code, Message: msg, RetryAfterSeconds: qoderInnerRetryAfterSeconds(inner)}
 		}
 		if v, ok := inner["id"].(string); ok && id == "" && v != "" {
 			id = v
@@ -479,9 +616,10 @@ func aggregateQoderSSE(r io.Reader, sentModel string) ([]byte, *OpenAIUsage, err
 					validEvents++
 					if data.BusinessErr != nil {
 						return nil, nil, &errQoderUpstreamEnvelope{
-							StatusCode: data.Envelope.StatusCodeValue,
-							Code:       data.BusinessErr.Code,
-							Message:    data.BusinessErr.Message,
+							StatusCode:        data.Envelope.StatusCodeValue,
+							Code:              data.BusinessErr.Code,
+							Message:           data.BusinessErr.Message,
+							RetryAfterSeconds: data.BusinessErr.RetryAfterSeconds,
 						}
 					}
 					if data.InnerObject != nil {

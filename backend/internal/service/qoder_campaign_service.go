@@ -340,6 +340,10 @@ type QoderCreditsService struct {
 	// 走 resolveQoderEndpoints）。openapi 域刻意不受 credentials.base_url 中转
 	// 覆盖（见 qoder.go 注释），单测无法用 httptest 直接拦到，因此需要这个缝。
 	endpointsOverride func(account *Account) qoderEndpoints
+
+	// tlsFPProfileService 解析账号绑定的 TLS 指纹模板（防封加固）。
+	// nil 时解析返回 nil ⇒ 分派退回普通 Do，行为与改动前一致。
+	tlsFPProfileService *TLSFingerprintProfileService
 }
 
 // NewQoderCreditsService 构造 Qoder 积分/活动领取服务。
@@ -355,6 +359,19 @@ func NewQoderCreditsService(
 		httpUpstream: httpUpstream,
 		cfg:          cfg,
 	}
+}
+
+// SetTLSFingerprintProfileService 注入 TLS 指纹模板服务（防封加固）。
+func (s *QoderCreditsService) SetTLSFingerprintProfileService(svc *TLSFingerprintProfileService) {
+	if s != nil {
+		s.tlsFPProfileService = svc
+	}
+}
+
+// qoderDo 是 openapi 域出站分派：账号启用 TLS 指纹则走 DoWithTLS，否则保持普通 Do。
+// 超时/取消由 req 自身 context 驱动；并发度保持历史口径 maxInt(Concurrency,1)。
+func (s *QoderCreditsService) qoderDo(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	return doUpstreamWithOptionalTLSConcurrency(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account, maxInt(account.Concurrency, 1))
 }
 
 // qoderCampaignError openapi 业务错误（HTTP >= 400）。与传输层/解析层错误严格
@@ -836,7 +853,7 @@ func (s *QoderCreditsService) qoderOpenAPIRequest(ctx context.Context, account *
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	applyQoderCampaignHeaders(req, token)
 
-	resp, err := s.httpUpstream.Do(req, s.resolveQoderProxyURL(ctx, account), account.ID, maxInt(account.Concurrency, 1))
+	resp, err := s.qoderDo(req, s.resolveQoderProxyURL(ctx, account), account)
 	if err != nil {
 		return nil, fmt.Errorf("qoder openapi transport error: %w", err)
 	}

@@ -191,6 +191,11 @@ type TraeCreditsService struct {
 	httpUpstream HTTPUpstream
 	cfg          *config.Config
 	flight       singleflight.Group
+
+	// tlsFPProfileService 解析账号绑定的 TLS 指纹模板（防封加固）。
+	// 经 setter 注入（与 ProvideAntigravityGatewayService 同一约定）；
+	// nil 时解析返回 nil ⇒ 分派退回普通 Do，行为与改动前一致。
+	tlsFPProfileService *TLSFingerprintProfileService
 }
 
 // NewTraeCreditsService 构造 Trae 积分/签到服务。
@@ -528,6 +533,20 @@ func (s *TraeCreditsService) ensureTraeBillingToken(ctx context.Context, account
 	return nil
 }
 
+// SetTLSFingerprintProfileService 注入 TLS 指纹模板服务（防封加固）。
+// 与聊天主链路同源，使 UG 域签到/余额与换票不再只限速不伪装。
+func (s *TraeCreditsService) SetTLSFingerprintProfileService(svc *TLSFingerprintProfileService) {
+	if s != nil {
+		s.tlsFPProfileService = svc
+	}
+}
+
+// traeDo 是 UG 域出站分派：账号启用了 TLS 指纹则走 DoWithTLS，否则保持普通 Do。
+// 超时/取消继续由 req 自身的 context 驱动（与改动前一致，本层不另外派生 ctx）。
+func (s *TraeCreditsService) traeDo(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	return doUpstreamWithOptionalTLSConcurrency(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account, maxInt(account.Concurrency, 1))
+}
+
 // refreshTraeBillingToken UG 路径的换票：与网关 refreshTraeToken 同语义，传输层换成
 // 本服务的 HTTPUpstream（模式对齐 refreshWorkbuddyCreditsToken）。
 func (s *TraeCreditsService) refreshTraeBillingToken(ctx context.Context, account *Account) error {
@@ -536,7 +555,7 @@ func (s *TraeCreditsService) refreshTraeBillingToken(ctx context.Context, accoun
 		validate: func(rawURL string) (string, error) { return cnValidateProbeURL(s.cfg, rawURL) },
 		proxyURL: func(account *Account) string { return s.resolveTraeProxyURL(ctx, account) },
 		do: func(ctx context.Context, req *http.Request, account *Account) (*http.Response, error) {
-			return s.httpUpstream.Do(req, s.resolveTraeProxyURL(ctx, account), account.ID, maxInt(account.Concurrency, 1))
+			return s.traeDo(req, s.resolveTraeProxyURL(ctx, account), account)
 		},
 	}
 	return refresher.refresh(ctx, account)
@@ -776,7 +795,7 @@ func (s *TraeCreditsService) traeBillingRequestOnce(ctx context.Context, account
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	applyTraeBillingHeaders(req, account.GetTraeCredentials(), deviceID)
 
-	resp, err := s.httpUpstream.Do(req, s.resolveTraeProxyURL(ctx, account), account.ID, maxInt(account.Concurrency, 1))
+	resp, err := s.traeDo(req, s.resolveTraeProxyURL(ctx, account), account)
 	if err != nil {
 		return nil, fmt.Errorf("trae billing transport error: %w", err)
 	}
