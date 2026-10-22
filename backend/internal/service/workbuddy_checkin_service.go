@@ -101,7 +101,8 @@ func (s *WorkBuddyCheckinService) Start() {
 	}
 	slog.Info("workbuddy checkin service started",
 		"hours", hours,
-		"spread_window", workbuddySpreadSettingsFrom(s.cfg).Window.String(),
+		// 打印实际生效窗口（已按相邻触发点间隔夹逼），而非配置原始值。
+		"spread_window", s.effectiveWindow(hours).String(),
 		"account_gap_min", workbuddySpreadSettingsFrom(s.cfg).GapMin.String(),
 		"account_gap_max", workbuddySpreadSettingsFrom(s.cfg).GapMax.String())
 	s.wg.Add(1)
@@ -120,34 +121,26 @@ func (s *WorkBuddyCheckinService) Stop() {
 	s.wg.Wait()
 }
 
-// loop 主循环：计算下一触发点 → 等待 → 开启一个执行窗口逐号推进，直到停止信号。
+// loop 主循环：到点开窗 → 窗口内逐号推进，直到停止信号。
+//
+// 委托给 spreadTriggerLoop：它以「上次服务过的触发点」为基准算下一个点，
+// 因此不会因为上一窗口跑满时长而跳过 21 点兜底窗口。
 func (s *WorkBuddyCheckinService) loop(hours []int) {
-	for {
-		next := nextWorkbuddyCheckinFire(time.Now(), hours)
-		timer := time.NewTimer(time.Until(next))
-		select {
-		case <-timer.C:
-			s.runOnce()
-		case <-s.stopCh:
-			timer.Stop()
-			return
-		}
-	}
+	window := s.effectiveWindow(hours)
+	spreadTriggerLoop(s.stopCh, hours, window, "workbuddy-checkin", s.runOnce)
 }
 
-// nextWorkbuddyCheckinFire 返回 now 之后最近的整点触发时间（hours 为本地小时 0-23）。
+// effectiveWindow 返回经「相邻触发点间隔」夹逼后的实际窗口长度。
+func (s *WorkBuddyCheckinService) effectiveWindow(hours []int) time.Duration {
+	return spreadEffectiveWindow(workbuddySpreadSettingsFrom(s.cfg).Window, hours)
+}
+
+// nextWorkbuddyCheckinFire 返回 now 之后最近的整点触发时间。
+//
+// 实现委托给共享的 nextSpreadFire：四个平台/任务的触发点计算必须同源，
+// 否则会再次出现「某个平台的 loop 把下一个触发点吞掉」这类差异。
 func nextWorkbuddyCheckinFire(now time.Time, hours []int) time.Time {
-	var earliest time.Time
-	for _, h := range hours {
-		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
-		if !t.After(now) {
-			t = t.Add(24 * time.Hour)
-		}
-		if earliest.IsZero() || t.Before(earliest) {
-			earliest = t
-		}
-	}
-	return earliest
+	return nextSpreadFire(now, hours)
 }
 
 // workbuddyCheckinAlreadyDoneToday 报告该账号当日是否已签到成功（ok/already）。
@@ -169,8 +162,11 @@ func workbuddyCheckinAlreadyDoneToday(account *Account) bool {
 //   - 窗口用尽仍未轮到的号留给下个窗口（Remaining 写进收尾日志，可观测）。
 func (s *WorkBuddyCheckinService) runOnce() {
 	settings := workbuddySpreadSettingsFrom(s.cfg)
+	// 窗口夹到相邻触发点间隔 - 余量以内：默认 [9,21] 间隔恰好 12h、窗口也 12h，
+	// 不夹则会跑过 21 点把兜底窗口吞掉。
+	window := s.effectiveWindow(workbuddyCheckinHours(s.cfg))
 	// 窗口级 ctx：窗口长度 + 1 小时硬上限（仅防卡死，正常窗口不会撞到）。
-	ctx, cancel := context.WithTimeout(context.Background(), settings.Window+workbuddyCheckinBatchTimeoutFloor)
+	ctx, cancel := context.WithTimeout(context.Background(), window+workbuddyCheckinBatchTimeoutFloor)
 	defer cancel()
 
 	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformWorkbuddy)
@@ -200,27 +196,27 @@ func (s *WorkBuddyCheckinService) runOnce() {
 		candidates = append(candidates, account)
 	}
 
-	runner := workbuddySpreadRunner{
+	runner := spreadRunner{
 		label:  "checkin",
-		window: settings.Window,
+		window: window,
 		gapMin: settings.GapMin,
 		gapMax: settings.GapMax,
 	}
 	stats := runner.run(ctx, s.stopCh, candidates, workbuddyCheckinAlreadyDoneToday,
-		func(runCtx context.Context, account *Account) workbuddyRunOutcome {
+		func(runCtx context.Context, account *Account) spreadRunOutcome {
 			result := s.credits.CheckinForAccount(runCtx, account)
 			if result == nil {
-				return workbuddyRunFail
+				return spreadRunFail
 			}
 			switch result.Status {
 			case WorkBuddyCheckinStatusOK, WorkBuddyCheckinStatusAlready:
-				return workbuddyRunOK
+				return spreadRunOK
 			case WorkBuddyCheckinStatusSkipped:
-				return workbuddyRunSkipped
+				return spreadRunSkipped
 			default:
 				slog.Warn("workbuddy checkin failed",
 					"account_id", account.ID, "status", result.Status, "detail", result.Detail)
-				return workbuddyRunFail
+				return spreadRunFail
 			}
 		})
 

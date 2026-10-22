@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
 
@@ -87,6 +88,47 @@ func resolveAccountTLSProfile(profileService *TLSFingerprintProfileService, acco
 		return nil
 	}
 	return profileService.ResolveTLSProfile(account)
+}
+
+// platformDefaultTLSFor 报告某账号是否适用「平台级默认开启 TLS 指纹」。
+//
+// 适用平台：WorkBuddy / Trae / Qoder。这三家的共同点是 HTTP 头层已完整伪装成
+// 官方桌面客户端（WorkBuddy 的 X-CodeBuddy-Request、Trae 的 X-Market-Client-Id /
+// User-Agent: Trae/<ver>、Qoder 的 cosy-clienttype 一整套），传输层若仍发 Go 标准库
+// ClientHello 就是两层身份自相矛盾，是最明确的 JA3/JA4 自动化标记。
+//
+// **必须只有一个实现**：聊天转发（openai_plugin_transport.go）、账号测试
+// （account_test_service.go）、以及三家 credits/活动服务（traeDo/qoderDo/workbuddyDo）
+// 若各自维护一份判定，就会出现「真实请求带指纹、测试请求不带」这类身份不一致
+// ——那正是本次改造要消除的形态。新增平台只在此处加一行分支。
+//
+// cfg 为 nil（单测常见）时仍返回 true：平台默认语义不依赖配置存在性。
+// 账号 Extra 显式 enable_tls_fingerprint=false 由 resolvePlatformDefaultTLSProfile
+// 处理（优先级更高），本函数只回答「该平台的默认值是什么」。
+func platformDefaultTLSFor(account *Account, cfg *config.Config) bool {
+	if account == nil {
+		return false
+	}
+	switch account.Platform {
+	case PlatformWorkbuddy:
+		if cfg == nil {
+			return true
+		}
+		return cfg.Gateway.Workbuddy.TLSFingerprintEnabled
+	case PlatformTrae:
+		if cfg == nil {
+			return true
+		}
+		return cfg.Gateway.Trae.TLSFingerprintEnabled
+	case PlatformQoder:
+		if cfg == nil {
+			return true
+		}
+		return cfg.Gateway.Qoder.TLSFingerprintEnabled
+	default:
+		// 其它平台保持零行为变更（仍为 opt-in）。
+		return false
+	}
 }
 
 // resolvePlatformDefaultTLSProfile 在「平台级默认开启」语义下解析 TLS Profile：

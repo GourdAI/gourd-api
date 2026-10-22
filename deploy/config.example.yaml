@@ -472,19 +472,59 @@ gateway:
     activity_report_count: 5
     travel_enabled: true
     travel_hours: [9, 21]
+    # Anti-ban spread scheduling shared by all three WorkBuddy tasks.
+    # 防封错峰（签到 / 活跃上报 / 旅行三任务共用）：每个整点打开一个执行窗口，
+    # 窗口内逐个账号推进，而不是整点全量齐发。
+    #
+    # spread_window_seconds: window length opened at each trigger hour (default 43200 = 12h).
+    # The runner starts with a small random jitter (<=90s) so the first account never fires
+    # exactly at hh:00:00, then advances account-by-account. It stops when the list is done.
+    # 窗口长度：到点后不是「那一刻全跑完」，而是在这个窗口内逐个推进，跑完即收。
+    # 起点带 <=90s 随机抖动，首个账号不会精确落在整点零秒。
+    #
+    # account_gap_min/max_seconds: random gap between two accounts (default 180~480s).
+    # Fixed gaps are themselves an automation signature; a random range is not.
+    # 账号间隔随机区间（默认 3~8 分钟）。固定间隔本身就是可识别的机械节律。
+    #
+    # Accounts already done today (check-in ok/already, activity ok, travel claimed)
+    # are skipped entirely, so the evening fallback window only retries what failed.
+    # 当日已完成的账号直接跳过，因此晚上兜底窗口只补没跑成的，不再全量重打上游。
+    # Accounts not reached before the window closes are logged as `remaining` and left
+    # to the next window.
+    # 窗口用尽仍未轮到的账号记为 remaining，留给下个窗口继续。
+    spread_window_seconds: 43200
+    account_gap_min_seconds: 180
+    account_gap_max_seconds: 480
+    # Default-on TLS fingerprint mimicry for this platform (account Extra
+    # enable_tls_fingerprint=false still wins). The HTTP layer already claims to be the
+    # desktop client, so sending Go's stdlib ClientHello would be a self-contradiction
+    # visible in JA3/JA4.
+    # 该平台默认开启 TLS 指纹伪装（账号 Extra 显式 false 仍优先）。HTTP 头层已自称
+    # 桌面端，传输层若发 Go 标准库 ClientHello 就是两层身份矛盾，JA3/JA4 直接可见。
+    tls_fingerprint_enabled: true
   # Qoder daily campaign credits (100 Credits/round, open at 10:00 UTC+8 every day).
   # Qoder 每日活动 Credits（每轮 100，每天 10:00（UTC+8）开新一轮）。
   # checkin_hours is evaluated in the server local timezone: 10:00 is the first attempt of
   # each round, 21:00 is the fallback retry. Repeated claims are idempotent upstream
   # (replayed=true, no extra credits), so multi-instance deployments need no distributed lock.
-  # checkin_hours 按服务器本地时区整点触发；10 点为首发，21 点为兵底重试。上游对同一轮
+  # checkin_hours 按服务器本地时区整点触发；10 点为首发，21 点为兜底重试。上游对同一轮
   # 重复领取幂等（replayed=true、不重复发钱），多实例部署无需分布式锁。
   # Accounts the server never grants a campaign to (trial-device limits, team plans) are
   # recorded as skipped — that is a normal state and is not retried.
   # 未被服务端下发活动的账号（试用设备限制、企业/团队版等）记为 skipped，属正常态、不重试。
+  #
+  # Spread scheduling / 错峰调度：语义与 gateway.workbuddy.* 同名项完全一致。
+  # Accounts already claimed this round are skipped, so the 21:00 fallback only retries
+  # what failed (otherwise every claimed account would be re-probed with 2 extra GETs).
+  # 本轮已领取成功（ok/already）的账号直接跳过；否则兜底窗口会让每个已领号
+  # 重新 GET campaigns 并额外刷一次 quota，每号每晚多花 2 个请求。
   qoder:
     checkin_enabled: true
     checkin_hours: [10, 21]
+    spread_window_seconds: 43200
+    account_gap_min_seconds: 180
+    account_gap_max_seconds: 480
+    tls_fingerprint_enabled: true
 
   # Trae daily check-in credits (Trae CN / SOLO CN accounts).
   # Trae（字节 Trae IDE / TRAE SOLO CN）每日签到积分。
@@ -495,11 +535,27 @@ gateway:
   # checkin_hours 按服务器本地时区整点触发：9 点首发，21 点为兜底重试（上午因网络抖动或
   # 9074「当前参与用户太多」失败的账号当晚还有机会）。上游对重复签到幂等（code=0 不再
   # 发放积分、code=9095 即「今日已签到」），多实例部署无需分布式锁。
-  # 注意：9074 是账号级稳定拒绝（换 deviceId/UA/region 均无效），因此只会补一次
-  # req_source=2 重试即判失败，不会狂重请求。
+  #
+  # 9074 is a TRANSIENT throttle, not a permanent account-level rejection: the same account
+  # succeeds when retried later (verified live). Each attempt therefore uses a fresh device id
+  # and retries the whole status -> claim flow, up to 3 times with a 60s cooldown.
+  # 注意：9074 是**瞬时限流**（「当前参与用户太多」），不是账号级永久拒绝——实测同一账号
+  # 隔一段时间重试即可成功。因此每次尝试用全新设备号重走整条 status → claim，最多重试 3 次、
+  # 每次间隔 60s。
+  #
+  # Spread scheduling / 错峰调度：语义与 gateway.workbuddy.* 同名项完全一致。
+  # Accounts already checked in today are skipped, so the 21:00 fallback only retries what
+  # failed. Note a single Trae account can take up to ~7 minutes (timeout 420s + 9074 retries),
+  # so the gap下限 remains 3min while the window is 12h.
+  # 当日已签到成功（ok/already）的账号直接跳过，因此 21 点兜底只补未成功的。
+  # 注意 Trae 单号最坏耗时约 7 分钟（超时 420s + 9074 重试），故窗口仍取 12h。
   trae:
     checkin_enabled: true
     checkin_hours: [9, 21]
+    spread_window_seconds: 43200
+    account_gap_min_seconds: 180
+    account_gap_max_seconds: 480
+    tls_fingerprint_enabled: true
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts

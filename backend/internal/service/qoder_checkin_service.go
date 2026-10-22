@@ -2,11 +2,17 @@ package service
 
 // qoder_checkin_service.go Qoder「每日领取活动 Credits」周期任务。
 //
-// 行为（与 workbuddy_checkin_service.go 同构，差异在活动刷新时刻与筛选条件）：
-//  1. 到点后枚举全部 Qoder 账号（跳过禁用账号与无凭据账号）；
-//  2. 逐个串行执行领取（活动列表 → claim → 余额刷新 → 落快照），账号之间固定间隔
-//     qoderCheckinAccountDelay，避免同一时刻批量请求多账号被上游风控识别；
-//  3. 汇总日志（ok/already/skipped/fail）。
+// 行为（改造后：窗口内逐号推进，与 workbuddy/trae 同构）：
+//
+//  1. hours 列表里的每个整点打开一个长度为 spread_window_seconds 的执行窗口；
+//  2. 窗口内逐个枚举 Qoder 账号（跳过禁用账号与无凭据账号）；
+//  3. **本轮已领取成功（ok/already）的账号直接跳过**——旧实现只靠上游幂等，
+//     等于把当天已领的号在 21 点兜底那趟重新 GET campaigns，且已领分支还会
+//     额外刷一次 quota/usage（refreshQoderCreditsAfterCheckin），每号每晚多花 2 个 GET；
+//  4. 账号之间取 [account_gap_min_seconds, account_gap_max_seconds] 区间内的随机
+//     间隔，而不是固定值；
+//  5. 跑完即收；窗口用尽仍未轮到的账号留给下一个窗口——「晚上兜底」的语义从
+//     「全量重跑」变成「只补没领取成功的」。
 //
 // 触发小时默认 [10, 21]：活动每天 10:00（UTC+8）开放新一轮，10 点为首发，21 点为
 // 兜底重试（上午因网络抖动/令牌问题失败的账号当晚还有机会）。重复领取由上游幂等
@@ -41,14 +47,15 @@ type QoderCheckinService struct {
 	wg          sync.WaitGroup
 }
 
-// qoderCheckinBatchTimeout 单批领取的总时长上限（大批量账号下限保护）。
-const qoderCheckinBatchTimeout = 30 * time.Minute
+// qoderCheckinBatchTimeoutFloor 单批领取的**硬上限**（防呆）。
+//
+// 注意：真正的节奏由错峰窗口（spread_window_seconds）决定，本值只是防止某个号
+// 卡死在代理层时整批永不退出；取 1 小时，与窗口相加后作为批超时，
+// 保证正常窗口不会被这个兜底超时提前截断。
+const qoderCheckinBatchTimeoutFloor = time.Hour
 
 // qoderDefaultCheckinHours 默认领取小时（本地时区）：10 点开放即领 + 21 点兜底。
 var qoderDefaultCheckinHours = []int{10, 21}
-
-// qoderCheckinAccountDelay 账号间领取间隔（防批量风控；测试可置 0）。
-var qoderCheckinAccountDelay = 2 * time.Second
 
 // NewQoderCheckinService 构造每日领取任务。
 func NewQoderCheckinService(
@@ -103,7 +110,11 @@ func (s *QoderCheckinService) Start() {
 		return
 	}
 	slog.Info("qoder checkin service started",
-		"hours", hours, "account_delay", qoderCheckinAccountDelay.String())
+		"hours", hours,
+		// 打印实际生效窗口（已按相邻触发点间隔夹逼），而非配置原始值。
+		"spread_window", s.effectiveWindow().String(),
+		"account_gap_min", qoderSpreadSettingsFrom(s.cfg).GapMin.String(),
+		"account_gap_max", qoderSpreadSettingsFrom(s.cfg).GapMax.String())
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -121,39 +132,53 @@ func (s *QoderCheckinService) Stop() {
 	s.wg.Wait()
 }
 
-// loop 主循环：计算下一触发点 → 等待 → 执行一批领取，直到停止信号。
+// loop 主循环：到点开窗 → 窗口内逐号推进，直到停止信号。
+//
+// 委托给 spreadTriggerLoop：它以「上次服务过的触发点」为基准算下一个点，
+// 因此不会因为上一窗口跑满时长而跳过 21 点兜底窗口（详见该函数注释）。
 func (s *QoderCheckinService) loop(hours []int) {
-	for {
-		next := nextQoderCheckinFire(time.Now(), hours)
-		timer := time.NewTimer(time.Until(next))
-		select {
-		case <-timer.C:
-			s.runOnce()
-		case <-s.stopCh:
-			timer.Stop()
-			return
-		}
-	}
+	window := spreadEffectiveWindow(qoderSpreadSettingsFrom(s.cfg).Window, hours)
+	spreadTriggerLoop(s.stopCh, hours, window, "qoder-checkin", s.runOnce)
 }
 
-// nextQoderCheckinFire 返回 now 之后最近的整点触发时间（hours 为本地小时 0-23）。
+// nextQoderCheckinFire 返回 now 之后最近的整点触发时间。
+//
+// 实现委托给共享的 nextSpreadFire（四个平台/任务同源，避免语义漂移）。
 func nextQoderCheckinFire(now time.Time, hours []int) time.Time {
-	var earliest time.Time
-	for _, h := range hours {
-		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
-		if !t.After(now) {
-			t = t.Add(24 * time.Hour)
-		}
-		if earliest.IsZero() || t.Before(earliest) {
-			earliest = t
-		}
-	}
-	return earliest
+	return nextSpreadFire(now, hours)
 }
 
-// runOnce 执行一批领取：枚举全部 Qoder 账号，串行逐个领取（账号间固定间隔）。
+// qoderCheckinAlreadyDoneToday 报告该账号本轮是否已领取成功（ok/already）。
+//
+// 用于「晚上兜底窗口不再重打已领的号」这个短路。判据只用本地快照（免探测），
+// 与前端展示的「今日已领取」同源（qoderCheckinSnapshot 的 Round 已按活动轮次
+// 口径写入，且 shouldKeepQoderCheckinSnapshot 保证同轮成功后不会被后续失败覆盖）。
+// 快照缺失（新号/刚上线）一律返回 false——宁可多试一次，不可漏领。
+func qoderCheckinAlreadyDoneToday(account *Account) bool {
+	status := qoderCheckinStatusToday(account)
+	return status == QoderCheckinStatusOK || status == QoderCheckinStatusAlready
+}
+
+// effectiveWindow 返回经「相邻触发点间隔」夹逼后的实际窗口长度。
+//
+// 存在的理由：runOnce 无参（也供手动/测试直接调用），拿不到 loop 的 hours，
+// 因此自己从配置重算一次小时列表并夹逼，与 loop 保持同一语义。
+func (s *QoderCheckinService) effectiveWindow() time.Duration {
+	return spreadEffectiveWindow(qoderSpreadSettingsFrom(s.cfg).Window, qoderCheckinHours(s.cfg))
+}
+
+// runOnce 开启一个执行窗口，在窗口内逐号推进领取。
+//
+// 与改造前的差别（均已实证）：
+//   - 不再整点全量齐发；窗口内随机起点 + 随机间隔推进；
+//   - 本轮已成功的号直接跳过，不再重打上游只为了拿一句 replayed=true；
+//   - 窗口用尽仍未轮到的号留给下个窗口（Remaining 写进收尾日志，可观测）。
 func (s *QoderCheckinService) runOnce() {
-	ctx, cancel := context.WithTimeout(context.Background(), qoderCheckinBatchTimeout)
+	settings := qoderSpreadSettingsFrom(s.cfg)
+	// 窗口夹到相邻触发点间隔 - 余量以内（默认 [10,21] 间隔 11h < 12h 窗口，必现超窗）。
+	window := s.effectiveWindow()
+	// 窗口级 ctx：窗口长度 + 1 小时硬上限（仅防卡死，正常窗口不会撞到）。
+	ctx, cancel := context.WithTimeout(context.Background(), window+qoderCheckinBatchTimeoutFloor)
 	defer cancel()
 
 	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformQoder)
@@ -161,61 +186,65 @@ func (s *QoderCheckinService) runOnce() {
 		slog.Warn("qoder checkin list accounts failed", "error", err)
 		return
 	}
-	var okN, alreadyN, failN, skipN int
-	attempted := 0
+	// 门控在进入窗口前一次性过滤完，避免把永远不会执行的号排进候选列表后
+	// 白白占用错峰间隔。
+	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
-		if ctx.Err() != nil {
-			break
-		}
 		account := &accounts[i]
 		// 禁用账号不参与（领取不救禁用号）。
 		if !account.IsQoderPlatform() || !account.IsActive() {
-			skipN++
 			continue
 		}
 		creds := account.GetQoderCredentials()
 		if strings.TrimSpace(creds.AccessToken) == "" &&
 			strings.TrimSpace(creds.PersonalToken) == "" &&
 			strings.TrimSpace(creds.RefreshToken) == "" {
-			skipN++
 			continue
 		}
-		result := s.credits.CheckinForAccount(ctx, account)
-		attempted++
-		switch result.Status {
-		case QoderCheckinStatusOK:
-			okN++
-			slog.Info("qoder daily credits claimed",
-				"account_id", account.ID, "amount", result.Amount,
-				"grant_id", result.GrantID, "remaining", result.Credits)
-		case QoderCheckinStatusAlready:
-			alreadyN++
-		case QoderCheckinStatusSkipped:
-			skipN++
-			slog.Debug("qoder checkin skipped",
-				"account_id", account.ID, "detail", result.Detail)
-		default:
-			failN++
-			slog.Warn("qoder checkin failed",
-				"account_id", account.ID, "status", result.Status, "detail", result.Detail)
-		}
-		// 账号间固定间隔：避免同一时间批量请求多账号被上游风控识别。
-		if qoderCheckinAccountDelay > 0 && i < len(accounts)-1 {
-			timer := time.NewTimer(qoderCheckinAccountDelay)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				timer.Stop()
-			case <-s.stopCh:
-				timer.Stop()
-				slog.Info("qoder checkin batch interrupted",
-					"attempted", attempted, "ok", okN, "already", alreadyN, "fail", failN, "skipped", skipN)
-				return
-			}
-		}
+		candidates = append(candidates, account)
 	}
-	if attempted > 0 || skipN < len(accounts) {
-		slog.Info("qoder checkin batch done",
-			"total", len(accounts), "attempted", attempted, "ok", okN, "already", alreadyN, "fail", failN, "skipped", skipN)
+
+	runner := spreadRunner{
+		label:  "checkin",
+		window: window,
+		gapMin: settings.GapMin,
+		gapMax: settings.GapMax,
+	}
+	stats := runner.run(ctx, s.stopCh, candidates, qoderCheckinAlreadyDoneToday,
+		func(runCtx context.Context, account *Account) spreadRunOutcome {
+			result := s.credits.CheckinForAccount(runCtx, account)
+			if result == nil {
+				return spreadRunFail
+			}
+			switch result.Status {
+			case QoderCheckinStatusOK:
+				slog.Info("qoder daily credits claimed",
+					"account_id", account.ID, "amount", result.Amount,
+					"grant_id", result.GrantID, "remaining", result.Credits)
+				return spreadRunOK
+			case QoderCheckinStatusAlready:
+				return spreadRunOK
+			case QoderCheckinStatusSkipped:
+				slog.Debug("qoder checkin skipped",
+					"account_id", account.ID, "detail", result.Detail)
+				return spreadRunSkipped
+			default:
+				slog.Warn("qoder checkin failed",
+					"account_id", account.ID, "status", result.Status, "detail", result.Detail)
+				return spreadRunFail
+			}
+		})
+
+	if stats.Attempted > 0 || stats.Already > 0 || stats.Remaining > 0 {
+		slog.Info("qoder checkin window done",
+			"task", runner.label,
+			"total", len(accounts),
+			"candidates", stats.Candidates,
+			"already_done", stats.Already,
+			"attempted", stats.Attempted,
+			"ok", stats.OK,
+			"fail", stats.Fail,
+			"skipped", stats.Skipped,
+			"remaining", stats.Remaining)
 	}
 }

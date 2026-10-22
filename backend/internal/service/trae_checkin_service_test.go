@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/stretchr/testify/require"
 )
 
@@ -184,8 +185,9 @@ func TestTraeCheckinServiceStartRespectsDisabledConfig(t *testing.T) {
 }
 
 // 3) 批量枚举门控：只有"trae + active + 有令牌"的账号会被签到。
+//
+// 【不得加 t.Parallel()】本用例调用 spreadZeroWaits，它改写进程级可替换函数。
 func TestTraeCheckinRunOnceSkipsIneligibleAccounts(t *testing.T) {
-	t.Parallel()
 	rec := &traeCheckinClaimRecorder{}
 	server := httptest.NewServer(http.HandlerFunc(rec.handler))
 	defer server.Close()
@@ -204,10 +206,8 @@ func TestTraeCheckinRunOnceSkipsIneligibleAccounts(t *testing.T) {
 	}
 	credits := traeCheckinTestCredits(server, repo)
 
-	// 账号间隔置 0（源文件声明为 var 正是为测试），收尾恢复。
-	originalDelay := traeCheckinAccountDelay
-	traeCheckinAccountDelay = 0
-	defer func() { traeCheckinAccountDelay = originalDelay }()
+	// 错峰等待置 0（改造后账号间隔不再是固定值，而是窗口内随机区间）。
+	spreadZeroWaits(t)
 
 	NewTraeCheckinService(credits, repo, &config.Config{}).runOnce()
 
@@ -215,4 +215,84 @@ func TestTraeCheckinRunOnceSkipsIneligibleAccounts(t *testing.T) {
 		traeJWTAuthScheme + " at-201": 1,
 		traeJWTAuthScheme + " at-202": 1,
 	}, rec.snapshotClaims(), "只给合格账号各发一次 claim")
+}
+
+// 4) 【本次改造的核心】当日已签到成功的号必须被跳过，不得重打上游。
+//
+// 改造前 21 点兜底窗口会把 9 点已 ok 的号完整重走 status → claim → 回查，
+// 只为换一句 9095「今日已签到」。这里锁的就是「已成功 → 零上游请求」。
+//
+// 【不得加 t.Parallel()】理由同上。
+func TestTraeCheckinRunOnceSkipsAlreadyDoneToday(t *testing.T) {
+	rec := &traeCheckinClaimRecorder{}
+	server := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer server.Close()
+
+	today := timezone.Now().Format("2006-01-02")
+	fresh := traeCheckinAccount(301, server.URL, StatusActive)
+	done := traeCheckinAccount(302, server.URL, StatusActive)
+	done.Extra = map[string]any{traeCheckinExtraKey: map[string]any{
+		"date": today, "status": TraeCheckinStatusOK,
+	}}
+	alreadySnap := traeCheckinAccount(303, server.URL, StatusActive)
+	alreadySnap.Extra = map[string]any{traeCheckinExtraKey: map[string]any{
+		"date": today, "status": TraeCheckinStatusAlready,
+	}}
+	// 当日失败必须重试（否则兜底窗口就失去意义）。
+	failed := traeCheckinAccount(304, server.URL, StatusActive)
+	failed.Extra = map[string]any{traeCheckinExtraKey: map[string]any{
+		"date": today, "status": TraeCheckinStatusFail,
+	}}
+	// 昨日成功必须重新签到（新的一天）。
+	stale := traeCheckinAccount(305, server.URL, StatusActive)
+	stale.Extra = map[string]any{traeCheckinExtraKey: map[string]any{
+		"date":   timezone.Now().AddDate(0, 0, -1).Format("2006-01-02"),
+		"status": TraeCheckinStatusOK,
+	}}
+
+	repo := &traeCheckinCallRepo{
+		traeCreditsFakeRepo: traeCreditsFakeRepo{extras: map[string]any{}},
+		accounts:            []Account{fresh, done, alreadySnap, failed, stale},
+	}
+	credits := traeCheckinTestCredits(server, repo)
+
+	spreadZeroWaits(t)
+
+	NewTraeCheckinService(credits, repo, &config.Config{}).runOnce()
+
+	// 只有 fresh / failed / stale 三个号能发 claim；done / alreadySnap 必须零请求。
+	require.Equal(t, map[string]int{
+		traeJWTAuthScheme + " at-301": 1,
+		traeJWTAuthScheme + " at-304": 1,
+		traeJWTAuthScheme + " at-305": 1,
+	}, rec.snapshotClaims(), "当日已 ok/already 的号不得重打上游；fail/跨日必须重试")
+}
+
+// 5) 接线守卫：runOnce 必须真的把 skip 谓词传进 runner。
+//
+// 这是一条反向护栏用例——把 runOnce 里的 skip 参数改成 nil 后必须 FAIL。
+// （改造时曾漏测接线：公共原语全绿但 runOnce 没接上，行为静默回到旧态。）
+//
+// 【不得加 t.Parallel()】理由同上。
+func TestTraeCheckinRunOnceWiresSkipPredicate(t *testing.T) {
+	rec := &traeCheckinClaimRecorder{}
+	server := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer server.Close()
+
+	today := timezone.Now().Format("2006-01-02")
+	done := traeCheckinAccount(311, server.URL, StatusActive)
+	done.Extra = map[string]any{traeCheckinExtraKey: map[string]any{
+		"date": today, "status": TraeCheckinStatusOK,
+	}}
+
+	repo := &traeCheckinCallRepo{
+		traeCreditsFakeRepo: traeCreditsFakeRepo{extras: map[string]any{}},
+		accounts:            []Account{done},
+	}
+	credits := traeCheckinTestCredits(server, repo)
+	spreadZeroWaits(t)
+
+	NewTraeCheckinService(credits, repo, &config.Config{}).runOnce()
+
+	require.Empty(t, rec.snapshotClaims(), "runOnce 必须接上 skip 谓词，不得对当日已完成的号发任何 claim")
 }

@@ -19,37 +19,40 @@ func (s *OpenAIGatewayService) SetTLSFingerprintProfileService(svc *TLSFingerpri
 // resolveOpenAIUpstreamTLSProfile 解析当前账号应使用的 TLS 指纹 Profile。
 // 返回 nil 表示未启用或服务未注入（调用方应回退到普通 Do 路径）。
 //
-// 平台默认开启：WorkBuddy 在 HTTP 层已完整伪装成桌面端，传输层若仍发 Go 标准库
-// ClientHello 就是两层身份矛盾（JA3/JA4 直接可见）。因此该平台改为默认开启，
-// 受 gateway.workbuddy.tls_fingerprint_enabled 控制；账号 Extra 显式
+// 平台默认开启：WorkBuddy / Trae / Qoder 在 HTTP 层已完整伪装成桌面客户端，传输层若仍发
+// Go 标准库 ClientHello 就是两层身份矛盾（JA3/JA4 直接可见）。因此这三家默认开启，
+// 受 gateway.<platform>.tls_fingerprint_enabled 控制；账号 Extra 显式
 // enable_tls_fingerprint=false 仍然优先。其它平台语义完全不变（仍为 opt-in）。
+//
+// 路径说明：Trae 聊天（trae_client.go sendTraeUpstreamRequest）与 Qoder 聊天
+// （qoder_client.go sendQoderUpstreamRequest）都经本函数出站，因此在这里接平台默认
+// 就同时覆盖两家聊天主链路，不会出现「辅助面带指纹、主链路不带」的缺口。
 func (s *OpenAIGatewayService) resolveOpenAIUpstreamTLSProfile(account *Account) *tlsfingerprint.Profile {
 	if s == nil || s.tlsFPProfileService == nil {
 		return nil
 	}
-	return resolvePlatformDefaultTLSProfile(s.tlsFPProfileService, account, s.workbuddyPlatformDefaultTLS(account))
+	return resolvePlatformDefaultTLSProfile(s.tlsFPProfileService, account, platformDefaultTLSFor(account, s.cfg))
 }
 
-// workbuddyPlatformDefaultTLS 报告当前出站账号是否适用「WorkBuddy 平台默认开启 TLS 指纹」。
-// 非 WorkBuddy 账号恒为 false（保证其它平台零行为变更）。
+// workbuddyPlatformDefaultTLS 已由 platformDefaultTLSFor 统一承担（三平台同源）。
+//
+// 保留本方法只为兼容既有测试引用；新代码一律直接用 platformDefaultTLSFor，
+// 避免再次出现「某路径自己维护一份平台判定」的身份不一致。
+//
+// Deprecated: 迁移到 platformDefaultTLSFor(account, cfg)。
 func (s *OpenAIGatewayService) workbuddyPlatformDefaultTLS(account *Account) bool {
-	if account == nil || !account.IsWorkbuddy() {
+	if s == nil {
 		return false
 	}
-	if s.cfg == nil {
-		// 无配置（单测常见）：平台默认开启语义不依赖 cfg，仍返回 true。
-		// 与 WorkBuddyCreditsService.workbuddyDo 保持一致（cfg==nil 时也默认开启），
-		// 避免「真实出站带指纹、测试不带」的身份不一致。
-		return true
-	}
-	return s.cfg.Gateway.Workbuddy.TLSFingerprintEnabled
+	return platformDefaultTLSFor(account, s.cfg)
 }
 
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 //
-// 防封加固：当账号启用 TLS 指纹时，插件未接管的前提下走 DoWithTLS
-// （OpenAI/Grok/OpenCode 等经本函数的平台共享此路径）。
+// 防封加固：当账号启用 TLS 指纹（或所属平台默认开启，如 WorkBuddy/Trae/Qoder）
+// 时，插件未接管的前提下走 DoWithTLS（OpenAI/Grok/OpenCode 等经本函数的平台
+// 共享此路径）。
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
 	if s == nil || account == nil {
 		return nil, errNilUpstreamRequest

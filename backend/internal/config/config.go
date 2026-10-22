@@ -1243,9 +1243,12 @@ type GatewayWorkbuddyConfig struct {
 // 先 GET /sash/api/v1/me/campaigns 拿到本轮 CLAIMABLE 的 campaignId，再 POST
 // 该 id 的 /claim。上游对同一轮重复领取幂等（replayed=true、不再发钱），所以
 // 多实例部署无需分布式锁。
+//
+// 触发模型与 WorkBuddy 对齐：hours 列表里的每个整点打开一个「执行窗口」，窗口内
+// 逐号推进（不是全量齐发），详见 spread_window_seconds / account_gap_* 三项。
 //   - checkin_enabled: 是否启用每日自动领取（默认 true）
 //   - checkin_hours: 每日领取触发小时（本地时区 0-23，默认 [10, 21]）。活动每天
-//     10:00（UTC+8）开放新一轮，10 点为首发，21 点为兵底重试。
+//     10:00（UTC+8）开放新一轮，10 点为首发，21 点为兜底（只补当天仍未成功的号）。
 //
 // 小时列表缺省/空时用默认值；越界值丢弃；去重后为空（全部非法）视为关闭。
 // 注意：部分账号因官方未写入文档的设备级规则（如同一设备仅一次试用）或企业/团队版
@@ -1253,12 +1256,35 @@ type GatewayWorkbuddyConfig struct {
 type GatewayQoderConfig struct {
 	CheckinEnabled bool  `mapstructure:"checkin_enabled"`
 	CheckinHours   []int `mapstructure:"checkin_hours"`
+
+	// --- 防封错峰参数（语义与 gateway.workbuddy.* 同名项完全一致）---
+	SpreadWindowSeconds  int `mapstructure:"spread_window_seconds"`
+	AccountGapMinSeconds int `mapstructure:"account_gap_min_seconds"`
+	AccountGapMaxSeconds int `mapstructure:"account_gap_max_seconds"`
+
+	// TLSFingerprintEnabled Qoder 出站是否默认启用 TLS 指纹伪装（默认 true）。
+	// 动机与 WorkBuddy 相同：HTTP 头层自称 Qoder 桌面端（cosy-clienttype=10），
+	// 传输层若仍发 Go 标准库 ClientHello 就是两层身份矛盾。
+	TLSFingerprintEnabled bool `mapstructure:"tls_fingerprint_enabled"`
 }
 
 // GatewayTraeConfig holds Trae-specific credits/checkin knobs.
+//
+// 触发模型与 WorkBuddy 对齐：hours 列表里的每个整点打开一个「执行窗口」，窗口内
+// 逐号推进（不是全量齐发），详见 spread_window_seconds / account_gap_* 三项。
 type GatewayTraeConfig struct {
 	CheckinEnabled bool  `mapstructure:"checkin_enabled"`
 	CheckinHours   []int `mapstructure:"checkin_hours"`
+
+	// --- 防封错峰参数（语义与 gateway.workbuddy.* 同名项完全一致）---
+	SpreadWindowSeconds  int `mapstructure:"spread_window_seconds"`
+	AccountGapMinSeconds int `mapstructure:"account_gap_min_seconds"`
+	AccountGapMaxSeconds int `mapstructure:"account_gap_max_seconds"`
+
+	// TLSFingerprintEnabled Trae 出站是否默认启用 TLS 指纹伪装（默认 true）。
+	// 动机与 WorkBuddy 相同：HTTP 头层自称 Trae IDE / VSCode 插件（X-Market-Client-Id
+	// 等一整套），传输层若仍发 Go 标准库 ClientHello 就是两层身份矛盾。
+	TLSFingerprintEnabled bool `mapstructure:"tls_fingerprint_enabled"`
 }
 
 type GatewayLiveConfig struct {
@@ -2615,11 +2641,25 @@ func setDefaults() {
 	viper.SetDefault("gateway.workbuddy.account_gap_max_seconds", 480)
 	// WorkBuddy 出站 TLS 指纹默认开启（与 HTTP 层桌面端身份自洽；账号可显式关闭）。
 	viper.SetDefault("gateway.workbuddy.tls_fingerprint_enabled", true)
-	// Qoder 每日活动 Credits 领取（活动每天 10:00 UTC+8 开放新一轮；默认 10 点首发 + 21 点兵底）。
+	// Qoder 每日活动 Credits 领取（活动每天 10:00 UTC+8 开放新一轮；默认 10 点首发 + 21 点兜底）。
 	viper.SetDefault("gateway.qoder.checkin_enabled", true)
 	viper.SetDefault("gateway.qoder.checkin_hours", []int{10, 21})
+	// Qoder 防封错峰：窗口内逐号推进，账号间 3~8 分钟随机间隔（与 WorkBuddy 同口径）。
+	viper.SetDefault("gateway.qoder.spread_window_seconds", 43200)
+	viper.SetDefault("gateway.qoder.account_gap_min_seconds", 180)
+	viper.SetDefault("gateway.qoder.account_gap_max_seconds", 480)
+	// Qoder 出站 TLS 指纹默认开启（与 HTTP 层桌面端身份自洽；账号可显式关闭）。
+	viper.SetDefault("gateway.qoder.tls_fingerprint_enabled", true)
 	viper.SetDefault("gateway.trae.checkin_enabled", true)
 	viper.SetDefault("gateway.trae.checkin_hours", []int{9, 21})
+	// Trae 防封错峰：窗口内逐号推进，账号间 3~8 分钟随机间隔（与 WorkBuddy 同口径）。
+	// 注意：Trae 单账号签到含 9074 限流重试最坏可达 7 分钟，因此单账号耗时远大于
+	// WorkBuddy；100 个账号在 3~8 分钟间隔下约需 5~13 小时，与 12h 窗口匹配。
+	viper.SetDefault("gateway.trae.spread_window_seconds", 43200)
+	viper.SetDefault("gateway.trae.account_gap_min_seconds", 180)
+	viper.SetDefault("gateway.trae.account_gap_max_seconds", 480)
+	// Trae 出站 TLS 指纹默认开启（与 HTTP 层 IDE/插件身份自洽；账号可显式关闭）。
+	viper.SetDefault("gateway.trae.tls_fingerprint_enabled", true)
 	viper.SetDefault("gateway.image_concurrency.enabled", false)
 	viper.SetDefault("gateway.image_concurrency.max_concurrent_requests", 0)
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)

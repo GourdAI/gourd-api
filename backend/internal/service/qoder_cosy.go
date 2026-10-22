@@ -45,6 +45,14 @@ const (
 
 	// qoderCosyClientType 官方客户端类型号。
 	qoderCosyClientType = "5"
+
+	// qoderUpstreamUserAgent Qoder 各域出站的统一 User-Agent。
+	//
+	// 已根据用户确认：这是 Qoder 上游的路由约定值（不是“没设 UA 而漏出 Go 默认值”）。
+	// chat 域（qoder_headers.go）、jobToken 交换（本文件）、openapi 业务域
+	// （qoder_campaign_service.go）三处必须引用同一常量，避免日后再次出现
+	// “某个域漏设 UA → net/http 自动补 1.1” 这类同源不一致。
+	qoderUpstreamUserAgent = "Go-http-client/2.0"
 )
 
 // qoderCosyStdAlphabet / qoderCosyCustomAlphabet Encode 的字母表映射对：
@@ -442,7 +450,7 @@ func applyQoderJobTokenHeaders(req *http.Request, date, seed string) {
 	req.Header.Set("cosy-version", qoderCosyVersion)
 	req.Header.Set("cosy-clienttype", qoderCosyClientType)
 	req.Header.Set("login-version", "v2")
-	req.Header.Set("user-agent", "Go-http-client/2.0")
+	req.Header.Set("user-agent", qoderUpstreamUserAgent)
 	req.Header.Set("date", date)
 	req.Header.Set("signature", qoderLegacySignature(date))
 	machineID, machineType, machineToken := QoderDeriveMachineID(seed)

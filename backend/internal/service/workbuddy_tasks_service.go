@@ -374,7 +374,8 @@ func (s *WorkBuddyTasksService) Start() {
 			settings := workbuddySpreadSettingsFrom(s.cfg)
 			slog.Info("workbuddy activity task started",
 				"hours", hours, "report_count", workbuddyTasksReportCount(s.cfg),
-				"spread_window", settings.Window.String(),
+				// 打印实际生效窗口（已按相邻触发点间隔夹逼），而非配置原始值。
+				"spread_window", spreadEffectiveWindow(settings.Window, hours).String(),
 				"account_gap_min", settings.GapMin.String(),
 				"account_gap_max", settings.GapMax.String())
 			s.wg.Add(1)
@@ -389,7 +390,8 @@ func (s *WorkBuddyTasksService) Start() {
 			settings := workbuddySpreadSettingsFrom(s.cfg)
 			slog.Info("workbuddy travel task started",
 				"hours", hours,
-				"spread_window", settings.Window.String(),
+				// 同上：打印实际生效窗口。默认 [9,21] 间隔 12h，夹逼后为 11h55m。
+				"spread_window", spreadEffectiveWindow(settings.Window, hours).String(),
 				"account_gap_min", settings.GapMin.String(),
 				"account_gap_max", settings.GapMax.String())
 			s.wg.Add(1)
@@ -410,26 +412,31 @@ func (s *WorkBuddyTasksService) Stop() {
 	s.wg.Wait()
 }
 
-// loop 单个任务的主循环：计算下一触发点 → 等待 → 执行一批，直到停止信号。
+// loop 单个任务的主循环：到点开窗 → 窗口内逐号推进，直到停止信号。
+//
+// 委托给 spreadTriggerLoop：以「上次服务过的触发点」为基准算下一个点，
+// 所以不会因为上一窗口跑满时长而跳过下一个触发点（默认 travel [9,21] + 12h
+// 窗口恰好相等，旧写法必会吞掉 21 点兜底）。
 func (s *WorkBuddyTasksService) loop(hours []int, run func(context.Context)) {
-	for {
-		next := nextWorkbuddyTasksFire(time.Now(), hours)
-		timer := time.NewTimer(time.Until(next))
-		select {
-		case <-timer.C:
-			run(s.batchContext())
-		case <-s.stopCh:
-			timer.Stop()
-			return
-		}
-	}
+	window := s.effectiveWindow(hours)
+	spreadTriggerLoop(s.stopCh, hours, window, "workbuddy-tasks", func() {
+		run(s.batchContext(window))
+	})
+}
+
+// effectiveWindow 返回经「相邻触发点间隔」夹逼后的实际窗口长度。
+func (s *WorkBuddyTasksService) effectiveWindow(hours []int) time.Duration {
+	return spreadEffectiveWindow(workbuddySpreadSettingsFrom(s.cfg).Window, hours)
 }
 
 // batchContext 单批任务的 ctx：独立于 loop 的取消，由 stopCh 与批超时双闸控制。
 //
 // 超时改为「错峰窗口 + 1 小时硬上限」：真正节奏由窗口决定，这个 ctx 仅防卡死。
-func (s *WorkBuddyTasksService) batchContext() context.Context {
-	window := workbuddySpreadSettingsFrom(s.cfg).Window
+// window 由调用方传入（已夹到相邻触发点间隔以内），保证批超时不会长于窗口语义。
+func (s *WorkBuddyTasksService) batchContext(window time.Duration) context.Context {
+	if window <= 0 {
+		window = workbuddySpreadSettingsFrom(s.cfg).Window
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), window+time.Hour)
 	go func() {
 		defer cancel()
@@ -485,19 +492,11 @@ func workbuddyTasksReportCount(cfg *config.Config) int {
 	return cfg.Gateway.Workbuddy.ActivityReportCount
 }
 
-// nextWorkbuddyTasksFire 返回 now 之后最近的整点触发时间（hours 为本地小时 0-23）。
+// nextWorkbuddyTasksFire 返回 now 之后最近的整点触发时间。
+//
+// 实现委托给共享的 nextSpreadFire（四个平台/任务同源，避免语义漂移）。
 func nextWorkbuddyTasksFire(now time.Time, hours []int) time.Time {
-	var earliest time.Time
-	for _, h := range hours {
-		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
-		if !t.After(now) {
-			t = t.Add(24 * time.Hour)
-		}
-		if earliest.IsZero() || t.Before(earliest) {
-			earliest = t
-		}
-	}
-	return earliest
+	return nextSpreadFire(now, hours)
 }
 
 // workbuddyTasksRequest 发送单次上游请求并解信封（billing/chat 双域共用）。
@@ -1522,10 +1521,17 @@ func (s *WorkBuddyTasksService) runBatch(ctx context.Context, travel bool) {
 		candidates = append(candidates, account)
 	}
 
-	taskLabel := map[bool]string{true: "travel", false: "activity"}[travel]
-	runner := workbuddySpreadRunner{
+	// 修复：loop 侧已用 effectiveWindow 夹逼（见 loop），但本函数自己也必须夹一次。
+	// 原因：runBatch 既由 loop 驱动（传入 ctx 已按夹逼后窗口 +1h 构造），也可能被
+	// 测试/手动直接调用；若这里用未夹逼的 settings.Window，runner 的 deadline
+	// 会拖到 12h（默认 [9,21] 间隔恰好 12h），把 spreadFireGapMargin 留的 5 分钟
+	// 余量吃光，与三个 checkin 服务的 runOnce 语义也不一致（它们都在内部夹逼）。
+	kind := map[bool]string{true: "travel", false: "activity"}[travel]
+	window := s.effectiveWindow(workbuddyTasksHours(s.cfg, kind))
+	taskLabel := kind
+	runner := spreadRunner{
 		label:  taskLabel,
-		window: settings.Window,
+		window: window,
 		gapMin: settings.GapMin,
 		gapMax: settings.GapMax,
 	}
@@ -1534,7 +1540,7 @@ func (s *WorkBuddyTasksService) runBatch(ctx context.Context, travel bool) {
 		skip = workbuddyTravelAlreadyDoneToday
 	}
 	stats := runner.run(ctx, s.stopCh, candidates, skip,
-		func(runCtx context.Context, account *Account) workbuddyRunOutcome {
+		func(runCtx context.Context, account *Account) spreadRunOutcome {
 			// 必须与手动入口（RunActivity/RunTravel）共用同一 singleflight key：否则
 			// 「定时批次」与「管理员点击」之间、activity 与 travel 两个 loop 之间零互斥，
 			// 同账号同时刻会双发 redeem/派出的领奖（旧实现里只有手动包了 flight）。
@@ -1542,23 +1548,23 @@ func (s *WorkBuddyTasksService) runBatch(ctx context.Context, travel bool) {
 				result := s.runTravelFlight(runCtx, account)
 				switch {
 				case result == nil:
-					return workbuddyRunSkipped // ctx 已取消：不计失败，剩余账号下轮再跑
+					return spreadRunSkipped // ctx 已取消：不计失败，剩余账号下轮再跑
 				case result.Success:
-					return workbuddyRunOK
+					return spreadRunOK
 				case result.Detail != "":
-					return workbuddyRunFail
+					return spreadRunFail
 				default:
-					return workbuddyRunSkipped // traveling / 无猫且领养未成等确定态
+					return spreadRunSkipped // traveling / 无猫且领养未成等确定态
 				}
 			}
 			result := s.runActivityFlight(runCtx, account)
 			switch {
 			case result == nil:
-				return workbuddyRunSkipped
+				return spreadRunSkipped
 			case result.Success:
-				return workbuddyRunOK
+				return spreadRunOK
 			default:
-				return workbuddyRunFail
+				return spreadRunFail
 			}
 		})
 

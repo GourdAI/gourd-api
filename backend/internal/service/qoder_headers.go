@@ -76,7 +76,7 @@ func applyQoderChatHeaders(req *http.Request, creds QoderCredentials, securityTo
 	req.Header.Set("cosy-machineid", machineID)
 	req.Header.Set("cosy-machinetoken", machineToken)
 	req.Header.Set("login-version", "v2")
-	req.Header.Set("user-agent", "Go-http-client/2.0")
+	req.Header.Set("user-agent", qoderUpstreamUserAgent)
 	req.Header.Set("cosy-scene", "assistant")
 	req.Header.Set("cosy-business-product", "ide")
 	req.Header.Set("cosy-business-type", "agent")

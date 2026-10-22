@@ -165,20 +165,14 @@ type AccountTestService struct {
 
 // resolveTLSProfileForAccount 返回账号的 TLS Profile；服务未注入时返回 nil（降级为普通 Do）。
 //
-// 平台默认开启：WorkBuddy 账号走平台默认 TLS 指纹（与真实出站路径 resolveOpenAIUpstreamTLSProfile
-// 一致），避免「测试通过但真实请求被识别」。其它平台语义不变（仍为 opt-in）。
+// 平台默认开启：WorkBuddy / Trae / Qoder 走平台默认 TLS 指纹（与真实出站路径
+// resolveOpenAIUpstreamTLSProfile 共用同一判定函数 platformDefaultTLSFor），避免
+// 「测试通过但真实请求被识别」的身份不一致。其它平台语义不变（仍为 opt-in）。
 func (s *AccountTestService) resolveTLSProfileForAccount(account *Account) *tlsfingerprint.Profile {
 	if s == nil || s.tlsFPProfileService == nil {
 		return nil
 	}
-	platformDefault := false
-	if account != nil && account.IsWorkbuddy() {
-		platformDefault = true
-		if s.cfg != nil {
-			platformDefault = s.cfg.Gateway.Workbuddy.TLSFingerprintEnabled
-		}
-	}
-	return resolvePlatformDefaultTLSProfile(s.tlsFPProfileService, account, platformDefault)
+	return resolvePlatformDefaultTLSProfile(s.tlsFPProfileService, account, platformDefaultTLSFor(account, s.cfg))
 }
 
 func (s *AccountTestService) SetSettingService(settingService *SettingService) {

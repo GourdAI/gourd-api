@@ -541,10 +541,18 @@ func (s *TraeCreditsService) SetTLSFingerprintProfileService(svc *TLSFingerprint
 	}
 }
 
-// traeDo 是 UG 域出站分派：账号启用了 TLS 指纹则走 DoWithTLS，否则保持普通 Do。
+// traeDo 是 UG 域出站分派（签到/余额/换票/任务）。
+//
+// 平台默认开启 TLS 指纹（gateway.trae.tls_fingerprint_enabled，默认 true）：
+// HTTP 头层已自称 Trae IDE / VSCode 插件（User-Agent: Trae/<ver> 或
+// "VSCode <ver> (TRAE SOLO CN)"、X-Market-Client-Id、X-Lgw-Req-Sdk-Type 等一整套），
+// 传输层若仍发 Go 标准库 ClientHello 就是两层身份自相矛盾，是 JA3/JA4 检测里最
+// 明确的自动化标记。账号 Extra 显式 enable_tls_fingerprint=false 仍优先。
+//
 // 超时/取消继续由 req 自身的 context 驱动（与改动前一致，本层不另外派生 ctx）。
 func (s *TraeCreditsService) traeDo(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
-	return doUpstreamWithOptionalTLSConcurrency(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account, maxInt(account.Concurrency, 1))
+	return doUpstreamWithPlatformDefaultTLS(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account,
+		maxInt(account.Concurrency, 1), platformDefaultTLSFor(account, s.cfg))
 }
 
 // refreshTraeBillingToken UG 路径的换票：与网关 refreshTraeToken 同语义，传输层换成

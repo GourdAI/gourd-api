@@ -78,7 +78,7 @@ func workbuddySchedulingOKResponse() *http.Response {
 // TestWorkbuddyCheckinRunOnceSkipsAccountsAlreadyDoneToday
 // 反向护栏目标：当日已签到成功的号在 21 点兜底窗口不得再打上游。
 func TestWorkbuddyCheckinRunOnceSkipsAccountsAlreadyDoneToday(t *testing.T) {
-	workbuddySpreadZeroWaits(t)
+	spreadZeroWaits(t)
 
 	today := timezone.Now().Format("2006-01-02")
 	done := Account{
@@ -117,7 +117,7 @@ func TestWorkbuddyCheckinRunOnceSkipsAccountsAlreadyDoneToday(t *testing.T) {
 //
 // 这是最锐利的一条：旧实现在这种场景下会打 2 个号 × N 个请求，新实现必须一次都不打。
 func TestWorkbuddyCheckinRunOnceSkipsAllWhenEveryoneDone(t *testing.T) {
-	workbuddySpreadZeroWaits(t)
+	spreadZeroWaits(t)
 
 	today := timezone.Now().Format("2006-01-02")
 	newDone := func(id int64) Account {
@@ -148,7 +148,7 @@ func TestWorkbuddyCheckinRunOnceSkipsAllWhenEveryoneDone(t *testing.T) {
 // TestWorkbuddyTasksRunBatchSkipsActivityDoneToday 活跃上报的当日已完成短路接线。
 func TestWorkbuddyTasksRunBatchSkipsActivityDoneToday(t *testing.T) {
 	workbuddyTasksFastDelays(t)
-	workbuddySpreadZeroWaits(t)
+	spreadZeroWaits(t)
 
 	today := workbuddyTasksToday(time.Now())
 	done := Account{
@@ -179,7 +179,7 @@ func TestWorkbuddyTasksRunBatchSkipsActivityDoneToday(t *testing.T) {
 // TestWorkbuddyTasksRunBatchSkipsTravelClaimedToday 旅行的当日已领奖短路接线。
 func TestWorkbuddyTasksRunBatchSkipsTravelClaimedToday(t *testing.T) {
 	workbuddyTasksFastDelays(t)
-	workbuddySpreadZeroWaits(t)
+	spreadZeroWaits(t)
 
 	today := workbuddyTasksToday(time.Now())
 	claimed := Account{
@@ -200,4 +200,101 @@ func TestWorkbuddyTasksRunBatchSkipsTravelClaimedToday(t *testing.T) {
 
 	require.Zero(t, atomic.LoadInt64(&upstream.doCalls),
 		"当日已领奖的号不得再打 buddy/info + travel/status（旧实现每趟都打）")
+}
+
+// spreadRecordWindow 把 spreadGapFn 换成「记录 runner 实际使用的窗口并零等待」的版本。
+//
+// 为何靠 spreadGapFn 观测：spreadRunner 是值类型、字段私有，外部无法直接读到它内部的
+// window；而 gapFn 的唯一入参正是 runner 归一后的 spreadSettings（含 Window）。
+// 因此这是目前唯一能在**接线层**证明「runOnce/runBatch 传的是夹逼后窗口」的观测点。
+//
+// 【纪律】同样改写进程级可替换函数，引用它的用例一律不得加 t.Parallel()。
+func spreadRecordWindow(t *testing.T) *time.Duration {
+	t.Helper()
+	got := new(time.Duration)
+	oldGap := spreadGapFn
+	spreadGapFn = func(s spreadSettings) time.Duration {
+		*got = s.Window
+		return 0
+	}
+	t.Cleanup(func() { spreadGapFn = oldGap })
+	return got
+}
+
+// TestWorkbuddyTasksRunBatchUsesClampedWindow runBatch 必须把窗口夹到触发间隔以内。
+//
+// 缺陷形态（本轮 code review 发现）：loop 侧已用 effectiveWindow 夹逼，但 runBatch
+// 里 runner 用的仍是未夹逼的 settings.Window。默认 travel [9,21] 间隔恰好 12h、
+// 窗口也是 12h ⇒ runner 的 deadline 恰好落在 21:00:00，把 spreadFireGapMargin
+// 留的 5 分钟余量完全吃掉；三个 checkin 服务的 runOnce 都在内部夹逼，只有这里没有。
+//
+// 反向护栏：把 runBatch 的 window 改回 settings.Window，本条必须 FAIL。
+func TestWorkbuddyTasksRunBatchUsesClampedWindow(t *testing.T) {
+	workbuddyTasksFastDelays(t)
+	spreadZeroWaits(t)
+	gotWindow := spreadRecordWindow(t)
+
+	// 两个都未完成的号，确保 runner 真的会调用到 gapFn（executed>0 才取间隔）。
+	newTodo := func(id int64) Account {
+		return Account{
+			ID:       id,
+			Platform: PlatformWorkbuddy,
+			Status:   "active",
+			Credentials: map[string]any{
+				"access_token": "t", "realm": "cn",
+				"base_url": "https://example.com", "billing_base_url": "https://example.com",
+			},
+		}
+	}
+	repo := &workbuddyListFakeRepo{accounts: []Account{newTodo(501), newTodo(502)}}
+	upstream := &countHTTPUpstream{}
+	cfg := workbuddyTasksTestConfig(1)
+	// 窗口配成 12h（= 默认 [9,21] 的触发间隔），夹逼后应为 11h55m。
+	cfg.Gateway.Workbuddy.SpreadWindowSeconds = 43200
+
+	NewWorkBuddyTasksService(newWorkbuddyCreditsTestService(upstream, repo), repo, cfg).
+		runBatch(context.Background(), true)
+
+	hours := workbuddyTasksHours(cfg, "travel")
+	want := spreadEffectiveWindow(12*time.Hour, hours)
+	require.Equal(t, want, *gotWindow,
+		"runBatch 必须使用夹逼后的窗口（否贝 9 点窗口会跑过 21 点、吃掉兜底余量）")
+	require.Less(t, *gotWindow, 12*time.Hour,
+		"窗口必须严格小于触发间隔（默认 [9,21] 间隔 12h）")
+	require.Equal(t, 12*time.Hour-spreadFireGapMargin, *gotWindow)
+}
+
+// TestWorkbuddyCheckinRunOnceUsesClampedWindow 签到 runOnce 的同一道夹逼（对照）。
+//
+// 本条与上一条同时存在的原因：四个周期任务的窗口夹逼必须在**同一处语义**上，
+// 只测其中一条无法防住「新增任务忘了夹逼」这类回归。
+func TestWorkbuddyCheckinRunOnceUsesClampedWindow(t *testing.T) {
+	spreadZeroWaits(t)
+	gotWindow := spreadRecordWindow(t)
+
+	today := timezone.Now().Format("2006-01-02")
+	// 一个已完成（验证 skip 不消耗间隔）、一个待完成。
+	done := Account{
+		ID: 601, Platform: PlatformWorkbuddy, Status: "active",
+		Credentials: map[string]any{"access_token": "t", "base_url": "https://example.com", "billing_base_url": "https://example.com"},
+		Extra: map[string]any{
+			workbuddyCheckinExtraKey: map[string]any{"date": today, "status": WorkBuddyCheckinStatusOK},
+		},
+	}
+	todo1 := Account{ID: 602, Platform: PlatformWorkbuddy, Status: "active",
+		Credentials: map[string]any{"access_token": "t", "base_url": "https://example.com", "billing_base_url": "https://example.com"}}
+	todo2 := Account{ID: 603, Platform: PlatformWorkbuddy, Status: "active",
+		Credentials: map[string]any{"access_token": "t", "base_url": "https://example.com", "billing_base_url": "https://example.com"}}
+
+	repo := &workbuddyListFakeRepo{accounts: []Account{done, todo1, todo2}}
+	upstream := &countHTTPUpstream{}
+	cfg := &config.Config{}
+	cfg.Gateway.Workbuddy.SpreadWindowSeconds = 43200
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+
+	NewWorkBuddyCheckinService(newWorkbuddyCreditsTestService(upstream, repo), repo, cfg).runOnce()
+
+	want := spreadEffectiveWindow(12*time.Hour, workbuddyCheckinHours(cfg))
+	require.Equal(t, want, *gotWindow, "签到 runOnce 必须使用夹逼后的窗口")
 }

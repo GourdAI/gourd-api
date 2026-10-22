@@ -815,9 +815,9 @@ func TestQoderCheckinServiceRunOnceFiltersAccounts(t *testing.T) {
 
 	checkin := NewQoderCheckinService(svc, repo, &config.Config{})
 	t.Cleanup(checkin.Stop)
-	restore := qoderCheckinAccountDelay
-	qoderCheckinAccountDelay = 0 // 测试免等待
-	t.Cleanup(func() { qoderCheckinAccountDelay = restore })
+	// 错峰等待置 0（改造后账号间隔不再是固定值，而是窗口内随机区间）。
+	// 【不得加 t.Parallel()】本用例调用 spreadZeroWaits，它改写进程级可替换函数。
+	spreadZeroWaits(t)
 
 	checkin.runOnce()
 
@@ -827,6 +827,92 @@ func TestQoderCheckinServiceRunOnceFiltersAccounts(t *testing.T) {
 		"/sash/api/v1/me/campaigns/01a0cd40-ea93-75c3-be36-23c22a84e619/claim",
 		"/api/v2/quota/usage",
 	}, upstream.paths())
+}
+
+// 【本次改造的核心】本轮已领取成功的号必须被跳过，不得重打上游。
+//
+// 改造前 21 点兜底窗口会把 10 点已领的号重新 GET campaigns，且已领分支还会
+// 额外刷一次 quota/usage（refreshQoderCreditsAfterCheckin），每号每晚多花 2 个 GET。
+// 这里锁的就是「已成功 → 零上游请求」。
+//
+// 【不得加 t.Parallel()】本用例调用 spreadZeroWaits。
+func TestQoderCheckinServiceRunOnceSkipsAlreadyDoneToday(t *testing.T) {
+	script := &qoderScript{
+		quotaBody:    qoderQuotaBody,
+		campaignBody: qoderCampaignsBody(qoderClaimStatusClaimable, qoderFutureEndAt(), 100),
+		claimBody:    qoderClaimFreshBody,
+	}
+	server, upstream := newQoderCampaignServer(t, script)
+	repo := &qoderCampaignFakeRepo{}
+	svc := newQoderCreditsTestService(repo, upstream, server.URL)
+
+	round := qoderCampaignRoundDate(time.Now())
+	fresh := qoderCreditsTestAccount(51, nil)
+	done := qoderCreditsTestAccount(52, nil)
+	done.Extra = map[string]any{qoderCheckinExtraKey: map[string]any{
+		"round": round, "status": QoderCheckinStatusOK,
+	}}
+	alreadySnap := qoderCreditsTestAccount(53, nil)
+	alreadySnap.Extra = map[string]any{qoderCheckinExtraKey: map[string]any{
+		"round": round, "status": QoderCheckinStatusAlready,
+	}}
+	// 本轮失败必须重试（否则兜底窗口就失去意义）。
+	failed := qoderCreditsTestAccount(54, nil)
+	failed.Extra = map[string]any{qoderCheckinExtraKey: map[string]any{
+		"round": round, "status": QoderCheckinStatusFail,
+	}}
+	// 上一轮成功必须重新领取（新的一轮）。
+	stale := qoderCreditsTestAccount(55, nil)
+	stale.Extra = map[string]any{qoderCheckinExtraKey: map[string]any{
+		"round":  qoderCampaignRoundDate(time.Now().AddDate(0, 0, -2)),
+		"status": QoderCheckinStatusOK,
+	}}
+
+	repo.accounts = []Account{*fresh, *done, *alreadySnap, *failed, *stale}
+	repo.accountsByID = map[int64]*Account{51: fresh, 52: done, 53: alreadySnap, 54: failed, 55: stale}
+
+	checkin := NewQoderCheckinService(svc, repo, &config.Config{})
+	t.Cleanup(checkin.Stop)
+	spreadZeroWaits(t)
+
+	checkin.runOnce()
+
+	// 只有 fresh / failed / stale 三个号能发 claim，故 postCount 应为 3。
+	// done / alreadySnap 若被误跑，会各多 1 次 claim + 额外 quota 刷新。
+	require.Equal(t, 3, upstream.postCount(),
+		"当日已 ok/already 的号不得重打上游；fail/跨轮必须重试")
+}
+
+// 接线守卫：runOnce 必须真的把 skip 谓词传进 runner。
+//
+// 反向护栏用例——把 runOnce 里的 skip 参数改成 nil 后必须 FAIL。
+//
+// 【不得加 t.Parallel()】本用例调用 spreadZeroWaits。
+func TestQoderCheckinServiceRunOnceWiresSkipPredicate(t *testing.T) {
+	script := &qoderScript{
+		quotaBody:    qoderQuotaBody,
+		campaignBody: qoderCampaignsBody(qoderClaimStatusClaimable, qoderFutureEndAt(), 100),
+		claimBody:    qoderClaimFreshBody,
+	}
+	server, upstream := newQoderCampaignServer(t, script)
+	repo := &qoderCampaignFakeRepo{}
+	svc := newQoderCreditsTestService(repo, upstream, server.URL)
+
+	done := qoderCreditsTestAccount(61, nil)
+	done.Extra = map[string]any{qoderCheckinExtraKey: map[string]any{
+		"round": qoderCampaignRoundDate(time.Now()), "status": QoderCheckinStatusOK,
+	}}
+	repo.accounts = []Account{*done}
+	repo.accountsByID = map[int64]*Account{61: done}
+
+	checkin := NewQoderCheckinService(svc, repo, &config.Config{})
+	t.Cleanup(checkin.Stop)
+	spreadZeroWaits(t)
+
+	checkin.runOnce()
+
+	require.Zero(t, upstream.postCount(),
+		"runOnce 必须接上 skip 谓词，不得对已领取的号发任何写请求")
 }
 
 // ---------------------------------------------------------------------------

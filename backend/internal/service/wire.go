@@ -399,7 +399,8 @@ func ProvideQoderCreditsService(
 
 // ProvideQoderCheckinService 构造并启动 Qoder 每日活动 Credits 领取任务。
 // 触发小时取自 gateway.qoder.checkin_hours（默认 [10,21]，对齐活动 10:00 开放的
-// 轮次口径）；checkin_enabled=false 或小时列表全非法时不启动。
+// 轮次口径）；错峰参数取自 gateway.qoder.spread_window_seconds / account_gap_*。
+// checkin_enabled=false 或小时列表全非法时不启动。
 func ProvideQoderCheckinService(
 	creditsService *QoderCreditsService,
 	accountRepo AccountRepository,
@@ -425,8 +426,10 @@ func ProvideTraeCreditsService(
 }
 
 // ProvideTraeCheckinService 构造并启动 Trae 每日签到任务。
-// 触发小时取自 gateway.trae.checkin_hours（默认 [9,21]：9 点首发、21 点兵底——
+// 触发小时取自 gateway.trae.checkin_hours（默认 [9,21]：9 点首发、21 点兜底——
 // 上午因网络抖动/9074 失败的账号当晚还有机会，上游幂等保证不会重复领取）；
+// 错峰参数取自 gateway.trae.spread_window_seconds / account_gap_*（当日已签到成功的
+// 账号在 21 点窗口直接跳过，不再重走 status → claim 只为换一句 9095）。
 // checkin_enabled=false 或小时列表全非法时不启动。
 func ProvideTraeCheckinService(
 	creditsService *TraeCreditsService,

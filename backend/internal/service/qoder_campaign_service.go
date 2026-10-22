@@ -368,10 +368,21 @@ func (s *QoderCreditsService) SetTLSFingerprintProfileService(svc *TLSFingerprin
 	}
 }
 
-// qoderDo 是 openapi 域出站分派：账号启用 TLS 指纹则走 DoWithTLS，否则保持普通 Do。
+// qoderDo 是 openapi 业务域（签到/余额/领取/换票）出站分派。
+//
+// 平台默认开启 TLS 指纹（gateway.qoder.tls_fingerprint_enabled，默认 true）：
+// HTTP 头层已自称 Qoder 桌面端（cosy-clienttype=10、cosy-machineos、
+// cosy-machinehostname、cosy-version 等一整套），传输层若仍发 Go 标准库 ClientHello
+// 就是两层身份自相矛盾，是 JA3/JA4 检测里最明确的自动化标记。
+// 账号 Extra 显式 enable_tls_fingerprint=false 仍优先。
+//
 // 超时/取消由 req 自身 context 驱动；并发度保持历史口径 maxInt(Concurrency,1)。
 func (s *QoderCreditsService) qoderDo(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
-	return doUpstreamWithOptionalTLSConcurrency(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account, maxInt(account.Concurrency, 1))
+	// —— 修复：四家服务各自从 cfg 算 platformDefault，会出现「聊天域只看
+	// cfg、credits 域 cfg==nil 默认开」这类差异。改为共用 platformDefaultTLSFor：
+	// 平台默认值只有一个来源，聊天 / 辅助面 / 账号测试三条路径口径必一致。
+	return doUpstreamWithPlatformDefaultTLS(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account,
+		maxInt(account.Concurrency, 1), platformDefaultTLSFor(account, s.cfg))
 }
 
 // qoderCampaignError openapi 业务错误（HTTP >= 400）。与传输层/解析层错误严格
@@ -875,6 +886,12 @@ func (s *QoderCreditsService) qoderOpenAPIRequest(ctx context.Context, account *
 // applyQoderCampaignHeaders 补齐 openapi 业务接口的桌面端身份头。
 // 注意：这里刻意不复用 applyQoderChatHeaders——那套带 COSY 签名且 clientType=5，
 // 服务端按 5 判定为 IDE 而不下发任何活动（实测）。
+//
+// user-agent **必须显式设置**：不设时 net/http 会自动写 Go 默认 UA（HTTP/1.1 时
+// Go-http-client/1.1，HTTP/2 时 2.0），与同账号 chat 域显式声明的 2.0 不一致，
+// 且“漏 Go 运行时而默认 UA”本身就是自动化特征（参考 ollama_cloud_usage_test.go
+// 中对同一问题的断言）。已根据用户确认：Go-http-client/2.0 是 Qoder 各域的路由约定值，
+// 故此处统一为 2.0（与 qoder_headers.go / qoder_cosy.go 同值）。
 func applyQoderCampaignHeaders(req *http.Request, token string) {
 	req.Header.Set("accept", "application/json")
 	req.Header.Set("authorization", "Bearer "+token)
@@ -882,6 +899,8 @@ func applyQoderCampaignHeaders(req *http.Request, token string) {
 	req.Header.Set("cosy-version", qoderCampaignClientVersion)
 	req.Header.Set("cosy-machineos", qoderCampaignMachineOS)
 	req.Header.Set("cosy-machinehostname", qoderCampaignMachineHostname)
+	// 显式 UA：不得依赖 net/http 自动补的 Go 运行时默认值（见函数头注释）。
+	req.Header.Set("user-agent", qoderUpstreamUserAgent)
 	if req.Header.Get("content-type") == "" {
 		req.Header.Set("content-type", "application/json")
 	}

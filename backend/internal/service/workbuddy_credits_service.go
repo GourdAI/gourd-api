@@ -174,11 +174,8 @@ func (s *WorkBuddyCreditsService) SetTLSFingerprintProfileService(svc *TLSFinger
 // 改为默认开启（gateway.workbuddy.tls_fingerprint_enabled 可关），账号 Extra 显式
 // enable_tls_fingerprint=false 仍然优先（管理员意图不被平台默认吞掉）。
 func (s *WorkBuddyCreditsService) workbuddyDo(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
-	platformDefault := true
-	if s.cfg != nil {
-		platformDefault = s.cfg.Gateway.Workbuddy.TLSFingerprintEnabled
-	}
-	return doUpstreamWithPlatformDefaultTLS(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account, maxInt(account.Concurrency, 1), platformDefault)
+	return doUpstreamWithPlatformDefaultTLS(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account,
+		maxInt(account.Concurrency, 1), platformDefaultTLSFor(account, s.cfg))
 }
 
 // NewWorkBuddyCreditsService 构造 WorkBuddy 积分/签到服务。
