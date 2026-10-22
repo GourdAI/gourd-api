@@ -2,15 +2,16 @@ package service
 
 // workbuddy_checkin_service.go WorkBuddy 每日签到周期任务。
 //
-// 行为（对齐 workbuddy2api/internal/scheduler 的 CheckinAll，默认每天 9:00 / 21:00
-// 各触发一次；21:00 那次主要作兜底——上午因网络抖动/token 问题失败后当晚还有机会，
-// 重复签到上游幂等返回「今天已签到」，不会重复领取）：
+// 行为（改造后：窗口内逐号推进）：
 //
-//  1. 到点后枚举全部 WorkBuddy 账号（跳过禁用账号、国际版账号与无凭据账号）；
-//  2. 逐个串行执行签到（token 预刷新 → daily-checkin → 积分刷新 → 落快照），
-//     账号之间固定间隔 workbuddyCheckinAccountDelay，避免同一时间批量请求多账号
-//     被上游风控识别（用户明确要求的防封控纪律）；
-//  3. 汇总日志（ok/already/fail/skipped）。
+//  1. hours 列表里的每个整点打开一个长度为 spread_window_seconds 的执行窗口；
+//  2. 窗口内逐个枚举 WorkBuddy 账号（跳过禁用账号、国际版账号、企业成员与无凭据账号）；
+//  3. **当日已签到成功（ok/already）的账号直接跳过**——旧实现只靠上游幂等返回「今天已签到」，
+//     等于把当天已完成的号在 21 点兜底那趟全部重打一遍上游，白白多暴露一倍的请求；
+//  4. 账号之间取 [account_gap_min_seconds, account_gap_max_seconds] 区间内的随机间隔，
+//     而不是固定值（固定节律本身就是自动化特征）；
+//  5. 跑完即收；窗口用尽仍未轮到的账号留给下一个窗口——於是「晚上兜底」的语义从
+//     「全量重跑」变成「只补没签到成功的」。
 //
 // 触发时刻按服务端本地时区（config.timezone 已在启动时落到 time.Local）整点判定；
 // 每次到点先算下一个触发点再等待，进程跨日/跨重启自然对齐。与 singleflight 配合：
@@ -36,14 +37,15 @@ type WorkBuddyCheckinService struct {
 	wg          sync.WaitGroup
 }
 
-// workbuddyCheckinBatchTimeout 单批签到的总时长上限（大批量账号下限保护）。
-const workbuddyCheckinBatchTimeout = 30 * time.Minute
+// workbuddyCheckinBatchTimeout 单批签到的**硬上限**（防呆）。
+//
+// 注意：真正的节奏由错峰窗口（spread_window_seconds）决定，本值只是防止某个号
+// 卡死在 DLL/代理层时整批永不退出；取窗口长度 + 1 小时，保证正常窗口不会
+// 被这个兜底超时提前截断。
+const workbuddyCheckinBatchTimeoutFloor = time.Hour
 
-// workbuddyDefaultCheckinHours 默认签到小时（本地时区）：9 点 + 21 点兜底。
+// workbuddyDefaultCheckinHours 默认签到小时（本地时区）：9 点 + 21 点兜底窗口。
 var workbuddyDefaultCheckinHours = []int{9, 21}
-
-// workbuddyCheckinAccountDelay 账号间签到间隔（防批量风控；测试可置 0）。
-var workbuddyCheckinAccountDelay = 2 * time.Second
 
 // NewWorkBuddyCheckinService 构造每日签到任务。
 func NewWorkBuddyCheckinService(
@@ -98,7 +100,10 @@ func (s *WorkBuddyCheckinService) Start() {
 		return
 	}
 	slog.Info("workbuddy checkin service started",
-		"hours", hours, "account_delay", workbuddyCheckinAccountDelay.String())
+		"hours", hours,
+		"spread_window", workbuddySpreadSettingsFrom(s.cfg).Window.String(),
+		"account_gap_min", workbuddySpreadSettingsFrom(s.cfg).GapMin.String(),
+		"account_gap_max", workbuddySpreadSettingsFrom(s.cfg).GapMax.String())
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -115,7 +120,7 @@ func (s *WorkBuddyCheckinService) Stop() {
 	s.wg.Wait()
 }
 
-// loop 主循环：计算下一触发点 → 等待 → 执行一批签到，直到停止信号。
+// loop 主循环：计算下一触发点 → 等待 → 开启一个执行窗口逐号推进，直到停止信号。
 func (s *WorkBuddyCheckinService) loop(hours []int) {
 	for {
 		next := nextWorkbuddyCheckinFire(time.Now(), hours)
@@ -145,9 +150,27 @@ func nextWorkbuddyCheckinFire(now time.Time, hours []int) time.Time {
 	return earliest
 }
 
-// runOnce 执行一批签到：枚举全部 WorkBuddy 账号，串行逐个签到（账号间固定间隔）。
+// workbuddyCheckinAlreadyDoneToday 报告该账号当日是否已签到成功（ok/already）。
+//
+// 用于「晚上兜底窗口不再重打已成功的号」这个短路。判据只用本地快照（免探测），
+// 与前端展示的「今日已签到」同源（workbuddyCheckinSnapshot 的 date 已按配置时区写入，
+// 且 shouldKeepWorkbuddyCheckinSnapshot 保证当日成功后不会被后续失败覆盖）。
+// 快照缺失（新号/刚上线）一律返回 false——宁可多试一次，不可漏领。
+func workbuddyCheckinAlreadyDoneToday(account *Account) bool {
+	status := workbuddyCheckinStatusToday(account)
+	return status == WorkBuddyCheckinStatusOK || status == WorkBuddyCheckinStatusAlready
+}
+
+// runOnce 开启一个执行窗口，在窗口内逐号推进签到。
+//
+// 与旧实现的差别（均已实证）：
+//   - 不再整点全量齐发；窗口内随机起点 + 随机间隔推进；
+//   - 当日已成功的号直接跳过，不再重打上游只为了拿一句「今天已签到」；
+//   - 窗口用尽仍未轮到的号留给下个窗口（Remaining 写进收尾日志，可观测）。
 func (s *WorkBuddyCheckinService) runOnce() {
-	ctx, cancel := context.WithTimeout(context.Background(), workbuddyCheckinBatchTimeout)
+	settings := workbuddySpreadSettingsFrom(s.cfg)
+	// 窗口级 ctx：窗口长度 + 1 小时硬上限（仅防卡死，正常窗口不会撞到）。
+	ctx, cancel := context.WithTimeout(context.Background(), settings.Window+workbuddyCheckinBatchTimeoutFloor)
 	defer cancel()
 
 	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformWorkbuddy)
@@ -155,62 +178,62 @@ func (s *WorkBuddyCheckinService) runOnce() {
 		slog.Warn("workbuddy checkin list accounts failed", "error", err)
 		return
 	}
-	var okN, alreadyN, failN, skipN int
-	attempted := 0
+	// 门控与旧实现同口径（禁用/非 workbuddy/国际版/企业成员/无凭据），在进入窗口前一次性过滤完，
+	// 避免把永远不会执行的号排进候选列表后白白占用错峰间隔。
+	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
-		if ctx.Err() != nil {
-			break
-		}
 		account := &accounts[i]
-		// 禁用账号不参与（签到不救禁用号）；国际版无签到体系，直接跳过。
 		if !account.IsWorkbuddy() || !account.IsActive() {
-			skipN++
 			continue
 		}
 		if account.GetWorkbuddyRealm() != "cn" {
-			skipN++
 			continue
 		}
 		creds := account.GetWorkbuddyCredentials()
-		// 企业成员账号无个人签到体系（与 CheckinForAccount 的 D5 门控同口径），
-		// 在本层直接跳过：不占用账号间隔，也不产生无意义的快照写入。
+		// 企业成员账号无个人签到体系（与 CheckinForAccount 的 D5 门控同口径）。
 		if strings.TrimSpace(creds.EnterpriseID) != "" {
-			skipN++
 			continue
 		}
 		if strings.TrimSpace(creds.AccessToken) == "" && strings.TrimSpace(creds.RefreshToken) == "" {
-			skipN++
 			continue
 		}
-		result := s.credits.CheckinForAccount(ctx, account)
-		attempted++
-		switch result.Status {
-		case WorkBuddyCheckinStatusOK:
-			okN++
-		case WorkBuddyCheckinStatusAlready:
-			alreadyN++
-		default:
-			failN++
-			slog.Warn("workbuddy checkin failed",
-				"account_id", account.ID, "status", result.Status, "detail", result.Detail)
-		}
-		// 账号间固定间隔：避免同一时间批量请求多账号被上游风控识别。
-		if workbuddyCheckinAccountDelay > 0 && i < len(accounts)-1 {
-			timer := time.NewTimer(workbuddyCheckinAccountDelay)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				timer.Stop()
-			case <-s.stopCh:
-				timer.Stop()
-				slog.Info("workbuddy checkin batch interrupted",
-					"attempted", attempted, "ok", okN, "already", alreadyN, "fail", failN, "skipped", skipN)
-				return
-			}
-		}
+		candidates = append(candidates, account)
 	}
-	if attempted > 0 || skipN < len(accounts) {
-		slog.Info("workbuddy checkin batch done",
-			"total", len(accounts), "attempted", attempted, "ok", okN, "already", alreadyN, "fail", failN, "skipped", skipN)
+
+	runner := workbuddySpreadRunner{
+		label:  "checkin",
+		window: settings.Window,
+		gapMin: settings.GapMin,
+		gapMax: settings.GapMax,
+	}
+	stats := runner.run(ctx, s.stopCh, candidates, workbuddyCheckinAlreadyDoneToday,
+		func(runCtx context.Context, account *Account) workbuddyRunOutcome {
+			result := s.credits.CheckinForAccount(runCtx, account)
+			if result == nil {
+				return workbuddyRunFail
+			}
+			switch result.Status {
+			case WorkBuddyCheckinStatusOK, WorkBuddyCheckinStatusAlready:
+				return workbuddyRunOK
+			case WorkBuddyCheckinStatusSkipped:
+				return workbuddyRunSkipped
+			default:
+				slog.Warn("workbuddy checkin failed",
+					"account_id", account.ID, "status", result.Status, "detail", result.Detail)
+				return workbuddyRunFail
+			}
+		})
+
+	if stats.Attempted > 0 || stats.Already > 0 || stats.Remaining > 0 {
+		slog.Info("workbuddy checkin window done",
+			"task", runner.label,
+			"total", len(accounts),
+			"candidates", stats.Candidates,
+			"already_done", stats.Already,
+			"attempted", stats.Attempted,
+			"ok", stats.OK,
+			"fail", stats.Fail,
+			"skipped", stats.Skipped,
+			"remaining", stats.Remaining)
 	}
 }

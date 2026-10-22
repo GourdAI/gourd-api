@@ -114,8 +114,10 @@ const (
 	// workbuddyTasksTravelTimeout 单账号旅行巡检（状态机单趟）总时长上限。
 	workbuddyTasksTravelTimeout = 30 * time.Second
 
-	// workbuddyTasksBatchTimeout 单批批量任务（全量账号遍历）总时长上限。
-	workbuddyTasksBatchTimeout = 30 * time.Minute
+	// 单批全量遍历的总时长上限已改为「错峰窗口 + 1 小时」，由
+	// workbuddySpreadSettingsFrom(cfg).Window 推算（见 batchContext）。
+	// 旧的固定 30 分钟常量已删除：它与新模型的窗口语义直接矛盾（窗口默认 12h，
+	// 30 分钟的上限会把窗口提前截断，使大批量账号永远跑不完）。
 
 	// workbuddyTasksPersistTimeout 快照/幂等标记落库的独立超时预算：必须脱离调度 ctx
 	// （见 persistDetachedCtx），否则停机/超时会把「已发放」的客观事实一并掉。
@@ -126,9 +128,13 @@ const (
 // 秒发易触发风控，故 1.5s 一条（对齐参考实现 activityReportGap）。测试可置 0。
 var workbuddyTasksReportGap = 1500 * time.Millisecond
 
-// workbuddyTasksAccountDelay 账号间固定间隔（防批量风控；对齐参考实现
-// activityAccountDelay/travelAccountDelay 与本仓库 workbuddyCheckinAccountDelay）。测试可置 0。
-var workbuddyTasksAccountDelay = 2 * time.Second
+// workbuddyTasksAccountDelay 已废弃，仅为兼容既有测试的变量赋值而保留（无业务作用）。
+//
+// 真实账号间隔改由 workbuddy_spread_schedule.go 的随机区间驱动：固定值本身就是
+// 可识别的机械节律，而固定值无法表达「每个号之间都不一样」这个防封需求。
+//
+// Deprecated: 新代码不要读它，用 workbuddySpreadSettingsFrom(cfg)。
+var workbuddyTasksAccountDelay time.Duration
 
 // workbuddyTasksCST 上游自然日口径：CST（Asia/Shanghai）固定 +8，不依赖容器 tzdata
 // （与参考实现 cstZone/travelDay 同口径）。
@@ -186,6 +192,7 @@ type workbuddyTravelSnapshot struct {
 	Date         string `json:"date"`
 	Action       string `json:"action"`
 	State        string `json:"state"`
+	Detail       string `json:"detail,omitempty"`
 	BuddyName    string `json:"buddy_name"`
 	RewardCredit int64  `json:"reward_credit"`
 	RanAt        int64  `json:"ran_at"`
@@ -364,9 +371,12 @@ func (s *WorkBuddyTasksService) Start() {
 	}
 	if s.cfg == nil || s.cfg.Gateway.Workbuddy.ActivityEnabled {
 		if hours := workbuddyTasksHours(s.cfg, "activity"); len(hours) > 0 {
+			settings := workbuddySpreadSettingsFrom(s.cfg)
 			slog.Info("workbuddy activity task started",
 				"hours", hours, "report_count", workbuddyTasksReportCount(s.cfg),
-				"account_delay", workbuddyTasksAccountDelay.String())
+				"spread_window", settings.Window.String(),
+				"account_gap_min", settings.GapMin.String(),
+				"account_gap_max", settings.GapMax.String())
 			s.wg.Add(1)
 			go func() {
 				defer s.wg.Done()
@@ -376,8 +386,12 @@ func (s *WorkBuddyTasksService) Start() {
 	}
 	if s.cfg == nil || s.cfg.Gateway.Workbuddy.TravelEnabled {
 		if hours := workbuddyTasksHours(s.cfg, "travel"); len(hours) > 0 {
+			settings := workbuddySpreadSettingsFrom(s.cfg)
 			slog.Info("workbuddy travel task started",
-				"hours", hours, "account_delay", workbuddyTasksAccountDelay.String())
+				"hours", hours,
+				"spread_window", settings.Window.String(),
+				"account_gap_min", settings.GapMin.String(),
+				"account_gap_max", settings.GapMax.String())
 			s.wg.Add(1)
 			go func() {
 				defer s.wg.Done()
@@ -412,8 +426,11 @@ func (s *WorkBuddyTasksService) loop(hours []int, run func(context.Context)) {
 }
 
 // batchContext 单批任务的 ctx：独立于 loop 的取消，由 stopCh 与批超时双闸控制。
+//
+// 超时改为「错峰窗口 + 1 小时硬上限」：真正节奏由窗口决定，这个 ctx 仅防卡死。
 func (s *WorkBuddyTasksService) batchContext() context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), workbuddyTasksBatchTimeout)
+	window := workbuddySpreadSettingsFrom(s.cfg).Window
+	ctx, cancel := context.WithTimeout(context.Background(), window+time.Hour)
 	go func() {
 		defer cancel()
 		select {
@@ -1404,6 +1421,7 @@ func (s *WorkBuddyTasksService) persistWorkbuddyTravelSnapshot(ctx context.Conte
 		Date:         workbuddyTasksToday(time.Now()),
 		Action:       result.Action,
 		State:        result.State,
+		Detail:       result.Detail,
 		BuddyName:    result.BuddyName,
 		RewardCredit: result.RewardCredit,
 		RanAt:        result.RanAt,
@@ -1417,84 +1435,144 @@ func (s *WorkBuddyTasksService) persistWorkbuddyTravelSnapshot(ctx context.Conte
 	}
 }
 
-// runActivityOnce 批量活跃上报：枚举全部 WorkBuddy 账号逐个执行（账号间固定间隔），
-// 禁用/无凭据账号跳过；单账号失败只记 WARN 不影响遍历。
+// runActivityOnce 开启活跃上报执行窗口（逐号推进）。
 func (s *WorkBuddyTasksService) runActivityOnce(ctx context.Context) {
 	s.runBatch(ctx, false)
 }
 
-// runTravelOnce 批量旅行巡检（仅 CN 账号实际执行）。
+// runTravelOnce 开启旅行巡检执行窗口（仅 CN 账号实际执行）。
 func (s *WorkBuddyTasksService) runTravelOnce(ctx context.Context) {
 	s.runBatch(ctx, true)
 }
 
-// runBatch 批量遍历公共实现：travel=false 走活跃上报，travel=true 走旅行巡检。
+// workbuddyActivityAlreadyDoneToday 报告该账号当日活跃上报是否已成功。
+//
+// 短路依据：workbuddy_activity 快照里的 Date + OK。旧实现每个整点把 5 条上报整组重发，
+// 即使当天早已完成；连登奖励链本有 rewardClaimedToday 按日校验，但上报自身没有。
+// 快照缺失/非当日一律 false（宁可重报，不可漏报——漏报会丢连登）。
+func workbuddyActivityAlreadyDoneToday(account *Account) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	obj, ok := account.Extra[workbuddyTasksActivityExtraKey].(map[string]any)
+	if !ok || obj == nil {
+		return false
+	}
+	date, _ := obj["date"].(string)
+	okFlag, _ := obj["ok"].(bool)
+	return okFlag && date == workbuddyTasksToday(time.Now())
+}
+
+// workbuddyTravelAlreadyDoneToday 报告该账号当日旅行是否已无需再巡检。
+//
+// 与活跃上报不同，旅行的「完成」不能只看成功标志：它的状态机是
+// idle→depart→traveling→arrived→claim→idle，一天内本就需要多趟巡检，
+// 全天只需一个动作的账号不应被跳过。因此只跳过两种确定态：
+//   - 当日已领奖（Action=claim 且 OK）：本日再无收益可领；
+//   - 当日已到派出上限（detail=daily limit reached）：再查也是同一结果。
+//
+// traveling 必须继续巡检（否则永远等不到到站领奖）；fail 也必须继续（兜底本意）。
+func workbuddyTravelAlreadyDoneToday(account *Account) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	obj, ok := account.Extra[workbuddyTasksTravelExtraKey].(map[string]any)
+	if !ok || obj == nil {
+		return false
+	}
+	date, _ := obj["date"].(string)
+	if date != workbuddyTasksToday(time.Now()) {
+		return false
+	}
+	action, _ := obj["action"].(string)
+	okFlag, _ := obj["ok"].(bool)
+	if action == "claim" && okFlag {
+		return true
+	}
+	// 上游明确告知当日已到派出上限：再巡检也是同一结果，跳过以减少无谓出站请求。
+	detail, _ := obj["detail"].(string)
+	return detail == "daily limit reached"
+}
+
+// runBatch 开启一个执行窗口，在窗口内逐号推进（travel=false 走活跃上报，true 走旅行）。
 // 账号筛选对齐签到服务（禁用/非 workbuddy/国际版/无凭据跳过）；
-// 账号间 workbuddyTasksAccountDelay 可取消等待（停机不睡满，剩余账号下轮再跑）。
+// 窗口内账号间隔为随机区间，已完成的号直接跳过（见两个 AlreadyDoneToday 谓词）。
 func (s *WorkBuddyTasksService) runBatch(ctx context.Context, travel bool) {
+	settings := workbuddySpreadSettingsFrom(s.cfg)
 	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformWorkbuddy)
 	if err != nil {
 		slog.Warn("workbuddy tasks list accounts failed", "travel", travel, "error", err)
 		return
 	}
-	attempted, okN, failN, skipN := 0, 0, 0, 0
-	first := true
+	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
-		if ctx.Err() != nil {
-			break
-		}
 		account := &accounts[i]
 		if !account.IsWorkbuddy() || !account.IsActive() {
-			skipN++
 			continue
 		}
 		// 活跃上报 CN+global 都发（国际版 /v2/report 可用，点亮连登）；
 		// 旅行仅 CN（国际版无猫猫旅行体系）。
 		if travel && account.GetWorkbuddyRealm() != "cn" {
-			skipN++
 			continue
 		}
 		creds := account.GetWorkbuddyCredentials()
 		if strings.TrimSpace(creds.AccessToken) == "" && strings.TrimSpace(creds.RefreshToken) == "" {
-			skipN++
 			continue
 		}
-		if !first {
-			if !workbuddyTasksSleepCtx(ctx, workbuddyTasksAccountDelay) {
-				break // 优雅停机：不等限速睡满，剩余账号下轮再跑
+		candidates = append(candidates, account)
+	}
+
+	taskLabel := map[bool]string{true: "travel", false: "activity"}[travel]
+	runner := workbuddySpreadRunner{
+		label:  taskLabel,
+		window: settings.Window,
+		gapMin: settings.GapMin,
+		gapMax: settings.GapMax,
+	}
+	skip := workbuddyActivityAlreadyDoneToday
+	if travel {
+		skip = workbuddyTravelAlreadyDoneToday
+	}
+	stats := runner.run(ctx, s.stopCh, candidates, skip,
+		func(runCtx context.Context, account *Account) workbuddyRunOutcome {
+			// 必须与手动入口（RunActivity/RunTravel）共用同一 singleflight key：否则
+			// 「定时批次」与「管理员点击」之间、activity 与 travel 两个 loop 之间零互斥，
+			// 同账号同时刻会双发 redeem/派出的领奖（旧实现里只有手动包了 flight）。
+			if travel {
+				result := s.runTravelFlight(runCtx, account)
+				switch {
+				case result == nil:
+					return workbuddyRunSkipped // ctx 已取消：不计失败，剩余账号下轮再跑
+				case result.Success:
+					return workbuddyRunOK
+				case result.Detail != "":
+					return workbuddyRunFail
+				default:
+					return workbuddyRunSkipped // traveling / 无猫且领养未成等确定态
+				}
 			}
-		}
-		first = false
-		attempted++
-		// 必须与手动入口（RunActivity/RunTravel）共用同一 singleflight key：否则
-		// 「定时批次」与「管理员点击」之间、activity 与 travel 两个 loop 之间零互斥，
-		// 同账号同时刻会双发 redeem/派出的领奖（旧实现里只有手动包了 flight）。
-		if travel {
-			result := s.runTravelFlight(ctx, account)
+			result := s.runActivityFlight(runCtx, account)
 			switch {
 			case result == nil:
-				skipN++ // ctx 已取消：不计失败，剩余账号下轮再跑
+				return workbuddyRunSkipped
 			case result.Success:
-				okN++
-			case result.Detail != "":
-				failN++
+				return workbuddyRunOK
+			default:
+				return workbuddyRunFail
 			}
-			continue
-		}
-		result := s.runActivityFlight(ctx, account)
-		switch {
-		case result == nil:
-			skipN++
-		case result.Success:
-			okN++
-		default:
-			failN++
-		}
-	}
-	if attempted > 0 {
-		slog.Info("workbuddy tasks batch done",
-			"task", map[bool]string{true: "travel", false: "activity"}[travel],
-			"total", len(accounts), "attempted", attempted, "ok", okN, "fail", failN, "skipped", skipN)
+		})
+
+	if stats.Attempted > 0 || stats.Already > 0 || stats.Remaining > 0 {
+		slog.Info("workbuddy tasks window done",
+			"task", taskLabel,
+			"total", len(accounts),
+			"candidates", stats.Candidates,
+			"already_done", stats.Already,
+			"attempted", stats.Attempted,
+			"ok", stats.OK,
+			"fail", stats.Fail,
+			"skipped", stats.Skipped,
+			"remaining", stats.Remaining)
 	}
 }
 

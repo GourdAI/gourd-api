@@ -2393,16 +2393,37 @@ func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
 //
 // 保持账号级 opt-in 语义：默认关闭，显式在 Extra 中设置 enable_tls_fingerprint=true 才启用。
 // Anthropic OAuth/SetupToken 账号行为与之前完全一致（该路径本来就是唯一可用组合）。
+//
+// 注意：本方法是「开关视图」，不区分「未设置」与「显式 false」。需要区分时
+// （例如平台级默认开启的语义）用 tlsFingerprintExtraState。
 func (a *Account) IsTLSFingerprintEnabled() bool {
-	if a.Extra == nil {
-		return false
+	enabled, explicit := a.tlsFingerprintExtraState()
+	return explicit && enabled
+}
+
+// tlsFingerprintExtraState 返回 Extra 中 TLS 指纹开关的**三态**：
+//   - explicit=false：Extra 里没有这个键（或不是 bool）→ 未表态；
+//   - explicit=true 且 enabled=true：显式开启；
+//   - explicit=true 且 enabled=false：显式关闭。
+//
+// 为何需要区分：平台级默认开启（如 WorkBuddy 改造）必须能表达「运营商没表态，所以
+// 走平台默认」，同时保证管理员在账号上显式关掉时能被尊重。若只能拿到一个 bool，
+// 「未设置」与「显式关」就不可区分，二者必有一个语义被吞掉。
+func (a *Account) tlsFingerprintExtraState() (enabled bool, explicit bool) {
+	if a == nil || a.Extra == nil {
+		return false, false
 	}
-	if v, ok := a.Extra["enable_tls_fingerprint"]; ok {
-		if enabled, ok := v.(bool); ok {
-			return enabled
-		}
+	v, ok := a.Extra["enable_tls_fingerprint"]
+	if !ok {
+		return false, false
 	}
-	return false
+	b, ok := v.(bool)
+	if !ok {
+		// 非 bool（如字符串 "true"）视为未表态：保持历史判定（不启用），
+		// 也不当作显式关闭——它本来就不是一个有效声明。
+		return false, false
+	}
+	return b, true
 }
 
 // GetTLSFingerprintProfileID 获取账号绑定的 TLS 指纹模板 ID

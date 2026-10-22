@@ -88,3 +88,54 @@ func resolveAccountTLSProfile(profileService *TLSFingerprintProfileService, acco
 	}
 	return profileService.ResolveTLSProfile(account)
 }
+
+// resolvePlatformDefaultTLSProfile 在「平台级默认开启」语义下解析 TLS Profile：
+//
+//   - 账号 Extra 显式设置 enable_tls_fingerprint=false → 返回 nil（尊重管理员意愿）；
+//   - 账号 Extra 显式 true → 同 ResolveTLSProfile；
+//   - 未表态 → 不询问账号开关，直接按平台解析（ResolvePlatformProfile）。
+//
+// platformDefault 为 false 时完全退化为 resolveAccountTLSProfile（即历史行为），
+// 这是保证其它平台零行为变更的阀。
+func resolvePlatformDefaultTLSProfile(
+	profileService *TLSFingerprintProfileService,
+	account *Account,
+	platformDefault bool,
+) *tlsfingerprint.Profile {
+	if profileService == nil || account == nil {
+		return nil
+	}
+	if !platformDefault {
+		return profileService.ResolveTLSProfile(account)
+	}
+	if enabled, explicit := account.tlsFingerprintExtraState(); explicit {
+		if !enabled {
+			return nil // 显式关闭优先于平台默认
+		}
+		return profileService.ResolveTLSProfile(account)
+	}
+	return profileService.ResolvePlatformProfile(account)
+}
+
+// doUpstreamWithPlatformDefaultTLS 在 doUpstreamWithOptionalTLSConcurrency 之上
+// 支持「平台级默认开启」：platformDefault=true 时，账号未表态也走 DoWithTLS。
+//
+// 与 doUpstreamWithOptionalTLSConcurrency 的唯一差别就是 profile 的解析语义；
+// 并发度、nil 降级、Do/DoWithTLS 分派的逻辑完全一致（直接复用，不另建一套）。
+func doUpstreamWithPlatformDefaultTLS(
+	httpUpstream HTTPUpstream,
+	profileService *TLSFingerprintProfileService,
+	req *http.Request,
+	proxyURL string,
+	account *Account,
+	accountConcurrency int,
+	platformDefault bool,
+) (*http.Response, error) {
+	if httpUpstream == nil || req == nil || account == nil {
+		return nil, errNilUpstreamRequest
+	}
+	if profile := resolvePlatformDefaultTLSProfile(profileService, account, platformDefault); profile != nil {
+		return httpUpstream.DoWithTLS(req, proxyURL, account.ID, accountConcurrency, profile)
+	}
+	return httpUpstream.Do(req, proxyURL, account.ID, accountConcurrency)
+}

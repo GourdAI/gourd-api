@@ -1190,9 +1190,12 @@ type GatewayCNProvidersConfig struct {
 // GatewayWorkbuddyConfig WorkBuddy 平台的每日签到与任务三件套配置。
 //
 // 签到仅对国内版（CN realm）账号有效——国际版无签到体系（对齐参考实现 D4 门控）。
+//
+// 触发模型：hours 列表里的每个整点打开一个「执行窗口」，窗口内逐号推进（不是全量齐发），
+// 详见下面的 spread_window_seconds / account_gap_min_seconds / account_gap_max_seconds。
 //   - checkin_enabled: 是否启用每日自动签到（默认 true）
-//   - checkin_hours: 每日签到触发小时（本地时区 0-23，默认 [9, 21]；21 点为兜底重试，
-//     重复签到上游幂等返回「今天已签到」）
+//   - checkin_hours: 每日签到触发小时（本地时区 0-23，默认 [9, 21]；21 点为兜底窗口，
+//     只补当天仍未成功的号，已成功的不再重打上游）
 //   - activity_enabled: 是否启用对话活跃上报周期任务（默认 true；CN 与 global 账号都上报）
 //   - activity_hours: 活跃上报触发小时（本地时区，默认 [10]）
 //   - activity_report_count: 每号每次上报条数（默认 5；<=0 归 1，兼容旧行为）
@@ -1209,6 +1212,29 @@ type GatewayWorkbuddyConfig struct {
 	ActivityReportCount int   `mapstructure:"activity_report_count"`
 	TravelEnabled       bool  `mapstructure:"travel_enabled"`
 	TravelHours         []int `mapstructure:"travel_hours"`
+
+	// --- 防封错峰参数（签到/活跃上报/旅行三类任务共享）---
+	//
+	// 旧模型是「整点全量齐发 + 固定 2s 账号间隔」，账号一多就同时出现两头问题：
+	// 瞬时请求密度呈现机械节律（固定间隔本身就是自动化特征），且 21 点兜底会把
+	// 当天已成功的号再全部重打一遍上游。新模型改为窗口内逐号推进。
+	//
+	// SpreadWindowSeconds 单个触发整点打开的执行窗口长度（默认 43200 = 12h）。
+	// 窗口内账号按下面的随机间隔逐个推进，跑完即收；到下一个整点再开新窗口。
+	SpreadWindowSeconds int `mapstructure:"spread_window_seconds"`
+	// AccountGapMinSeconds / AccountGapMaxSeconds 账号间随机间隔区间（默认 180~480s）。
+	// 每两个账号之间独立取随机值，避免固定节律；两者相等即退化为固定间隔。
+	// 越界（max<min、负数）由归一函数夹逼，不会 panic。
+	AccountGapMinSeconds int `mapstructure:"account_gap_min_seconds"`
+	AccountGapMaxSeconds int `mapstructure:"account_gap_max_seconds"`
+
+	// TLSFingerprintEnabled WorkBuddy 出站是否默认启用 TLS 指纹伪装（默认 true）。
+	//
+	// 动机（实测缺口）：账号 Extra 的 enable_tls_fingerprint 是「全局 opt-in」语义，
+	// 默认关闭，所以 WorkBuddy 出站此前一律走 Go 标准库的 ClientHello，而 HTTP 层
+	// 却自称 WorkBuddy 桌面端（Electron/Chromium）。头做得再细，TLS 层仍是明确矛盾点。
+	// 本开关让该平台默认开启（与 HTTP 层身份自洽），账号 Extra 显式设 false 仍可关闭。
+	TLSFingerprintEnabled bool `mapstructure:"tls_fingerprint_enabled"`
 }
 
 // GatewayQoderConfig Qoder 平台的每日活动 Credits 领取配置。
@@ -2583,6 +2609,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.workbuddy.activity_report_count", 5)
 	viper.SetDefault("gateway.workbuddy.travel_enabled", true)
 	viper.SetDefault("gateway.workbuddy.travel_hours", []int{9, 21})
+	// WorkBuddy 防封错峰：12h 窗口内逐号推进，账号间 3~8 分钟随机间隔。
+	viper.SetDefault("gateway.workbuddy.spread_window_seconds", 43200)
+	viper.SetDefault("gateway.workbuddy.account_gap_min_seconds", 180)
+	viper.SetDefault("gateway.workbuddy.account_gap_max_seconds", 480)
+	// WorkBuddy 出站 TLS 指纹默认开启（与 HTTP 层桌面端身份自洽；账号可显式关闭）。
+	viper.SetDefault("gateway.workbuddy.tls_fingerprint_enabled", true)
 	// Qoder 每日活动 Credits 领取（活动每天 10:00 UTC+8 开放新一轮；默认 10 点首发 + 21 点兵底）。
 	viper.SetDefault("gateway.qoder.checkin_enabled", true)
 	viper.SetDefault("gateway.qoder.checkin_hours", []int{10, 21})

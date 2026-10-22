@@ -231,9 +231,43 @@ func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsf
 	return defaultTLSProfileForPlatform(account.Platform)
 }
 
+// ResolvePlatformProfile 忽略账号的启用开关，直接解析该账号应使用的 TLS Profile。
+//
+// 存在的理由：平台级默认开启（例如 WorkBuddy 本次改造）需要表达「运维没在账号上
+// 表态，但该平台默认要伪装」。这种情况下不能复用 ResolveTLSProfile——它以
+// IsTLSFingerprintEnabled() 为前提，会把「未表态」当成「关闭」。
+//
+// 语义边界：本方法只改「是否伪装」的判定入口，不改「伪装成什么」——绑定的模板
+// 仍然优先，未绑定时仍然走 defaultTLSProfileForPlatform。因此调用方必须自己承担
+// 「该平台确实应该默认伪装」这个决策（见 doUpstreamWithPlatformDefaultTLS）。
+func (s *TLSFingerprintProfileService) ResolvePlatformProfile(account *Account) *tlsfingerprint.Profile {
+	if s == nil || account == nil {
+		return nil
+	}
+	id := account.GetTLSFingerprintProfileID()
+	if id > 0 {
+		if p := s.GetProfileByID(id); p != nil {
+			return p
+		}
+	}
+	if id == -1 {
+		if p := s.pickStableRandomProfile(account.ID); p != nil {
+			return p
+		}
+	}
+	return defaultTLSProfileForPlatform(account.Platform)
+}
+
 // defaultTLSProfileForPlatform 返回平台对应的内置默认 TLS Profile。
 //
 // 未列出的平台一律沿用 Node.js 默认值，保持改动前的行为不变。
+//
+// 已知局限（诚实口径，不要当成 bug 修）：WorkBuddy 桌面端是 Electron/Chromium
+// （BoringSSL），而本包目前只有 Node/OpenSSL 与 rustls 两套内置形状，没有
+// Chromium 形状。WorkBuddy 走平台默认时拿到的是 Node 形状——它与官方客户端不完全
+// 同源，但已消除「Go 标准库 ClientHello」这个更明显的标记。要真正对齐需要先用
+// tls-fingerprint-web 采集一份 Chromium 形状并当作模板绑定到账号（模板表机制已就位）。
+// 此处不凭记忆手写 Chromium 参数：错配的指纹（chimera）比不伪装更容易被识别判异常。
 func defaultTLSProfileForPlatform(platform string) *tlsfingerprint.Profile {
 	if platform == PlatformOpenAI {
 		return tlsfingerprint.CodexRustlsProfile()

@@ -167,8 +167,18 @@ func (s *WorkBuddyCreditsService) SetTLSFingerprintProfileService(svc *TLSFinger
 
 // workbuddyDo 是 billing/chat 域出站分派：账号启用 TLS 指纹则走 DoWithTLS，
 // 否则保持普通 Do。超时/取消由 req 自身 context 驱动；并发度保持历史口径。
+//
+// 平台默认强化：WorkBuddy 桌面端是 Electron/Chromium，HTTP 层我们已经完整伪装成桌面端
+// （UA/Origin/X-CodeBuddy-Request/X-Machine-ID…），但传输层此前默认走 Go 标准库
+// ClientHello——两层身份自相矛盾，是 JA3/JA4 检测里最明确的自动化标记。因此本平台
+// 改为默认开启（gateway.workbuddy.tls_fingerprint_enabled 可关），账号 Extra 显式
+// enable_tls_fingerprint=false 仍然优先（管理员意图不被平台默认吞掉）。
 func (s *WorkBuddyCreditsService) workbuddyDo(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
-	return doUpstreamWithOptionalTLSConcurrency(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account, maxInt(account.Concurrency, 1))
+	platformDefault := true
+	if s.cfg != nil {
+		platformDefault = s.cfg.Gateway.Workbuddy.TLSFingerprintEnabled
+	}
+	return doUpstreamWithPlatformDefaultTLS(s.httpUpstream, s.tlsFPProfileService, req, proxyURL, account, maxInt(account.Concurrency, 1), platformDefault)
 }
 
 // NewWorkBuddyCreditsService 构造 WorkBuddy 积分/签到服务。
