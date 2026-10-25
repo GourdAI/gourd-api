@@ -341,6 +341,7 @@
               data-1p-ignore
               data-lpignore="true"
               data-bwignore="true"
+              data-testid="edit-workbuddy-access-token"
               :placeholder="t('admin.accounts.leaveEmptyToKeep')"
             />
           </div>
@@ -354,6 +355,7 @@
               data-1p-ignore
               data-lpignore="true"
               data-bwignore="true"
+              data-testid="edit-workbuddy-refresh-token"
               :placeholder="t('admin.accounts.leaveEmptyToKeep')"
             />
           </div>
@@ -5411,6 +5413,16 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     selectedErrorCodes.value = []
   }
   editApiKey.value = ''
+  // 无论切到哪个账号，都先丢弃上一个账号遗留的 WorkBuddy OAuth 会话：
+  // authUrl / state / 轮询定时器 / 绿字提示都属于**上一个账号**。不丢弃会同时造成两个
+  // 用户可见的故障（2026-10 实测）：
+  //   1) 模板区渲染条件是 `v-if="!workbuddyOAuthUrl"`，残留的 authUrl 会把「通过 OAuth
+  //      登录获取凭据」按钮**永久隐藏**，用户只剩一个「复制」按钮 —— 无法为新账号换号；
+  //   2) 「OAuth 授权成功，凭据已自动回填」绿字与当前账号无关，而 token 输入框是空的，
+  //      看上去就是「说回填了却没回填」。
+  // 注意：这里必须无条件调用（不能像 Trae 那样额外区分平台），因为残留的 authUrl
+  // 本身与平台无关——只要弹窗还开着，上一次会话就必须作废。
+  resetWorkBuddyOAuthState()
   // 非 WorkBuddy 账号：清空 WorkBuddy 字段，避免切换账号时残留。
   if (newAccount.platform !== 'workbuddy') {
     editWorkbuddyAccessToken.value = ''
@@ -5420,6 +5432,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     editWorkbuddyEnterpriseId.value = ''
     editWorkbuddyDeviceToken.value = ''
   }
+  // Qoder 的 login_id 与 realm 绑定，同样属于旧账号：换账号必须丢弃轮询与链接。
+  resetQoderOAuthState()
   // 非 Qoder 账号：清空 Qoder 字段，避免切换账号时残留。
   if (newAccount.platform !== 'qoder') {
     editQoderAccessToken.value = ''
@@ -5972,9 +5986,12 @@ const parseDateTimeLocal = parseDateTimeLocalInput
 const handleClose = () => {
   antigravityMixedChannelConfirmed.value = false
   clearMixedChannelDialog()
-  // 关闭弹窗时停止 WorkBuddy / Qoder OAuth 轮询，避免遗留定时器。
-  workbuddyOAuth.stopPolling()
-  qoderOAuth.stopPolling()
+  // 关闭弹窗时彻底丢弃 WorkBuddy / Qoder 的 OAuth 会话（authUrl / state / 轮询 / 提示）。
+  // WHY 不能只 stopPolling：authUrl 存在 pinia 之外的 composable 实例里，而 handleClose 后
+  // 组件**不卸载**（只是 show=false），下次打开另一个账号时残留的 authUrl 会让
+  // `v-if="!workbuddyOAuthUrl"` 把登录按钮藏起来——用户只看到一个失效的旧链接。
+  resetWorkBuddyOAuthState()
+  resetQoderOAuthState()
   // 关闭弹窗时放弃 Trae 浏览器登录会话（取消失败静默）。
   void traeOAuth.cancelLogin()
   emit('close')

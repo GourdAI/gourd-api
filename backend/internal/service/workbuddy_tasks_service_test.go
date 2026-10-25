@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -96,9 +97,9 @@ func TestWorkBuddyTasksActivityReportShapeAndRealmRouting(t *testing.T) {
 		"access_token": "at-g", "uid": "u-g", "realm": "global",
 	})
 
-	cid := "sub2api-1000"
-	require.NoError(t, svc.workbuddyReportChatActivity(context.Background(), accountCN, cid, cid+"-r1"))
-	require.NoError(t, svc.workbuddyReportChatActivity(context.Background(), accountGlobal, cid, cid+"-r1"))
+	cid := "0123456789abcdef0123456789abcdef"
+	require.NoError(t, svc.workbuddyReportChatActivity(context.Background(), accountCN, cid, "fedcba9876543210fedcba9876543210"))
+	require.NoError(t, svc.workbuddyReportChatActivity(context.Background(), accountGlobal, cid, "fedcba9876543210fedcba9876543210"))
 
 	assertReport := func(t *testing.T, cap *capture, wantUserID string) {
 		t.Helper()
@@ -116,9 +117,25 @@ func TestWorkBuddyTasksActivityReportShapeAndRealmRouting(t *testing.T) {
 		require.Equal(t, cid, ev["conversationId"])
 		require.Equal(t, cid, ev["rootRequestId"])
 		require.Equal(t, cid, ev["parentConversationId"])
-		require.Equal(t, cid+"-r1", ev["requestId"])
-		require.Equal(t, "deepseek-v4-flash", ev["requestModelId"])
-		require.Equal(t, "DeepSeek V4 Flash", ev["requestModelName"])
+		require.Equal(t, "fedcba9876543210fedcba9876543210", ev["requestId"])
+		// 模型字段不再写死：两账号都未配 model_mapping、也无目录快照，故都回落到平台
+		// 默认目录首项。旧断言把"全部账号都声明 deepseek-v4-flash"固化成契约，
+		// 而那正是被修掉的伪造指纹。期望值在测试内独立推算（不调生产 helper，
+		// 否则就是循环论证）。
+		wantModel := ""
+		for _, id := range DefaultWorkbuddyModelIDs() {
+			if id != "auto" && workbuddyCatalogIsChatModel(id) {
+				wantModel = id
+				break
+			}
+		}
+		require.NotEmpty(t, wantModel)
+		require.Equal(t, wantModel, ev["requestModelId"])
+		require.Equal(t, wantModel, ev["requestModelName"], "无目录快照时展示名回落 ID")
+		inputLen, ok := ev["inputLength"].(float64)
+		require.True(t, ok, "inputLength 必须是数字")
+		require.GreaterOrEqual(t, inputLen, float64(15), "inputLength 不再固定为 12")
+		require.LessOrEqual(t, inputLen, float64(400))
 		require.Equal(t, "default", ev["agentName"])
 		require.Equal(t, "conversation", ev["agentType"])
 		require.Contains(t, ev, "presentAt")
@@ -785,4 +802,96 @@ func TestWorkBuddyTasksReportCountFallback(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.Workbuddy.ActivityReportCount = 5
 	require.Equal(t, 5, workbuddyTasksReportCount(cfg))
+}
+
+// TestWorkbuddyTasksConversationIDHasNoGatewayFingerprint conversationId 不得再带
+// 网关品牌名与毫秒时间戳。
+//
+// 回归背景：旧实现是 fmt.Sprintf("sub2api-%d", time.Now().UnixMilli())，该值随
+// /v2/report 发往上游 —— 字面「sub2api」等于向风控自报“这是网关伪造的活跃度”，
+// 固定前缀 + 可枚举时间戳又是跨账号完全一致的指纹。
+// 本用例锁死“不许回头”这一方向：形如 32 hex，不含任何成员名。
+func TestWorkbuddyTasksConversationIDHasNoGatewayFingerprint(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 20; i++ {
+		cid := workbuddyTasksNewConversationID()
+		require.Len(t, cid, 32, "官方桌面端形态为 UUID 去横线 = 32 hex")
+		require.Regexp(t, `^[0-9a-f]{32}$`, cid)
+		for _, banned := range []string{"sub2api", "gourd", "-"} {
+			require.NotContains(t, strings.ToLower(cid), banned,
+				"conversationId 不得携带网关标识或分隔符（旧实现含 sub2api-）")
+		}
+	}
+	// 唯一性：同一批多条若共享同一 cid 是设计（同会话多轮），但两批之间必须不同，
+	// 否则就成了“每天同一个会话 ID”的可识别节律。
+	require.NotEqual(t, workbuddyTasksNewConversationID(), workbuddyTasksNewConversationID())
+}
+
+// TestWorkbuddyTasksActivityModelTracksAccountWhitelist 上报声明的模型必须跟随账号自身
+// 白名单/目录，不得写死单一模型。
+//
+// 回归背景：旧实现把 requestModelId 写死 "deepseek-v4-flash"、展示名写死
+// "DeepSeek V4 Flash"。后果有两层：跨账号完全一致的指纹；以及“账号只开了 glm 系
+// 却上报调用了 deepseek”，这种自相矛盾的读数本身就是风控信号。
+func TestWorkbuddyTasksActivityModelTracksAccountWhitelist(t *testing.T) {
+	t.Parallel()
+
+	t.Run("model_mapping-wins", func(t *testing.T) {
+		account := &Account{ID: 1, Platform: PlatformWorkbuddy, Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.5": "glm-5.3", "kimi": "kimi-k3"},
+		}}
+		id, name := workbuddyTasksActivityModel(account)
+		require.Equal(t, "glm-5.3", id, "取 model_mapping 的值（真正发往上游的名字），确定性首项")
+		require.Equal(t, "glm-5.3", name, "无目录快照时展示名回落 ID")
+	})
+
+	t.Run("catalog-snapshot-used-when-no-mapping", func(t *testing.T) {
+		account := &Account{ID: 2, Platform: PlatformWorkbuddy, Credentials: map[string]any{}}
+		account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{
+			Source: "workbuddy",
+			Models: map[string]UpstreamModelMetadata{
+				"minimax-m3":          {ID: "minimax-m3", DisplayName: "MiniMax M3"},
+				"codewise-completion": {ID: "codewise-completion"},
+				"lite":                {ID: "lite"},
+			},
+		})
+		id, name := workbuddyTasksActivityModel(account)
+		require.Equal(t, "minimax-m3", id, "跳过高非对话模型（codewise-/lite）")
+		require.Equal(t, "MiniMax M3", name, "展示名取目录快照")
+	})
+
+	t.Run("default-catalog-when-account-has-nothing", func(t *testing.T) {
+		id, name := workbuddyTasksActivityModel(&Account{ID: 3, Platform: PlatformWorkbuddy})
+		require.NotEmpty(t, id)
+		require.NotEqual(t, "deepseek-v4-flash", id, "不得回落到旧写死值")
+		require.NotEqual(t, "auto", id, "auto 是选择器入口，不是可声明为已调用模型")
+		require.Equal(t, id, name)
+	})
+
+	t.Run("different-accounts-can-report-different-models", func(t *testing.T) {
+		a := &Account{ID: 4, Platform: PlatformWorkbuddy, Credentials: map[string]any{
+			"model_mapping": map[string]any{"a": "glm-5.3"},
+		}}
+		b := &Account{ID: 5, Platform: PlatformWorkbuddy, Credentials: map[string]any{
+			"model_mapping": map[string]any{"a": "kimi-k3"},
+		}}
+		idA, _ := workbuddyTasksActivityModel(a)
+		idB, _ := workbuddyTasksActivityModel(b)
+		require.NotEqual(t, idA, idB, "两账号白名单不同 → 上报模型必须不同（旧实现恒相同）")
+	})
+}
+
+// TestWorkbuddyTasksActivityInputLengthVaries inputLength 不得固定为 12。
+// 回归背景：旧实现写死 InputLength: 12 —— 又一条跨账号、跨全天完全一致的指纹。
+func TestWorkbuddyTasksActivityInputLengthVaries(t *testing.T) {
+	t.Parallel()
+	seen := make(map[int]struct{}, 64)
+	for i := 0; i < 200; i++ {
+		n := workbuddyTasksActivityInputLength()
+		require.GreaterOrEqual(t, n, 15)
+		require.LessOrEqual(t, n, 400)
+		require.NotEqual(t, 12, n, "不得回落到旧写死值 12")
+		seen[n] = struct{}{}
+	}
+	require.Greater(t, len(seen), 20, "200 次采样必须产生足够多的不同值，否则不是随机而是伪随机常量")
 }

@@ -229,10 +229,25 @@ func workbuddyIsCheckinAlreadyError(err error) bool {
 	return strings.Contains(strings.ToLower(be.Msg), "already")
 }
 
-// workbuddyIsUnauthorizedError 报告错误是否为 401（触发一次 token 刷新重试）。
+// workbuddyIsUnauthorizedError 报告错误是否应触发一次 token 刷新重试。
+//
+// 判据必须**同时**覆盖两个真实形态（两个请求层产出的都是 *workbuddyBillingError）：
+//   - HTTP 401：be.Status == 401（网关层直接拒绝）；
+//   - HTTP 200 + 顶层业务 code 401：be.Status == 200 而 be.Code == 401
+//     （billing/tasks 域把登录态失效放在信封 code 里，见 workbuddyBillingRequestOnce
+//     与 workbuddyTasksSend 的 env.Code != 0 分支）。
+//
+// 旧实现只认 Status：第二种形态 Status=200 → 判据为 false → **刷新重试被整体跳过**，
+// 错误直接落到 markWorkbuddyAccountFromBillingError，被 classifyWorkbuddyBillingError(401)
+// 判成 session 类并 SetError 永久下线 —— 一次都没尝试换票。这与
+// workbuddy_upstream_error.go 文件头「HTTP 401 由 token 刷新负责，不在这里落 SetError」
+// 的既定语意恰好相反，是该文件的注释与实现长期不一致之处。
 func workbuddyIsUnauthorizedError(err error) bool {
 	var be *workbuddyBillingError
-	return errors.As(err, &be) && be.Status == http.StatusUnauthorized
+	if !errors.As(err, &be) || be == nil {
+		return false
+	}
+	return be.Status == http.StatusUnauthorized || be.Code == http.StatusUnauthorized
 }
 
 // loadWorkbuddyAccount 加载并校验 WorkBuddy 账号（ForAccount 入口共用）。

@@ -488,6 +488,86 @@ func TestWorkBuddyCheckin401RefreshesAndRetriesOnce(t *testing.T) {
 	require.Equal(t, "at-new", account.Credentials["access_token"])
 }
 
+// TestWorkBuddyCheckinEnvelope401RefreshesAndRetries 验证 **HTTP 200 + 信封 code=401**
+// 也要走刷新重试。
+//
+// 这是本次修复的核心缺陷形态：两个请求层（workbuddyBillingRequestOnce /
+// workbuddyTasksSend）都会把「HTTP 200 但 env.Code != 0」构造成
+// *workbuddyBillingError{Status: 200, Code: 401}。旧判据只认 Status == 401，
+// 于是这种号刷新重试被整体跳过，直接落到 markWorkbuddyAccountFromBillingError，
+// 被 classify(401) 判成 session 类并 SetError 永久下线 —— 与本文件随后的
+// “无 refresh_token 才永久禁用”设计意图相反。
+//
+// 旧用例 TestWorkBuddyCheckin401RefreshesAndRetriesOnce 用的是真 HTTP 401,
+// 所以它一直绿而缺陷一直在。
+func TestWorkBuddyCheckinEnvelope401RefreshesAndRetries(t *testing.T) {
+	t.Parallel()
+	var (
+		mu           sync.Mutex
+		checkinCalls int
+		refreshCalls int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 注意：三个响应全部 HTTP 200，错误只在信封 code 里（上游真实形态）。
+		w.WriteHeader(http.StatusOK)
+		switch r.URL.Path {
+		case "/v2/plugin/auth/token/refresh":
+			mu.Lock()
+			refreshCalls++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"accessToken":"at-env-new","expiresIn":3600}}`))
+		case "/v2/billing/meter/daily-checkin":
+			mu.Lock()
+			checkinCalls++
+			n := checkinCalls
+			mu.Unlock()
+			if n == 1 {
+				// HTTP 200 + code 401：旧判据看不出这是 401。
+				_, _ = w.Write([]byte(`{"code":401,"msg":"session expired"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{}}`))
+		default:
+			_, _ = w.Write([]byte(workbuddyResourceBody))
+		}
+	}))
+	defer server.Close()
+
+	repo := &workbuddyTestAccountRepo{}
+	repo.accountsByID = map[int64]*Account{}
+	svc := newWorkbuddyCreditsTestService(&workbuddyTestUpstream{client: server.Client()}, repo)
+	account := workbuddyCreditsAccount(18, server.URL, map[string]any{
+		"access_token": "at", "refresh_token": "rt", "realm": "cn",
+	})
+	repo.accountsByID[18] = account
+
+	result, err := svc.Checkin(context.Background(), 18)
+	require.NoError(t, err)
+	require.Equal(t, WorkBuddyCheckinStatusOK, result.Status, "信封 401 → 刷新后重试应成功")
+	mu.Lock()
+	require.Equal(t, 2, checkinCalls, "信封 401 必须重试一次（旧实现在此只有 1 次）")
+	require.Equal(t, 1, refreshCalls, "信封 401 必须触发一次刷新（旧实现在此为 0）")
+	mu.Unlock()
+	// 断言写入产物本身，不读读取侧（读取侧有 JWT 兜底会掩盖写入缺陷）。
+	require.Equal(t, "at-env-new", account.Credentials["access_token"])
+}
+
+// TestWorkbuddyIsUnauthorizedErrorCoversBothShapes 直接锁两种形态的判据：
+// 旧实现只认 Status，信封形态（Status=200 + Code=401）返回 false。
+func TestWorkbuddyIsUnauthorizedErrorCoversBothShapes(t *testing.T) {
+	t.Parallel()
+	require.True(t, workbuddyIsUnauthorizedError(&workbuddyBillingError{Status: 401, Msg: "unauthorized"}),
+		"HTTP 401 必须命中")
+	require.True(t, workbuddyIsUnauthorizedError(&workbuddyBillingError{Status: 200, Code: 401, Msg: "session expired"}),
+		"HTTP 200 + 信封 code 401 必须命中（否则刷新重试被跳过 → 永久 SetError）")
+	// 不得泛化：其它 4xx/5xx 与业务码不能触发刷新重试。
+	require.False(t, workbuddyIsUnauthorizedError(&workbuddyBillingError{Status: 200, Code: 110, Msg: "今日额度已用尽"}))
+	require.False(t, workbuddyIsUnauthorizedError(&workbuddyBillingError{Status: 403, Msg: "forbidden"}))
+	require.False(t, workbuddyIsUnauthorizedError(&workbuddyBillingError{Status: 500, Msg: "boom"}))
+	require.False(t, workbuddyIsUnauthorizedError(context.DeadlineExceeded), "非 billing 错误类型不得命中")
+}
+
 func TestWorkBuddyCreditsRejectNonWorkbuddyAccount(t *testing.T) {
 	t.Parallel()
 	repo := &workbuddyCreditsFakeRepo{}

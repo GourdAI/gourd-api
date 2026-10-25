@@ -31,7 +31,8 @@ package service
 // 两域统一 applyWorkbuddyBillingHeaders（billing 白名单头组）出站。
 //
 // 业务编排语义（对齐参考实现）：
-//  1. 活跃上报每号 N 条同 conversationId（sub2api-<UnixMilli>），requestId 各条独立；
+//  1. 活跃上报每号 N 条同 conversationId（官方 UUID 去横线形态，见
+//     workbuddyTasksNewConversationID），requestId 各条独立；
 //     全部成功才做 streak 自检（days==0 记 WARN "silent drop?"）→ 领养豁免重试 → 奖励链。
 //  2. 奖励链仅 CN：礼包/补偿（静默）→ 读 streak/redemption → 补签（昨日漏签且有卡，
 //     补签后重读状态）→ 挑最高达标未领档 redeem → 抽奖（chances>0 才 draw）。
@@ -50,6 +51,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"sort"
 	"strconv"
@@ -669,6 +671,105 @@ func workbuddyTasksClientToken(prefix string) string {
 	return prefix + "-" + workbuddyNewMessageID()
 }
 
+// workbuddyTasksNewConversationID 生成一次活跃上报批次使用的 conversationId。
+//
+// 【为何不能用 sub2api-<UnixMilli>】旧实现把网关品牌名与毫秒时间戳直接写进
+// conversationId，而该字段会随 /v2/report 发往上游：字面「sub2api」等于向风控
+// 自报“这是网关伪造的活跃度”，毫秒时间戳又让同批 N 条共享一个可被枚举的键。
+// 官方桌面端该字段是 UUID 去横线形态（与 X-Conversation-ID 头族同形），故改为 32 hex。
+//
+// 用 workbuddyNewMessageID 而不是自造随机串：它已是本仓「32 hex、crypto/rand
+// 失败时 sha256 兜底」的唯一实现，复用它保证形状与 chat 出站头族完全一致。
+func workbuddyTasksNewConversationID() string {
+	return workbuddyNewMessageID()
+}
+
+// workbuddyTasksActivityModel 选取一条活跃上报要声明的模型（ID 与展示名）。
+//
+// 【为何不能写死 deepseek-v4-flash】旧实现全部账号、全部批次都声明同一个模型：
+// 这既是跨账号完全一致的指纹，也可能与该号真实白名单不符（账号只开了 glm 系
+// 却不存在的 deepseek 模型”这种自相矛盾的读数本身就是风控信号）。
+//
+// 选取优先级：账号 model_mapping 白名单（其值即上游可调模型）→ 账号上游目录快照
+// （/v3/config 同步结果，带 DisplayName）→ 平台默认目录。
+// 只取第一项而不是随机抽：活跃上报是“回放已发生的对话”，而账号白名单就是
+// 真正可发生对话的模型集；抽到白名单外反而更可疑。
+func workbuddyTasksActivityModel(account *Account) (modelID, modelName string) {
+	if account != nil {
+		// model_mapping 的值是映射后的上游模型名（key 只是对外别名），所以要取值。
+		if mapped := workbuddyTasksPickFromModelMapping(account.GetModelMapping()); mapped != "" {
+			return mapped, workbuddyTasksModelDisplayName(account, mapped)
+		}
+		if snapshot := account.GetUpstreamModelMetadataSnapshot(); snapshot != nil {
+			ids := make([]string, 0, len(snapshot.Models))
+			for id := range snapshot.Models {
+				if workbuddyCatalogIsChatModel(id) {
+					ids = append(ids, id)
+				}
+			}
+			sort.Strings(ids)
+			if len(ids) > 0 {
+				return ids[0], workbuddyTasksModelDisplayName(account, ids[0])
+			}
+		}
+	}
+	// 无账号上下文（或账号未配置白名单/未同步目录）→ 平台默认目录首项。
+	defaults := DefaultWorkbuddyModelIDs()
+	for _, id := range defaults {
+		if id == "auto" || !workbuddyCatalogIsChatModel(id) {
+			continue
+		}
+		return id, workbuddyTasksModelDisplayName(account, id)
+	}
+	return "", ""
+}
+
+// workbuddyTasksPickFromModelMapping 从 model_mapping 里挑一个上游模型名（确定性首项）。
+// 跳过 selector 类虚拟别名（auto/default-model 等）与文本补全模型；通配符 key 的
+// 值仍然可用（它才是真正发给上游的名字），但值为空/与 key 相同（纯白名单写法）时
+// 视为无信息量。
+func workbuddyTasksPickFromModelMapping(mapping map[string]string) string {
+	if len(mapping) == 0 {
+		return ""
+	}
+	candidates := make([]string, 0, len(mapping))
+	for _, target := range mapping {
+		target = strings.TrimSpace(target)
+		if target == "" || !workbuddyCatalogIsChatModel(target) {
+			continue
+		}
+		candidates = append(candidates, target)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.Strings(candidates)
+	return candidates[0]
+}
+
+// workbuddyTasksModelDisplayName 取模型的展示名：账号目录快照优先，否则按 ID 推导。
+// 与 workbuddyEntryMetadata 同口径（快照缺失时 DisplayName 回落 ID）。
+func workbuddyTasksModelDisplayName(account *Account, modelID string) string {
+	if account != nil {
+		if meta, ok := account.GetUpstreamModelMetadata(modelID); ok {
+			if name := strings.TrimSpace(meta.DisplayName); name != "" {
+				return name
+			}
+		}
+	}
+	return modelID
+}
+
+// workbuddyTasksActivityInputLength 取一条活跃上报的 inputLength（模拟真实输入长度）。
+//
+// 【为何不能用固定 12】固定值同样是一条跨账号、跨全天完全一致的指纹；官方客户端的
+// 该字段随用户真实输入变化。区间取「短句到中段落」（15–400 字符），既不会因为极端
+// 值像个假数据，也不会大到与实际对话量矛盾。
+func workbuddyTasksActivityInputLength() int {
+	const minLen, maxLen = 15, 400
+	return minLen + rand.Intn(maxLen-minLen+1)
+}
+
 // workbuddyTasksToday 返回 t 所属的 CST 自然日（2006-01-02）。
 func workbuddyTasksToday(t time.Time) string {
 	return t.In(workbuddyTasksCST).Format("2006-01-02")
@@ -697,12 +798,13 @@ func workbuddyTasksSleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 // workbuddyReportChatActivity 发送一条对话活跃上报（chat_request_send，body 为单元素数组）。
-// conversationID 由调用方生成（sub2api-<UnixMilli>），同号 N 条共享；requestID 各条独立。
-// 一条上报同时点亮连登并解锁 first_buddy 任务（领养前置）。
+// conversationID 由调用方生成（workbuddyTasksNewConversationID），同号 N 条共享；
+// requestID 各条独立。一条上报同时点亮连登并解锁 first_buddy 任务（领养前置）。
 func (s *WorkBuddyTasksService) workbuddyReportChatActivity(ctx context.Context, account *Account, conversationID, requestID string) error {
 	if requestID == "" {
 		requestID = conversationID
 	}
+	modelID, modelName := workbuddyTasksActivityModel(account)
 	now := time.Now().UnixMilli()
 	ev := workbuddyChatRequestEvent{
 		EventCode:             "chat_request_send",
@@ -711,9 +813,9 @@ func (s *WorkBuddyTasksService) workbuddyReportChatActivity(ctx context.Context,
 		Mode:                  "craft",
 		ConversationID:        conversationID,
 		RequestID:             requestID,
-		InputLength:           12,
-		RequestModelID:        "deepseek-v4-flash",
-		RequestModelName:      "DeepSeek V4 Flash",
+		InputLength:           workbuddyTasksActivityInputLength(),
+		RequestModelID:        modelID,
+		RequestModelName:      modelName,
 		IsPlan:                false,
 		IsAutoExecuteTerminal: false,
 		IsAutoModify:          false,
@@ -1044,10 +1146,12 @@ func (s *WorkBuddyTasksService) runActivityForAccount(ctx context.Context, accou
 		s.persistWorkbuddyActivitySnapshot(ctx, account, result)
 		return result
 	}
-	cid := fmt.Sprintf("sub2api-%d", time.Now().UnixMilli())
+	// conversationId 用官方 UUID 去横线形态（不再写网关品牌名与毫秒时间戳），
+	// 同号 N 条共享；每条 requestId 独立且同为 32 hex。
+	cid := workbuddyTasksNewConversationID()
 	sent := 0
 	for i := 1; i <= count; i++ {
-		rid := fmt.Sprintf("%s-r%d", cid, i)
+		rid := workbuddyNewMessageID()
 		if err := s.workbuddyReportChatActivity(ctx, account, cid, rid); err != nil {
 			slog.Warn("workbuddy activity report failed",
 				"account_id", account.ID, "report", strconv.Itoa(i)+"/"+strconv.Itoa(count), "error", err)
