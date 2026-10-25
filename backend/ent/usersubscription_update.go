@@ -181,6 +181,40 @@ func (_u *UserSubscriptionUpdate) AddTotalUsageUsd(v float64) *UserSubscriptionU
 	return _u
 }
 
+// SetResetPeriod sets the "reset_period" field.
+func (_u *UserSubscriptionUpdate) SetResetPeriod(v string) *UserSubscriptionUpdate {
+	_u.mutation.SetResetPeriod(v)
+	return _u
+}
+
+// SetNillableResetPeriod sets the "reset_period" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableResetPeriod(v *string) *UserSubscriptionUpdate {
+	if v != nil {
+		_u.SetResetPeriod(*v)
+	}
+	return _u
+}
+
+// SetUsageWindowStart sets the "usage_window_start" field.
+func (_u *UserSubscriptionUpdate) SetUsageWindowStart(v time.Time) *UserSubscriptionUpdate {
+	_u.mutation.SetUsageWindowStart(v)
+	return _u
+}
+
+// SetNillableUsageWindowStart sets the "usage_window_start" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableUsageWindowStart(v *time.Time) *UserSubscriptionUpdate {
+	if v != nil {
+		_u.SetUsageWindowStart(*v)
+	}
+	return _u
+}
+
+// ClearUsageWindowStart clears the value of the "usage_window_start" field.
+func (_u *UserSubscriptionUpdate) ClearUsageWindowStart() *UserSubscriptionUpdate {
+	_u.mutation.ClearUsageWindowStart()
+	return _u
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (_u *UserSubscriptionUpdate) SetAssignedBy(v int64) *UserSubscriptionUpdate {
 	_u.mutation.SetAssignedBy(v)
@@ -372,6 +406,11 @@ func (_u *UserSubscriptionUpdate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.ResetPeriod(); ok {
+		if err := usersubscription.ResetPeriodValidator(v); err != nil {
+			return &ValidationError{Name: "reset_period", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.reset_period": %w`, err)}
+		}
+	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UserSubscription.user"`)
 	}
@@ -422,6 +461,15 @@ func (_u *UserSubscriptionUpdate) sqlSave(ctx context.Context) (_node int, err e
 	}
 	if value, ok := _u.mutation.AddedTotalUsageUsd(); ok {
 		_spec.AddField(usersubscription.FieldTotalUsageUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.ResetPeriod(); ok {
+		_spec.SetField(usersubscription.FieldResetPeriod, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.UsageWindowStart(); ok {
+		_spec.SetField(usersubscription.FieldUsageWindowStart, field.TypeTime, value)
+	}
+	if _u.mutation.UsageWindowStartCleared() {
+		_spec.ClearField(usersubscription.FieldUsageWindowStart, field.TypeTime)
 	}
 	if value, ok := _u.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)
@@ -734,6 +782,40 @@ func (_u *UserSubscriptionUpdateOne) AddTotalUsageUsd(v float64) *UserSubscripti
 	return _u
 }
 
+// SetResetPeriod sets the "reset_period" field.
+func (_u *UserSubscriptionUpdateOne) SetResetPeriod(v string) *UserSubscriptionUpdateOne {
+	_u.mutation.SetResetPeriod(v)
+	return _u
+}
+
+// SetNillableResetPeriod sets the "reset_period" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableResetPeriod(v *string) *UserSubscriptionUpdateOne {
+	if v != nil {
+		_u.SetResetPeriod(*v)
+	}
+	return _u
+}
+
+// SetUsageWindowStart sets the "usage_window_start" field.
+func (_u *UserSubscriptionUpdateOne) SetUsageWindowStart(v time.Time) *UserSubscriptionUpdateOne {
+	_u.mutation.SetUsageWindowStart(v)
+	return _u
+}
+
+// SetNillableUsageWindowStart sets the "usage_window_start" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableUsageWindowStart(v *time.Time) *UserSubscriptionUpdateOne {
+	if v != nil {
+		_u.SetUsageWindowStart(*v)
+	}
+	return _u
+}
+
+// ClearUsageWindowStart clears the value of the "usage_window_start" field.
+func (_u *UserSubscriptionUpdateOne) ClearUsageWindowStart() *UserSubscriptionUpdateOne {
+	_u.mutation.ClearUsageWindowStart()
+	return _u
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (_u *UserSubscriptionUpdateOne) SetAssignedBy(v int64) *UserSubscriptionUpdateOne {
 	_u.mutation.SetAssignedBy(v)
@@ -938,6 +1020,11 @@ func (_u *UserSubscriptionUpdateOne) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.ResetPeriod(); ok {
+		if err := usersubscription.ResetPeriodValidator(v); err != nil {
+			return &ValidationError{Name: "reset_period", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.reset_period": %w`, err)}
+		}
+	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UserSubscription.user"`)
 	}
@@ -1005,6 +1092,15 @@ func (_u *UserSubscriptionUpdateOne) sqlSave(ctx context.Context) (_node *UserSu
 	}
 	if value, ok := _u.mutation.AddedTotalUsageUsd(); ok {
 		_spec.AddField(usersubscription.FieldTotalUsageUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.ResetPeriod(); ok {
+		_spec.SetField(usersubscription.FieldResetPeriod, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.UsageWindowStart(); ok {
+		_spec.SetField(usersubscription.FieldUsageWindowStart, field.TypeTime, value)
+	}
+	if _u.mutation.UsageWindowStartCleared() {
+		_spec.ClearField(usersubscription.FieldUsageWindowStart, field.TypeTime)
 	}
 	if value, ok := _u.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)

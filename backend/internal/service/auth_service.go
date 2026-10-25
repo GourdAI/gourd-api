@@ -889,6 +889,7 @@ func (s *AuthService) assignSubscriptions(ctx context.Context, userID int64, ite
 			UserID:        userID,
 			TotalLimitUSD: item.TotalLimitUSD,
 			ValidityDays:  item.ValidityDays,
+			ResetPeriod:   item.ResetPeriod,
 			Notes:         notes,
 		}); err != nil {
 			logger.LegacyPrintf("service.auth", "[Auth] Failed to assign default subscription: user_id=%d err=%v", userID, err)

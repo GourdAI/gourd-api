@@ -236,6 +236,12 @@ func (f fakeGoogleSubscriptionRepo) IncrementUsage(ctx context.Context, id int64
 func (f fakeGoogleSubscriptionRepo) BatchUpdateExpiredStatus(ctx context.Context) (int64, error) {
 	return 0, errors.New("not implemented")
 }
+func (f fakeGoogleSubscriptionRepo) ResetUsageWindowIfExpired(ctx context.Context, id int64, newWindowStart time.Time) (bool, error) {
+	return false, errors.New("not implemented")
+}
+func (f fakeGoogleSubscriptionRepo) BatchResetExpiredUsageWindows(ctx context.Context, now time.Time) (int64, error) {
+	return 0, errors.New("not implemented")
+}
 
 type googleErrorResponse struct {
 	Error struct {

@@ -479,7 +479,7 @@ func newQoderSSEDeliveryReader(r *qoderSSEReader, onDelivered func()) *qoderSSED
 
 // qoderMarkDeliveredInBandError 在「错误帧即将交付客户端」这一刻补记 SLA 失败。
 //
-// 【为何需要这一层】上游 200 + 流内错误帧是 Qoder 的主要拒绍形态，而
+// 【为何需要这一层】上游 200 + 流内错误帧是 Qoder 的主要拒绝形态，而
 // streamRawChatCompletions 的成功判据是 [DONE]/usage/finish_reason 任一出现，
 // 归一化读取器又**恒补一个 [DONE]**（qoder_sse.go finish）——于是错误流被伪装成
 // 正常完成：forwardErr=nil → handler 走成功分支并上报账号成功，运维侧无任何

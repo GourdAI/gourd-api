@@ -21,6 +21,12 @@ import type {
 export interface DefaultSubscriptionSetting {
   total_limit_usd: number | null;
   validity_days: number;
+  /**
+   * 额度重置周期：none = 一次性总额池（花完为止）；
+   * daily/weekly/monthly = 每个自然日/周/月重发 total_limit_usd（剩余不结转）。
+   * 缺省/未知值后端归一为 none，旧配置行为不变。
+   */
+  reset_period?: 'none' | 'daily' | 'weekly' | 'monthly';
 }
 
 // ── 平台限额类型 ──────────────────────────────────────────────────
@@ -291,7 +297,17 @@ export function normalizeDefaultSubscriptionSettings(
         36500,
         Math.max(1, Math.floor(Number(item.validity_days))),
       ),
+      // 周期归一：未知值回落 none，保证拼错时不会把额度变成高频重置。
+      reset_period: normalizeResetPeriod(item.reset_period),
     }));
+}
+
+function normalizeResetPeriod(
+  value: unknown,
+): 'none' | 'daily' | 'weekly' | 'monthly' {
+  return value === 'daily' || value === 'weekly' || value === 'monthly'
+    ? value
+    : 'none';
 }
 
 // toPositiveAmount 把输入框的值归一为「生效额度」：

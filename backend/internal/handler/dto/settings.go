@@ -352,9 +352,12 @@ type SystemSettings struct {
 }
 
 type DefaultSubscriptionSetting struct {
-	// TotalLimitUSD 新用户默认获得的订阅钱包总额度（USD）。
+	// TotalLimitUSD 新用户默认获得的订阅钱包总额度（USD）；配了重置周期时为「每周期发这么多」。
 	TotalLimitUSD *float64 `json:"total_limit_usd"`
 	ValidityDays  int      `json:"validity_days"`
+	// ResetPeriod 额度重置周期（none/daily/weekly/monthly）：空 = 一次性总额池。
+	// omitempty 保证存量配置（全部为一次性）保存后 JSON 形式不变。
+	ResetPeriod string `json:"reset_period,omitempty"`
 }
 
 type PublicSettings struct {

@@ -1241,13 +1241,22 @@ func (r *accountRepository) ListOAuthRefreshCandidatePage(ctx context.Context, o
 		query += `
 			AND status = 'active'`
 	}
+	// 类型门：默认只收 oauth（按需含 setup-token）；IncludeAPIKeyPlatforms 为 true 时
+	// 把 apikey 并入同一类型集合。必须是「替换」而不是「追加 AND」——追加会变成
+	// `type='oauth' AND (type IN (...) OR type='apikey')`，等价于原条件，apikey 依旧被排除。
+	typeClause := "type = 'oauth'"
 	if options.IncludeSetupToken {
-		query += `
-			AND type IN ('oauth', 'setup-token')`
-	} else {
-		query += `
-			AND type = 'oauth'`
+		typeClause = "type IN ('oauth', 'setup-token')"
 	}
+	if options.IncludeAPIKeyPlatforms {
+		if options.IncludeSetupToken {
+			typeClause = "type IN ('oauth', 'setup-token', 'apikey')"
+		} else {
+			typeClause = "type IN ('oauth', 'apikey')"
+		}
+	}
+	query += `
+			AND ` + typeClause
 	if options.RequireRefreshToken {
 		query += `
 			AND credentials ? 'refresh_token'

@@ -141,6 +141,34 @@ func (_c *UserSubscriptionCreate) SetNillableTotalUsageUsd(v *float64) *UserSubs
 	return _c
 }
 
+// SetResetPeriod sets the "reset_period" field.
+func (_c *UserSubscriptionCreate) SetResetPeriod(v string) *UserSubscriptionCreate {
+	_c.mutation.SetResetPeriod(v)
+	return _c
+}
+
+// SetNillableResetPeriod sets the "reset_period" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableResetPeriod(v *string) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetResetPeriod(*v)
+	}
+	return _c
+}
+
+// SetUsageWindowStart sets the "usage_window_start" field.
+func (_c *UserSubscriptionCreate) SetUsageWindowStart(v time.Time) *UserSubscriptionCreate {
+	_c.mutation.SetUsageWindowStart(v)
+	return _c
+}
+
+// SetNillableUsageWindowStart sets the "usage_window_start" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableUsageWindowStart(v *time.Time) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetUsageWindowStart(*v)
+	}
+	return _c
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (_c *UserSubscriptionCreate) SetAssignedBy(v int64) *UserSubscriptionCreate {
 	_c.mutation.SetAssignedBy(v)
@@ -286,6 +314,10 @@ func (_c *UserSubscriptionCreate) defaults() error {
 		v := usersubscription.DefaultTotalUsageUsd
 		_c.mutation.SetTotalUsageUsd(v)
 	}
+	if _, ok := _c.mutation.ResetPeriod(); !ok {
+		v := usersubscription.DefaultResetPeriod
+		_c.mutation.SetResetPeriod(v)
+	}
 	if _, ok := _c.mutation.AssignedAt(); !ok {
 		if usersubscription.DefaultAssignedAt == nil {
 			return fmt.Errorf("ent: uninitialized usersubscription.DefaultAssignedAt (forgotten import ent/runtime?)")
@@ -323,6 +355,14 @@ func (_c *UserSubscriptionCreate) check() error {
 	}
 	if _, ok := _c.mutation.TotalUsageUsd(); !ok {
 		return &ValidationError{Name: "total_usage_usd", err: errors.New(`ent: missing required field "UserSubscription.total_usage_usd"`)}
+	}
+	if _, ok := _c.mutation.ResetPeriod(); !ok {
+		return &ValidationError{Name: "reset_period", err: errors.New(`ent: missing required field "UserSubscription.reset_period"`)}
+	}
+	if v, ok := _c.mutation.ResetPeriod(); ok {
+		if err := usersubscription.ResetPeriodValidator(v); err != nil {
+			return &ValidationError{Name: "reset_period", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.reset_period": %w`, err)}
+		}
 	}
 	if _, ok := _c.mutation.AssignedAt(); !ok {
 		return &ValidationError{Name: "assigned_at", err: errors.New(`ent: missing required field "UserSubscription.assigned_at"`)}
@@ -388,6 +428,14 @@ func (_c *UserSubscriptionCreate) createSpec() (*UserSubscription, *sqlgraph.Cre
 	if value, ok := _c.mutation.TotalUsageUsd(); ok {
 		_spec.SetField(usersubscription.FieldTotalUsageUsd, field.TypeFloat64, value)
 		_node.TotalUsageUsd = value
+	}
+	if value, ok := _c.mutation.ResetPeriod(); ok {
+		_spec.SetField(usersubscription.FieldResetPeriod, field.TypeString, value)
+		_node.ResetPeriod = value
+	}
+	if value, ok := _c.mutation.UsageWindowStart(); ok {
+		_spec.SetField(usersubscription.FieldUsageWindowStart, field.TypeTime, value)
+		_node.UsageWindowStart = &value
 	}
 	if value, ok := _c.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)
@@ -654,6 +702,36 @@ func (u *UserSubscriptionUpsert) AddTotalUsageUsd(v float64) *UserSubscriptionUp
 	return u
 }
 
+// SetResetPeriod sets the "reset_period" field.
+func (u *UserSubscriptionUpsert) SetResetPeriod(v string) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldResetPeriod, v)
+	return u
+}
+
+// UpdateResetPeriod sets the "reset_period" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateResetPeriod() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldResetPeriod)
+	return u
+}
+
+// SetUsageWindowStart sets the "usage_window_start" field.
+func (u *UserSubscriptionUpsert) SetUsageWindowStart(v time.Time) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldUsageWindowStart, v)
+	return u
+}
+
+// UpdateUsageWindowStart sets the "usage_window_start" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateUsageWindowStart() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldUsageWindowStart)
+	return u
+}
+
+// ClearUsageWindowStart clears the value of the "usage_window_start" field.
+func (u *UserSubscriptionUpsert) ClearUsageWindowStart() *UserSubscriptionUpsert {
+	u.SetNull(usersubscription.FieldUsageWindowStart)
+	return u
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (u *UserSubscriptionUpsert) SetAssignedBy(v int64) *UserSubscriptionUpsert {
 	u.Set(usersubscription.FieldAssignedBy, v)
@@ -905,6 +983,41 @@ func (u *UserSubscriptionUpsertOne) AddTotalUsageUsd(v float64) *UserSubscriptio
 func (u *UserSubscriptionUpsertOne) UpdateTotalUsageUsd() *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
 		s.UpdateTotalUsageUsd()
+	})
+}
+
+// SetResetPeriod sets the "reset_period" field.
+func (u *UserSubscriptionUpsertOne) SetResetPeriod(v string) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetResetPeriod(v)
+	})
+}
+
+// UpdateResetPeriod sets the "reset_period" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateResetPeriod() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateResetPeriod()
+	})
+}
+
+// SetUsageWindowStart sets the "usage_window_start" field.
+func (u *UserSubscriptionUpsertOne) SetUsageWindowStart(v time.Time) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetUsageWindowStart(v)
+	})
+}
+
+// UpdateUsageWindowStart sets the "usage_window_start" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateUsageWindowStart() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateUsageWindowStart()
+	})
+}
+
+// ClearUsageWindowStart clears the value of the "usage_window_start" field.
+func (u *UserSubscriptionUpsertOne) ClearUsageWindowStart() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.ClearUsageWindowStart()
 	})
 }
 
@@ -1333,6 +1446,41 @@ func (u *UserSubscriptionUpsertBulk) AddTotalUsageUsd(v float64) *UserSubscripti
 func (u *UserSubscriptionUpsertBulk) UpdateTotalUsageUsd() *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
 		s.UpdateTotalUsageUsd()
+	})
+}
+
+// SetResetPeriod sets the "reset_period" field.
+func (u *UserSubscriptionUpsertBulk) SetResetPeriod(v string) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetResetPeriod(v)
+	})
+}
+
+// UpdateResetPeriod sets the "reset_period" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateResetPeriod() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateResetPeriod()
+	})
+}
+
+// SetUsageWindowStart sets the "usage_window_start" field.
+func (u *UserSubscriptionUpsertBulk) SetUsageWindowStart(v time.Time) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetUsageWindowStart(v)
+	})
+}
+
+// UpdateUsageWindowStart sets the "usage_window_start" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateUsageWindowStart() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateUsageWindowStart()
+	})
+}
+
+// ClearUsageWindowStart clears the value of the "usage_window_start" field.
+func (u *UserSubscriptionUpsertBulk) ClearUsageWindowStart() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.ClearUsageWindowStart()
 	})
 }
 

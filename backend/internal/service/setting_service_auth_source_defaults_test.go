@@ -75,6 +75,9 @@ func TestSettingService_GetAuthSourceDefaultSettings_ParsesValuesAndDefaults(t *
 	require.NoError(t, err)
 	require.Equal(t, 12.5, got.Email.Balance)
 	require.Equal(t, 7, got.Email.Concurrency)
+	// parseDefaultSubscriptions 会把「空/缺省」的 reset_period 视为一次性总额池（one-shot），
+	// 且归一后仍存为空串（DTO 带 omitempty），因此旧配置的 JSON 形式完全不变。
+	// 「每天 1$」这类周期配置则会得到 "daily"/"weekly"/"monthly"。
 	require.Equal(t, []DefaultSubscriptionSetting{{TotalLimitUSD: testPtrFloat64(11), ValidityDays: 30}}, got.Email.Subscriptions)
 	require.False(t, got.Email.GrantOnSignup)
 	require.False(t, got.Email.GrantOnFirstBind)

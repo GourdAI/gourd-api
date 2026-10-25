@@ -1,4 +1,4 @@
-//go:build unit
+﻿//go:build unit
 
 package repository
 
@@ -21,7 +21,7 @@ import (
 // 修复后：事务内锁定读该用户全部生效钱包，再按「先到期先消耗」逐行累加。
 
 const (
-	lockWalletsSQL = `(?s)SELECT id, expires_at, total_limit_usd, total_usage_usd\s+` +
+	lockWalletsSQL = `(?s)SELECT id, expires_at, total_limit_usd, total_usage_usd, reset_period, usage_window_start\s+` +
 		`FROM user_subscriptions\s+WHERE user_id = \$1\s+AND deleted_at IS NULL\s+` +
 		`AND status = 'active'\s+AND expires_at > NOW\(\)\s+ORDER BY expires_at ASC\s+FOR UPDATE`
 
@@ -31,9 +31,9 @@ const (
 )
 
 func walletRows(now time.Time) *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd"}).
-		AddRow(int64(20), now.Add(time.Hour), 10.0, 0.0).
-		AddRow(int64(21), now.Add(30*24*time.Hour), 10.0, 0.0)
+	return sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd", "reset_period", "usage_window_start"}).
+		AddRow(int64(20), now.Add(time.Hour), 10.0, 0.0, "none", nil).
+		AddRow(int64(21), now.Add(30*24*time.Hour), 10.0, 0.0, "none", nil)
 }
 
 func TestApplySubscriptionCost_SplitsAcrossWalletsInExpiryOrder(t *testing.T) {
@@ -94,9 +94,13 @@ func TestApplySubscriptionCost_LocksRowsForUpdate(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestApplySubscriptionCost_OverrunStillRecordedNotDropped(t *testing.T) {
-	// 装不下时整笔记到首选钱包（用量合法越界，后续被预检 429），
-	// 而不是丢弃 —— 请求已发生，丢弃等于白送。
+// 【口径变更 2026-10-21】装不下时不再「把整笔记到首选钱包、让用量合法越界」，
+// 而是「能拆多少拆多少，余量回落余额」。原因（用户拍板）：用户如果自己有余额，
+// 让免费钱包透支而余额一分不动，等于平台白送。旧口径仅在「只有免费额度、无余额」
+// 时等价，所以当时看着合理。
+//
+// 本用例：两份各 1$ 的满额钱包 + 要计 100$ → 两行各记 1.0，余下 98 回落余额。
+func TestApplySubscriptionCost_OverrunFallsBackToBalance(t *testing.T) {
 	ctx := context.Background()
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -106,17 +110,48 @@ func TestApplySubscriptionCost_OverrunStillRecordedNotDropped(t *testing.T) {
 	tx, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	mock.ExpectQuery(lockWalletsSQL).WithArgs(int64(9)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd"}).
-			AddRow(int64(30), time.Now().Add(time.Hour), 1.0, 0.0).
-			AddRow(int64(31), time.Now().Add(2*time.Hour), 1.0, 0.0))
-	mock.ExpectExec(incrementSubscriptionSQL).WithArgs(100.0, int64(30)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd", "reset_period", "usage_window_start"}).
+			AddRow(int64(30), time.Now().Add(time.Hour), 1.0, 0.0, "none", nil).
+			AddRow(int64(31), time.Now().Add(2*time.Hour), 1.0, 0.0, "none", nil))
+	mock.ExpectExec(incrementSubscriptionSQL).WithArgs(1.0, int64(30)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(incrementSubscriptionSQL).WithArgs(1.0, int64(31)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	fallback, err := applySubscriptionCost(ctx, tx,
 		&service.UsageBillingCommand{UserID: 9, SubscriptionCost: 100})
 	require.NoError(t, err)
-	require.Zero(t, fallback, "越界也要记到订阅钱包，不能回落")
+	require.InDelta(t, 98.0, fallback, 1e-9, "余额应承担钱包装不下的 98")
+	require.NoError(t, tx.Commit())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// 【本次需求的直接回归】只有一份 1$ 免费钱包、花掉 0.9，再请求 0.5：
+// 钱包记 0.1（花到底），余 0.4 回落余额。这正是「每天 1$，用完扣自己余额」。
+func TestApplySubscriptionCost_ExhaustedFreeWalletFallsBackRemainder(t *testing.T) {
+	ctx := context.Background()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	windowStart := time.Now().UTC().Truncate(24 * time.Hour)
+	mock.ExpectQuery(lockWalletsSQL).WithArgs(int64(13)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd", "reset_period", "usage_window_start"}).
+			AddRow(int64(50), time.Now().Add(720*time.Hour), 1.0, 0.9, "daily", windowStart))
+	// 注意要按浮点容差断言：0.5 - 0.9 在 float64 下是 0.09999999999999998，
+	// 拿 0.1 做精确匹配会假红（这本身就是拆分逻辑用 epsilon 而非 == 的原因）。
+	mock.ExpectExec(incrementSubscriptionSQL).WithArgs(sqlmock.AnyArg(), int64(50)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	fallback, err := applySubscriptionCost(ctx, tx,
+		&service.UsageBillingCommand{UserID: 13, SubscriptionCost: 0.5})
+	require.NoError(t, err)
+	require.InDelta(t, 0.4, fallback, 1e-9)
 	require.NoError(t, tx.Commit())
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -132,9 +167,9 @@ func TestApplySubscriptionCost_UnlimitedWalletBackfills(t *testing.T) {
 	tx, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	mock.ExpectQuery(lockWalletsSQL).WithArgs(int64(10)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd"}).
-			AddRow(int64(40), time.Now().Add(time.Hour), 5.0, 5.0).   // 已榨干
-			AddRow(int64(41), time.Now().Add(2*time.Hour), nil, 0.0)) // 不限额
+		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd", "reset_period", "usage_window_start"}).
+			AddRow(int64(40), time.Now().Add(time.Hour), 5.0, 5.0, "none", nil).   // 已榨干
+			AddRow(int64(41), time.Now().Add(2*time.Hour), nil, 0.0, "none", nil)) // 不限额
 	mock.ExpectExec(incrementSubscriptionSQL).WithArgs(4.0, int64(41)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -159,7 +194,7 @@ func TestApplySubscriptionCost_FallsBackToSnapshotWhenNoRowsLocked(t *testing.T)
 	tx, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	mock.ExpectQuery(lockWalletsSQL).WithArgs(int64(11)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd", "reset_period", "usage_window_start"}))
 	mock.ExpectExec(incrementSubscriptionSQL).WithArgs(2.0, int64(55)).
 		WillReturnError(sql.ErrNoRows)
 
@@ -186,7 +221,7 @@ func TestApplySubscriptionCost_NoRowsNoSnapshotFallsBackToBalance(t *testing.T) 
 	tx, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	mock.ExpectQuery(lockWalletsSQL).WithArgs(int64(12)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd", "reset_period", "usage_window_start"}))
 
 	fallback, applyErr := applySubscriptionCost(ctx, tx,
 		&service.UsageBillingCommand{UserID: 12, SubscriptionCost: 2})
@@ -209,7 +244,7 @@ func TestApplySubscriptionCost_SoftDeletedFallbackFallsBackToBalance(t *testing.
 	tx, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	mock.ExpectQuery(lockWalletsSQL).WithArgs(int64(13)).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "expires_at", "total_limit_usd", "total_usage_usd", "reset_period", "usage_window_start"}))
 	// 兜底归行：执行成功但 affected=0（软删行被 WHERE 过滤掉）
 	mock.ExpectExec(incrementSubscriptionSQL).WithArgs(7.0, int64(77)).
 		WillReturnResult(sqlmock.NewResult(0, 0))

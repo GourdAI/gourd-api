@@ -40849,6 +40849,8 @@ type SubscriptionPlanMutation struct {
 	addprice                  *float64
 	total_limit_usd           *float64
 	addtotal_limit_usd        *float64
+	reset_period              *string
+	self_claimable            *bool
 	original_price            *float64
 	addoriginal_price         *float64
 	currency                  *string
@@ -41221,6 +41223,78 @@ func (m *SubscriptionPlanMutation) ResetTotalLimitUsd() {
 	m.total_limit_usd = nil
 	m.addtotal_limit_usd = nil
 	delete(m.clearedFields, subscriptionplan.FieldTotalLimitUsd)
+}
+
+// SetResetPeriod sets the "reset_period" field.
+func (m *SubscriptionPlanMutation) SetResetPeriod(s string) {
+	m.reset_period = &s
+}
+
+// ResetPeriod returns the value of the "reset_period" field in the mutation.
+func (m *SubscriptionPlanMutation) ResetPeriod() (r string, exists bool) {
+	v := m.reset_period
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResetPeriod returns the old "reset_period" field's value of the SubscriptionPlan entity.
+// If the SubscriptionPlan object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *SubscriptionPlanMutation) OldResetPeriod(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResetPeriod is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResetPeriod requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResetPeriod: %w", err)
+	}
+	return oldValue.ResetPeriod, nil
+}
+
+// ResetResetPeriod resets all changes to the "reset_period" field.
+func (m *SubscriptionPlanMutation) ResetResetPeriod() {
+	m.reset_period = nil
+}
+
+// SetSelfClaimable sets the "self_claimable" field.
+func (m *SubscriptionPlanMutation) SetSelfClaimable(b bool) {
+	m.self_claimable = &b
+}
+
+// SelfClaimable returns the value of the "self_claimable" field in the mutation.
+func (m *SubscriptionPlanMutation) SelfClaimable() (r bool, exists bool) {
+	v := m.self_claimable
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSelfClaimable returns the old "self_claimable" field's value of the SubscriptionPlan entity.
+// If the SubscriptionPlan object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *SubscriptionPlanMutation) OldSelfClaimable(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSelfClaimable is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSelfClaimable requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSelfClaimable: %w", err)
+	}
+	return oldValue.SelfClaimable, nil
+}
+
+// ResetSelfClaimable resets all changes to the "self_claimable" field.
+func (m *SubscriptionPlanMutation) ResetSelfClaimable() {
+	m.self_claimable = nil
 }
 
 // SetOriginalPrice sets the "original_price" field.
@@ -41745,7 +41819,7 @@ func (m *SubscriptionPlanMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *SubscriptionPlanMutation) Fields() []string {
-	fields := make([]string, 0, 15)
+	fields := make([]string, 0, 17)
 	if m.group_id != nil {
 		fields = append(fields, subscriptionplan.FieldGroupID)
 	}
@@ -41760,6 +41834,12 @@ func (m *SubscriptionPlanMutation) Fields() []string {
 	}
 	if m.total_limit_usd != nil {
 		fields = append(fields, subscriptionplan.FieldTotalLimitUsd)
+	}
+	if m.reset_period != nil {
+		fields = append(fields, subscriptionplan.FieldResetPeriod)
+	}
+	if m.self_claimable != nil {
+		fields = append(fields, subscriptionplan.FieldSelfClaimable)
 	}
 	if m.original_price != nil {
 		fields = append(fields, subscriptionplan.FieldOriginalPrice)
@@ -41809,6 +41889,10 @@ func (m *SubscriptionPlanMutation) Field(name string) (ent.Value, bool) {
 		return m.Price()
 	case subscriptionplan.FieldTotalLimitUsd:
 		return m.TotalLimitUsd()
+	case subscriptionplan.FieldResetPeriod:
+		return m.ResetPeriod()
+	case subscriptionplan.FieldSelfClaimable:
+		return m.SelfClaimable()
 	case subscriptionplan.FieldOriginalPrice:
 		return m.OriginalPrice()
 	case subscriptionplan.FieldCurrency:
@@ -41848,6 +41932,10 @@ func (m *SubscriptionPlanMutation) OldField(ctx context.Context, name string) (e
 		return m.OldPrice(ctx)
 	case subscriptionplan.FieldTotalLimitUsd:
 		return m.OldTotalLimitUsd(ctx)
+	case subscriptionplan.FieldResetPeriod:
+		return m.OldResetPeriod(ctx)
+	case subscriptionplan.FieldSelfClaimable:
+		return m.OldSelfClaimable(ctx)
 	case subscriptionplan.FieldOriginalPrice:
 		return m.OldOriginalPrice(ctx)
 	case subscriptionplan.FieldCurrency:
@@ -41911,6 +41999,20 @@ func (m *SubscriptionPlanMutation) SetField(name string, value ent.Value) error 
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetTotalLimitUsd(v)
+		return nil
+	case subscriptionplan.FieldResetPeriod:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResetPeriod(v)
+		return nil
+	case subscriptionplan.FieldSelfClaimable:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSelfClaimable(v)
 		return nil
 	case subscriptionplan.FieldOriginalPrice:
 		v, ok := value.(float64)
@@ -42135,6 +42237,12 @@ func (m *SubscriptionPlanMutation) ResetField(name string) error {
 		return nil
 	case subscriptionplan.FieldTotalLimitUsd:
 		m.ResetTotalLimitUsd()
+		return nil
+	case subscriptionplan.FieldResetPeriod:
+		m.ResetResetPeriod()
+		return nil
+	case subscriptionplan.FieldSelfClaimable:
+		m.ResetSelfClaimable()
 		return nil
 	case subscriptionplan.FieldOriginalPrice:
 		m.ResetOriginalPrice()
@@ -55565,6 +55673,8 @@ type UserSubscriptionMutation struct {
 	addtotal_limit_usd      *float64
 	total_usage_usd         *float64
 	addtotal_usage_usd      *float64
+	reset_period            *string
+	usage_window_start      *time.Time
 	assigned_at             *time.Time
 	notes                   *string
 	clearedFields           map[string]struct{}
@@ -56120,6 +56230,91 @@ func (m *UserSubscriptionMutation) ResetTotalUsageUsd() {
 	m.addtotal_usage_usd = nil
 }
 
+// SetResetPeriod sets the "reset_period" field.
+func (m *UserSubscriptionMutation) SetResetPeriod(s string) {
+	m.reset_period = &s
+}
+
+// ResetPeriod returns the value of the "reset_period" field in the mutation.
+func (m *UserSubscriptionMutation) ResetPeriod() (r string, exists bool) {
+	v := m.reset_period
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResetPeriod returns the old "reset_period" field's value of the UserSubscription entity.
+// If the UserSubscription object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserSubscriptionMutation) OldResetPeriod(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResetPeriod is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResetPeriod requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResetPeriod: %w", err)
+	}
+	return oldValue.ResetPeriod, nil
+}
+
+// ResetResetPeriod resets all changes to the "reset_period" field.
+func (m *UserSubscriptionMutation) ResetResetPeriod() {
+	m.reset_period = nil
+}
+
+// SetUsageWindowStart sets the "usage_window_start" field.
+func (m *UserSubscriptionMutation) SetUsageWindowStart(t time.Time) {
+	m.usage_window_start = &t
+}
+
+// UsageWindowStart returns the value of the "usage_window_start" field in the mutation.
+func (m *UserSubscriptionMutation) UsageWindowStart() (r time.Time, exists bool) {
+	v := m.usage_window_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUsageWindowStart returns the old "usage_window_start" field's value of the UserSubscription entity.
+// If the UserSubscription object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserSubscriptionMutation) OldUsageWindowStart(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUsageWindowStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUsageWindowStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUsageWindowStart: %w", err)
+	}
+	return oldValue.UsageWindowStart, nil
+}
+
+// ClearUsageWindowStart clears the value of the "usage_window_start" field.
+func (m *UserSubscriptionMutation) ClearUsageWindowStart() {
+	m.usage_window_start = nil
+	m.clearedFields[usersubscription.FieldUsageWindowStart] = struct{}{}
+}
+
+// UsageWindowStartCleared returns if the "usage_window_start" field was cleared in this mutation.
+func (m *UserSubscriptionMutation) UsageWindowStartCleared() bool {
+	_, ok := m.clearedFields[usersubscription.FieldUsageWindowStart]
+	return ok
+}
+
+// ResetUsageWindowStart resets all changes to the "usage_window_start" field.
+func (m *UserSubscriptionMutation) ResetUsageWindowStart() {
+	m.usage_window_start = nil
+	delete(m.clearedFields, usersubscription.FieldUsageWindowStart)
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (m *UserSubscriptionMutation) SetAssignedBy(i int64) {
 	m.assigned_by_user = &i
@@ -56436,7 +56631,7 @@ func (m *UserSubscriptionMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UserSubscriptionMutation) Fields() []string {
-	fields := make([]string, 0, 13)
+	fields := make([]string, 0, 15)
 	if m.created_at != nil {
 		fields = append(fields, usersubscription.FieldCreatedAt)
 	}
@@ -56466,6 +56661,12 @@ func (m *UserSubscriptionMutation) Fields() []string {
 	}
 	if m.total_usage_usd != nil {
 		fields = append(fields, usersubscription.FieldTotalUsageUsd)
+	}
+	if m.reset_period != nil {
+		fields = append(fields, usersubscription.FieldResetPeriod)
+	}
+	if m.usage_window_start != nil {
+		fields = append(fields, usersubscription.FieldUsageWindowStart)
 	}
 	if m.assigned_by_user != nil {
 		fields = append(fields, usersubscription.FieldAssignedBy)
@@ -56504,6 +56705,10 @@ func (m *UserSubscriptionMutation) Field(name string) (ent.Value, bool) {
 		return m.TotalLimitUsd()
 	case usersubscription.FieldTotalUsageUsd:
 		return m.TotalUsageUsd()
+	case usersubscription.FieldResetPeriod:
+		return m.ResetPeriod()
+	case usersubscription.FieldUsageWindowStart:
+		return m.UsageWindowStart()
 	case usersubscription.FieldAssignedBy:
 		return m.AssignedBy()
 	case usersubscription.FieldAssignedAt:
@@ -56539,6 +56744,10 @@ func (m *UserSubscriptionMutation) OldField(ctx context.Context, name string) (e
 		return m.OldTotalLimitUsd(ctx)
 	case usersubscription.FieldTotalUsageUsd:
 		return m.OldTotalUsageUsd(ctx)
+	case usersubscription.FieldResetPeriod:
+		return m.OldResetPeriod(ctx)
+	case usersubscription.FieldUsageWindowStart:
+		return m.OldUsageWindowStart(ctx)
 	case usersubscription.FieldAssignedBy:
 		return m.OldAssignedBy(ctx)
 	case usersubscription.FieldAssignedAt:
@@ -56623,6 +56832,20 @@ func (m *UserSubscriptionMutation) SetField(name string, value ent.Value) error 
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetTotalUsageUsd(v)
+		return nil
+	case usersubscription.FieldResetPeriod:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResetPeriod(v)
+		return nil
+	case usersubscription.FieldUsageWindowStart:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUsageWindowStart(v)
 		return nil
 	case usersubscription.FieldAssignedBy:
 		v, ok := value.(int64)
@@ -56711,6 +56934,9 @@ func (m *UserSubscriptionMutation) ClearedFields() []string {
 	if m.FieldCleared(usersubscription.FieldTotalLimitUsd) {
 		fields = append(fields, usersubscription.FieldTotalLimitUsd)
 	}
+	if m.FieldCleared(usersubscription.FieldUsageWindowStart) {
+		fields = append(fields, usersubscription.FieldUsageWindowStart)
+	}
 	if m.FieldCleared(usersubscription.FieldAssignedBy) {
 		fields = append(fields, usersubscription.FieldAssignedBy)
 	}
@@ -56739,6 +56965,9 @@ func (m *UserSubscriptionMutation) ClearField(name string) error {
 		return nil
 	case usersubscription.FieldTotalLimitUsd:
 		m.ClearTotalLimitUsd()
+		return nil
+	case usersubscription.FieldUsageWindowStart:
+		m.ClearUsageWindowStart()
 		return nil
 	case usersubscription.FieldAssignedBy:
 		m.ClearAssignedBy()
@@ -56783,6 +57012,12 @@ func (m *UserSubscriptionMutation) ResetField(name string) error {
 		return nil
 	case usersubscription.FieldTotalUsageUsd:
 		m.ResetTotalUsageUsd()
+		return nil
+	case usersubscription.FieldResetPeriod:
+		m.ResetResetPeriod()
+		return nil
+	case usersubscription.FieldUsageWindowStart:
+		m.ResetUsageWindowStart()
 		return nil
 	case usersubscription.FieldAssignedBy:
 		m.ResetAssignedBy()

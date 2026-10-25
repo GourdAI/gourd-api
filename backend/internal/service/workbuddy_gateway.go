@@ -374,8 +374,17 @@ func (s *AccountTestService) refreshWorkbuddyAccountToken(ctx context.Context, a
 	if rt := strings.TrimSpace(env.Data.RefreshToken); rt != "" {
 		next["refresh_token"] = rt
 	}
+	// expiresIn 优先（上游明文权威）；缺失/超量级时用**新 token 自身的 exp** 兜底，
+	// 二者都无则删掉旧值——旧 expires_at 描述的是旧 token，refresh 已经换掉了它。
+	// 本机探针实测：refresh 响应不带 expiresIn 时保留旧值会让 workbuddyTokenNeedsRefresh
+	// 返回 false（旧值 +40天 vs 新 token 真实 exp +2h），即「刚刷完就被认为不需刷」。
+	// 与 workbuddy_client.go / workbuddy_token_refresher.go 同源、同优先级。
 	if env.Data.ExpiresIn > 0 && time.Duration(env.Data.ExpiresIn)*time.Second < workbuddyRefreshExpiresInMax {
 		next["expires_at"] = time.Now().Add(time.Duration(env.Data.ExpiresIn) * time.Second).Unix()
+	} else if exp := workbuddyJWTExpiry(env.Data.AccessToken); exp > 0 {
+		next["expires_at"] = exp
+	} else {
+		delete(next, "expires_at")
 	}
 	if d := strings.TrimSpace(env.Data.Domain); d != "" {
 		next["domain"] = d

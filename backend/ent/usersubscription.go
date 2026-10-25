@@ -39,6 +39,10 @@ type UserSubscription struct {
 	TotalLimitUsd *float64 `json:"total_limit_usd,omitempty"`
 	// TotalUsageUsd holds the value of the "total_usage_usd" field.
 	TotalUsageUsd float64 `json:"total_usage_usd,omitempty"`
+	// ResetPeriod holds the value of the "reset_period" field.
+	ResetPeriod string `json:"reset_period,omitempty"`
+	// UsageWindowStart holds the value of the "usage_window_start" field.
+	UsageWindowStart *time.Time `json:"usage_window_start,omitempty"`
 	// AssignedBy holds the value of the "assigned_by" field.
 	AssignedBy *int64 `json:"assigned_by,omitempty"`
 	// AssignedAt holds the value of the "assigned_at" field.
@@ -117,9 +121,9 @@ func (*UserSubscription) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullFloat64)
 		case usersubscription.FieldID, usersubscription.FieldUserID, usersubscription.FieldPlanID, usersubscription.FieldAssignedBy:
 			values[i] = new(sql.NullInt64)
-		case usersubscription.FieldStatus, usersubscription.FieldNotes:
+		case usersubscription.FieldStatus, usersubscription.FieldResetPeriod, usersubscription.FieldNotes:
 			values[i] = new(sql.NullString)
-		case usersubscription.FieldCreatedAt, usersubscription.FieldUpdatedAt, usersubscription.FieldDeletedAt, usersubscription.FieldStartsAt, usersubscription.FieldExpiresAt, usersubscription.FieldAssignedAt:
+		case usersubscription.FieldCreatedAt, usersubscription.FieldUpdatedAt, usersubscription.FieldDeletedAt, usersubscription.FieldStartsAt, usersubscription.FieldExpiresAt, usersubscription.FieldUsageWindowStart, usersubscription.FieldAssignedAt:
 			values[i] = new(sql.NullTime)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -204,6 +208,19 @@ func (_m *UserSubscription) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field total_usage_usd", values[i])
 			} else if value.Valid {
 				_m.TotalUsageUsd = value.Float64
+			}
+		case usersubscription.FieldResetPeriod:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field reset_period", values[i])
+			} else if value.Valid {
+				_m.ResetPeriod = value.String
+			}
+		case usersubscription.FieldUsageWindowStart:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field usage_window_start", values[i])
+			} else if value.Valid {
+				_m.UsageWindowStart = new(time.Time)
+				*_m.UsageWindowStart = value.Time
 			}
 		case usersubscription.FieldAssignedBy:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -316,6 +333,14 @@ func (_m *UserSubscription) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("total_usage_usd=")
 	builder.WriteString(fmt.Sprintf("%v", _m.TotalUsageUsd))
+	builder.WriteString(", ")
+	builder.WriteString("reset_period=")
+	builder.WriteString(_m.ResetPeriod)
+	builder.WriteString(", ")
+	if v := _m.UsageWindowStart; v != nil {
+		builder.WriteString("usage_window_start=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
 	builder.WriteString(", ")
 	if v := _m.AssignedBy; v != nil {
 		builder.WriteString("assigned_by=")

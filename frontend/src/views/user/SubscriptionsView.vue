@@ -23,8 +23,57 @@
         </p>
       </div>
 
+      <!-- 可自助领取的套餐（免费额度类）：管理员开启 self_claimable 后出现 -->
+      <div v-if="!loading && claimablePlans.length > 0" class="space-y-3">
+        <div>
+          <h2 class="text-base font-semibold text-gray-900 dark:text-white">
+            {{ t('userSubscriptions.claimableTitle') }}
+          </h2>
+          <p class="mt-1 text-sm text-gray-500 dark:text-dark-400">
+            {{ t('userSubscriptions.claimableDesc') }}
+          </p>
+        </div>
+        <div class="grid gap-3 md:grid-cols-2">
+          <div
+            v-for="plan in claimablePlans"
+            :key="plan.id"
+            class="flex items-center justify-between rounded-xl border border-gray-200 p-4 dark:border-dark-700"
+            :data-test="`claimable-plan-${plan.id}`"
+          >
+            <div class="min-w-0">
+              <p class="truncate font-medium text-gray-900 dark:text-white">{{ plan.name }}</p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">
+                <template v-if="plan.total_limit_usd">
+                  ${{ plan.total_limit_usd.toFixed(2) }}
+                  {{ resetPeriodLabel(plan.reset_period) }}
+                </template>
+                <template v-else>{{ t('userSubscriptions.unlimited') }}</template>
+              </p>
+            </div>
+            <button
+              class="ml-3 shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+              :class="
+                plan.already_claimed
+                  ? 'cursor-default bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
+                  : 'bg-primary-600 text-white hover:bg-primary-700'
+              "
+              :disabled="plan.already_claimed || claimingPlanId === plan.id"
+              @click="claimPlan(plan.id)"
+            >
+              {{
+                plan.already_claimed
+                  ? t('userSubscriptions.claimed')
+                  : claimingPlanId === plan.id
+                    ? t('userSubscriptions.claiming')
+                    : t('userSubscriptions.claim')
+              }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Subscriptions Grid -->
-      <div v-else class="grid gap-6 lg:grid-cols-2">
+      <div v-if="!loading && subscriptions.length > 0" class="grid gap-6 lg:grid-cols-2">
         <div
           v-for="subscription in subscriptions"
           :key="subscription.id"
@@ -128,6 +177,18 @@
                 {{ t('userSubscriptions.remaining') }} $
                 {{ (subscription.remaining_usd ?? 0).toFixed(2) }}
               </p>
+              <!-- 周期重置提示：让用户知道「花完不是完了，明天会回来」 -->
+              <p
+                v-if="subscription.reset_period && subscription.reset_period !== 'none'"
+                class="text-xs text-primary-600 dark:text-primary-400"
+              >
+                {{ resetPeriodLabel(subscription.reset_period) }}
+                <span v-if="subscription.window_resets_at">
+                  ·
+                  {{ t('userSubscriptions.nextResetAt') }}
+                  {{ formatDateTimeToMinute(new Date(subscription.window_resets_at)) }}
+                </span>
+              </p>
             </div>
 
             <!-- Unlimited wallet -->
@@ -160,6 +221,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import subscriptionsAPI from '@/api/subscriptions'
+import type { ClaimableSubscriptionPlan } from '@/api/subscriptions'
 import type { UserSubscription } from '@/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -176,6 +238,54 @@ const appStore = useAppStore()
 
 const subscriptions = ref<UserSubscription[]>([])
 const loading = ref(true)
+
+// 可自助领取的套餐（后端只返回在售 + self_claimable 的）。
+// 领取后需要同时刷新「我的订阅」与本列表（后者用来把按钮置为已领取）。
+const claimablePlans = ref<ClaimableSubscriptionPlan[]>([])
+const claimingPlanId = ref<number | null>(null)
+
+async function loadClaimablePlans() {
+  try {
+    claimablePlans.value = await subscriptionsAPI.getClaimablePlans()
+  } catch (error) {
+    // 领取列表是辅助功能：它挂了不应把「我的订阅」整页变成错误态。
+    console.error('Failed to load claimable plans:', error)
+    claimablePlans.value = []
+  }
+}
+
+async function claimPlan(planId: number) {
+  if (claimingPlanId.value !== null) return
+  claimingPlanId.value = planId
+  try {
+    const result = await subscriptionsAPI.claimPlan(planId)
+    appStore.showSuccess(
+      result.already_claimed
+        ? t('userSubscriptions.alreadyClaimedHint')
+        : t('userSubscriptions.claimSuccess'),
+    )
+    await Promise.all([loadSubscriptions(), loadClaimablePlans()])
+  } catch (error) {
+    console.error('Failed to claim plan:', error)
+    appStore.showError(t('userSubscriptions.claimFailed'))
+  } finally {
+    claimingPlanId.value = null
+  }
+}
+
+/** 周期文案：none = 一次性（不展示重置），其余展示「每天/每周/每月」。 */
+function resetPeriodLabel(period?: string | null): string {
+  switch (period) {
+    case 'daily':
+      return t('userSubscriptions.resetPeriodDaily')
+    case 'weekly':
+      return t('userSubscriptions.resetPeriodWeekly')
+    case 'monthly':
+      return t('userSubscriptions.resetPeriodMonthly')
+    default:
+      return t('userSubscriptions.resetPeriodNone')
+  }
+}
 
 async function loadSubscriptions() {
   try {
@@ -242,5 +352,6 @@ function getExpirationClass(expiresAt: string): string {
 
 onMounted(() => {
   loadSubscriptions()
+  loadClaimablePlans()
 })
 </script>

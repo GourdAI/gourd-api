@@ -678,6 +678,14 @@ func normalizeDefaultSubscriptions(input []dto.DefaultSubscriptionSetting) []dto
 		if item.ValidityDays > service.MaxValidityDays {
 			item.ValidityDays = service.MaxValidityDays
 		}
+		// 周期归一：none 存为空串（DTO 带 omitempty），未知值回落 none。
+		// 这样存量配置保存后 JSON 形式不变；下游统一用
+		// NormalizeSubscriptionResetPeriod 读取，空串与 "none" 等价。
+		if period := service.NormalizeSubscriptionResetPeriod(item.ResetPeriod); period != service.SubscriptionResetPeriodNone {
+			item.ResetPeriod = period
+		} else {
+			item.ResetPeriod = ""
+		}
 		normalized = append(normalized, item)
 	}
 	return normalized
@@ -721,6 +729,7 @@ func defaultSubscriptionsValueOrDefault(input *[]dto.DefaultSubscriptionSetting,
 		result = append(result, service.DefaultSubscriptionSetting{
 			TotalLimitUSD: item.TotalLimitUSD,
 			ValidityDays:  item.ValidityDays,
+			ResetPeriod:   item.ResetPeriod,
 		})
 	}
 	return result
@@ -754,7 +763,7 @@ func equalDefaultSubscriptions(a, b []service.DefaultSubscriptionSetting) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].ValidityDays != b[i].ValidityDays || !equalNullableFloat(a[i].TotalLimitUSD, b[i].TotalLimitUSD) {
+		if a[i].ValidityDays != b[i].ValidityDays || a[i].ResetPeriod != b[i].ResetPeriod || !equalNullableFloat(a[i].TotalLimitUSD, b[i].TotalLimitUSD) {
 			return false
 		}
 	}

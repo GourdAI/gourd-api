@@ -115,6 +115,10 @@ type traeFrameState struct {
 	meta       traeStreamMeta
 	sawOutput  bool
 	doneIssued bool
+	// sawFinishReason 有一帧曾带非空 finish_reason（上游在 output/done 帧里宣告结束）。
+	// 与 doneIssued / usage 并为「完成证据」：单凭 sawOutput 不能证明上游讲完了——
+	// 读过正文却 EOF 正是断流的形态（见 finish 的注释）。
+	sawFinishReason bool
 	// bizErr 上游 event:error 的原始载荷（HTTP 仍为 200）；非 nil 时收尾不得补 [DONE]。
 	bizErr *traeStreamError
 	usage  map[string]any
@@ -163,6 +167,9 @@ func (st *traeFrameState) chunksWithUsage(obj map[string]any) []map[string]any {
 	content := traeFirstStringOrEmpty(obj, "response", "content", "text")
 	reasoning := traeFirstStringOrEmpty(obj, "reasoning_content", "reasoning", "thinking")
 	finishReason := strings.TrimSpace(traeFirstStringOrEmpty(obj, "finish_reason"))
+	if finishReason != "" {
+		st.sawFinishReason = true
+	}
 	toolCalls := traeExtractToolCalls(obj)
 	if usage := traeExtractUsageObject(obj); usage != nil {
 		st.usage = usage
@@ -598,6 +605,23 @@ func (rd *traeSSEReader) writeFrame(payload string) {
 // Trae 积分耗尽的主要形态，错误帧会立即把 clientOutputStarted 置真，上层的换号
 // 分支就此锁死，永远把上游原文透给客户端。真正能换号的窗口由
 // traeProbeFirstFrame 在写出任何字节之前抢占，别再把本注释当作「已支持换号」的依据。
+// finish 终止产出。【不再为「没有 done 帧」的上游代盖 finish_reason=stop 完成章】
+//
+// 修复前：只要 sawOutput 且未收过 done 帧，本函数就会**主动构造**一个
+// `finish_reason=stop` 的空 delta 帧，再补 `[DONE]`。但「读过正文却没收到 done」
+// 恰恰就是上游中途断流的形态（worker 掉线、边缘节点掐连接）——归一化器代盖的
+// 完成章让上层 streamRawChatCompletions 的截断判定恒不触发，forwardErr=nil，
+// handler 走成功分支（ReportOpenAIAccountScheduleResult success=true +
+// usage_logs 落 0 token 行），面板因此记「成功」。与 Qoder / WorkBuddy 同构。
+//
+// 现在的口径（与 Qoder 修复后一致）：
+//   - 错误帧已出现   ：只下发错误帧，不补 [DONE]（已有行为）；
+//   - 空流           ：只下发空流 error 帧，不补 [DONE]（已有行为）；
+//   - done 帧来过    ：上游自己宣告结束 → 补 [DONE]（正常完成）；
+//   - 带 finish_reason / usage 则同样算完成证据（真实上游会在 output 帧里带
+//     finish_reason，也可能只发 token_usage）；
+//   - 只有正文就 EOF：**上游截断** → 既不造 finish 帧，也不补 [DONE]，
+//     由上层按截断处理（计 SLA 失败；尚未写出时可以透明换号）。
 func (rd *traeSSEReader) finish() {
 	if rd.finished {
 		return
@@ -611,6 +635,11 @@ func (rd *traeSSEReader) finish() {
 	}
 	if rd.state.validFrames() == 0 {
 		rd.writeFrame(traeEmptyStreamErrorFrame)
+		return
+	}
+	// 完成证据任一存在才算上游讲完了（sawOutput 不算：它只说明“给过正文”）。
+	completed := rd.state.doneIssued || rd.state.usage != nil || rd.state.sawFinishReason
+	if !completed {
 		return
 	}
 	if !rd.state.doneIssued && rd.state.sawOutput {

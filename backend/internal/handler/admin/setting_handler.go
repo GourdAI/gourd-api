@@ -1,4 +1,4 @@
-package admin
+﻿package admin
 
 import (
 	"crypto/rand"
@@ -119,6 +119,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		defaultSubscriptions = append(defaultSubscriptions, dto.DefaultSubscriptionSetting{
 			TotalLimitUSD: sub.TotalLimitUSD,
 			ValidityDays:  sub.ValidityDays,
+			ResetPeriod:   sub.ResetPeriod,
 		})
 	}
 

@@ -126,6 +126,34 @@ func (_u *SubscriptionPlanUpdate) ClearTotalLimitUsd() *SubscriptionPlanUpdate {
 	return _u
 }
 
+// SetResetPeriod sets the "reset_period" field.
+func (_u *SubscriptionPlanUpdate) SetResetPeriod(v string) *SubscriptionPlanUpdate {
+	_u.mutation.SetResetPeriod(v)
+	return _u
+}
+
+// SetNillableResetPeriod sets the "reset_period" field if the given value is not nil.
+func (_u *SubscriptionPlanUpdate) SetNillableResetPeriod(v *string) *SubscriptionPlanUpdate {
+	if v != nil {
+		_u.SetResetPeriod(*v)
+	}
+	return _u
+}
+
+// SetSelfClaimable sets the "self_claimable" field.
+func (_u *SubscriptionPlanUpdate) SetSelfClaimable(v bool) *SubscriptionPlanUpdate {
+	_u.mutation.SetSelfClaimable(v)
+	return _u
+}
+
+// SetNillableSelfClaimable sets the "self_claimable" field if the given value is not nil.
+func (_u *SubscriptionPlanUpdate) SetNillableSelfClaimable(v *bool) *SubscriptionPlanUpdate {
+	if v != nil {
+		_u.SetSelfClaimable(*v)
+	}
+	return _u
+}
+
 // SetOriginalPrice sets the "original_price" field.
 func (_u *SubscriptionPlanUpdate) SetOriginalPrice(v float64) *SubscriptionPlanUpdate {
 	_u.mutation.ResetOriginalPrice()
@@ -355,6 +383,11 @@ func (_u *SubscriptionPlanUpdate) check() error {
 			return &ValidationError{Name: "name", err: fmt.Errorf(`ent: validator failed for field "SubscriptionPlan.name": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.ResetPeriod(); ok {
+		if err := subscriptionplan.ResetPeriodValidator(v); err != nil {
+			return &ValidationError{Name: "reset_period", err: fmt.Errorf(`ent: validator failed for field "SubscriptionPlan.reset_period": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Currency(); ok {
 		if err := subscriptionplan.CurrencyValidator(v); err != nil {
 			return &ValidationError{Name: "currency", err: fmt.Errorf(`ent: validator failed for field "SubscriptionPlan.currency": %w`, err)}
@@ -411,6 +444,12 @@ func (_u *SubscriptionPlanUpdate) sqlSave(ctx context.Context) (_node int, err e
 	}
 	if _u.mutation.TotalLimitUsdCleared() {
 		_spec.ClearField(subscriptionplan.FieldTotalLimitUsd, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.ResetPeriod(); ok {
+		_spec.SetField(subscriptionplan.FieldResetPeriod, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.SelfClaimable(); ok {
+		_spec.SetField(subscriptionplan.FieldSelfClaimable, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.OriginalPrice(); ok {
 		_spec.SetField(subscriptionplan.FieldOriginalPrice, field.TypeFloat64, value)
@@ -610,6 +649,34 @@ func (_u *SubscriptionPlanUpdateOne) AddTotalLimitUsd(v float64) *SubscriptionPl
 // ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
 func (_u *SubscriptionPlanUpdateOne) ClearTotalLimitUsd() *SubscriptionPlanUpdateOne {
 	_u.mutation.ClearTotalLimitUsd()
+	return _u
+}
+
+// SetResetPeriod sets the "reset_period" field.
+func (_u *SubscriptionPlanUpdateOne) SetResetPeriod(v string) *SubscriptionPlanUpdateOne {
+	_u.mutation.SetResetPeriod(v)
+	return _u
+}
+
+// SetNillableResetPeriod sets the "reset_period" field if the given value is not nil.
+func (_u *SubscriptionPlanUpdateOne) SetNillableResetPeriod(v *string) *SubscriptionPlanUpdateOne {
+	if v != nil {
+		_u.SetResetPeriod(*v)
+	}
+	return _u
+}
+
+// SetSelfClaimable sets the "self_claimable" field.
+func (_u *SubscriptionPlanUpdateOne) SetSelfClaimable(v bool) *SubscriptionPlanUpdateOne {
+	_u.mutation.SetSelfClaimable(v)
+	return _u
+}
+
+// SetNillableSelfClaimable sets the "self_claimable" field if the given value is not nil.
+func (_u *SubscriptionPlanUpdateOne) SetNillableSelfClaimable(v *bool) *SubscriptionPlanUpdateOne {
+	if v != nil {
+		_u.SetSelfClaimable(*v)
+	}
 	return _u
 }
 
@@ -855,6 +922,11 @@ func (_u *SubscriptionPlanUpdateOne) check() error {
 			return &ValidationError{Name: "name", err: fmt.Errorf(`ent: validator failed for field "SubscriptionPlan.name": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.ResetPeriod(); ok {
+		if err := subscriptionplan.ResetPeriodValidator(v); err != nil {
+			return &ValidationError{Name: "reset_period", err: fmt.Errorf(`ent: validator failed for field "SubscriptionPlan.reset_period": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Currency(); ok {
 		if err := subscriptionplan.CurrencyValidator(v); err != nil {
 			return &ValidationError{Name: "currency", err: fmt.Errorf(`ent: validator failed for field "SubscriptionPlan.currency": %w`, err)}
@@ -928,6 +1000,12 @@ func (_u *SubscriptionPlanUpdateOne) sqlSave(ctx context.Context) (_node *Subscr
 	}
 	if _u.mutation.TotalLimitUsdCleared() {
 		_spec.ClearField(subscriptionplan.FieldTotalLimitUsd, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.ResetPeriod(); ok {
+		_spec.SetField(subscriptionplan.FieldResetPeriod, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.SelfClaimable(); ok {
+		_spec.SetField(subscriptionplan.FieldSelfClaimable, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.OriginalPrice(); ok {
 		_spec.SetField(subscriptionplan.FieldOriginalPrice, field.TypeFloat64, value)

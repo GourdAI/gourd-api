@@ -39,6 +39,11 @@ import (
 // errQoderEmptyStream 上游返回 200 但没有有效 SSE 数据帧（空流/只有注释/[DONE]）。
 var errQoderEmptyStream = errors.New("qoder upstream stream contained no valid data events")
 
+// errQoderStreamTruncated 上游给了内容但没给任何「讲完了」的证据（非流式聚合路径）。
+// 与 errQoderEmptyStream 刻意分开：空流是「上游什么都没说」，截断是「说了一半就走」，
+// 二者在排障与告警口径上不同，且 qoderIsEmptyStreamError 的判据只能指向后者。
+var errQoderStreamTruncated = errors.New("qoder upstream stream ended before any terminal chunk")
+
 // errQoderUpstreamEnvelope 信封级错误（statusCodeValue != 200 / 业务 code 非 0）。
 // 结构化保留上游 code 与详情，由调用方做 failover 判定与错误透传。
 type errQoderUpstreamEnvelope struct {
@@ -219,6 +224,33 @@ func qoderInnerBareMessageError(obj map[string]any) bool {
 	return true
 }
 
+// qoderInnerHasTerminalEvidence 报告一帧正文是否携带「生成已结局」的证据：
+//   - choices[].finish_reason 非空（stop/length/tool_calls/...）；
+//   - 存在 usage 对象（网关强制 include_usage，它是 OpenAI CC 协议的尾帧哨兵）。
+//
+// 口径与上层 openAIRawStreamTerminalState 严格对齐：那边同样把 finish_reason 与 usage
+// 当终止信号，所以这里认的帧在那边也能被认，不会出现「归一化器认为完成、上层认为截断」
+// 的左右互扑。
+func qoderInnerHasTerminalEvidence(obj map[string]any) bool {
+	if u, ok := obj["usage"].(map[string]any); ok && len(u) > 0 {
+		return true
+	}
+	chs, ok := obj["choices"].([]any)
+	if !ok {
+		return false
+	}
+	for _, ci := range chs {
+		c, ok := ci.(map[string]any)
+		if !ok {
+			continue
+		}
+		if fr, ok := c["finish_reason"].(string); ok && strings.TrimSpace(fr) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // qoderResponseModel 计算回写给客户端的响应 model：仅当实际出站模型为 Qoder
 // 官方 key 时用它覆盖上游占位值（上游对任何请求都恒报 model:"auto"，而客户端
 // 按响应 model 判定"实际用了哪个模型"）。发非官方 key 时不改写，保留上游
@@ -372,6 +404,11 @@ type qoderSSEReader struct {
 	// 换号会造成重复输出」的唯一可靠判据：validFrames 把错误帧也计数在内（见
 	// writeFrame），拿它当依据会把「首帧即错」误判成「已有正文」而放弃换号。
 	contentFrames int
+	// sawUpstreamDone 上游**自己**发过 `data: [DONE]`（不是本归一化器补的那个）。
+	sawUpstreamDone bool
+	// sawTerminalChunk 上游正文帧里出现过终止证据：非空 finish_reason，或 usage 尾帧。
+	// 与 sawUpstreamDone 一起构成「上游讲完了」的判据，见 finish 的注释。
+	sawTerminalChunk bool
 	// bizErr 首个业务错误帧的结构化形态（供 probe 判定换号；只保留第一个，
 	// 与 onBizErr 的请求级去重口径一致）。
 	bizErr *errQoderUpstreamEnvelope
@@ -400,6 +437,8 @@ func (r *qoderSSEReader) pump() {
 		payload = strings.TrimSpace(payload)
 		switch {
 		case payload == "[DONE]":
+			// 上游显式结束：[DONE] 统一由 finish 写出（保证恰好一个）。
+			r.sawUpstreamDone = true
 			r.finish()
 			return
 		case payload != "":
@@ -459,6 +498,9 @@ func (r *qoderSSEReader) writeFrame(payload string) {
 			r.firstID = v
 		}
 	}
+	if qoderInnerHasTerminalEvidence(data.InnerObject) {
+		r.sawTerminalChunk = true
+	}
 	chunk := qoderFrameToCCChunk(data.InnerObject, r.firstID, r.sentModel)
 	raw, err := json.Marshal(chunk)
 	if err != nil {
@@ -468,7 +510,29 @@ func (r *qoderSSEReader) writeFrame(payload string) {
 	r.pending.WriteString("data: " + string(raw) + "\n\n")
 }
 
-// finish 终止产出：空流先补一帧 error（warn），再保证恰好一个 [DONE]。
+// finish 终止产出。【不再无条件补 [DONE]——这是「报错却记成功」的最后一道结构性缺口】
+//
+// 修复前本函数恒补一个 `data: [DONE]`，而上层 streamRawChatCompletions 的成功判据
+// 正是「[DONE]/usage/finish_reason 任一出现」（openai_raw_stream_truncation.go）。
+// 二者叠加的结果：**上游静默断流被伪装成正常完成**——上游在正文中途 EOF（Cloudflare
+// 掐连接、worker 掉线、上游排队超过前端等待）时，归一化器补出的假 [DONE] 让
+// forwardErr=nil，handler 走成功分支：ReportOpenAIAccountScheduleResult(success=true)
+// + usage_logs 落一条 0 token 的行，运维「请求明细」因此显示「成功」。
+// 线上样本（2026-10-24）：Qoder / qwen3.8-flash，首字 453ms、总耗时 3m0s、输入输出
+// 0/0 token、状态「成功」——正文已经开始、usage 尾帧从未到达，正是本形态。
+//
+// 现在只在上游**确实给出终止证据**时补 [DONE]：
+//   - sawUpstreamDone    ：上游自己发过 [DONE]；
+//   - sawTerminalChunk   ：正文帧带非空 finish_reason，或到达 usage 尾帧；
+//   - bizErr != nil      ：错误帧已写入（「带内错误」由 qoderSSEDeliveryReader 在交付点
+//     记失败，见 qoder_upstream_error.go）。
+//
+// 三者全无时**不补 [DONE]**，让 raw 路径按上游截断处理：已写出正文则补发 error 帧并
+// 以 streamReadError 收尾（计入 SLA 失败）；尚未写出则还能透明换号重试。这与 Trae
+// 归一化器 traeSSEReader.finish 的既有取向一致（业务错误/未完成时不补 [DONE]）。
+//
+// 空流（validFrames == 0）同样不补 [DONE]：那是上游一个有效帧都没给，属失败而非成功，
+// error 帧留给客户端识别，失败判定交给上面的截断分支。
 func (r *qoderSSEReader) finish() {
 	if r.finished {
 		return
@@ -477,8 +541,16 @@ func (r *qoderSSEReader) finish() {
 		logger.L().Warn("qoder sse normalizer: upstream stream contained no valid data events")
 		r.pending.WriteString("data: " + workbuddyEmptyStreamErrorFrame + "\n\n")
 	}
-	r.pending.WriteString("data: [DONE]\n\n")
+	if r.qoderUpstreamCompleted() {
+		r.pending.WriteString("data: [DONE]\n\n")
+	}
 	r.finished = true
+}
+
+// qoderUpstreamCompleted 报告上游是否给出过「讲完了」的证据。
+// 见 finish 的注释：缺证据即视为上游截断，不得由本归一化器代为宣告完成。
+func (r *qoderSSEReader) qoderUpstreamCompleted() bool {
+	return r.bizErr != nil || r.sawUpstreamDone || r.sawTerminalChunk
 }
 
 // aggregateQoderSSE 读取完整上游流，聚合 delta.content/reasoning_content/tool_calls
@@ -497,13 +569,17 @@ func aggregateQoderSSE(r io.Reader, sentModel string) ([]byte, *OpenAIUsage, err
 		reasoning    strings.Builder
 		role         = "assistant"
 		finishReason = "stop"
-		usage        map[string]any
-		validEvents  int
-		sawDone      bool
-		toolCalls    = map[int]map[string]any{}
-		toolOrder    []int
-		toolSeq      int
-		idIndex      = map[string]int{}
+		// sawFinishReason 上游是否真的给过非空 finish_reason。finishReason 的默认值
+		// "stop" 是本地占位：若直接拿它当「已结局」，中途断流会被聚合成一个
+		// finish_reason=stop 的完整响应（与流式路径伪造 [DONE] 同构的缺陷）。
+		sawFinishReason bool
+		usage           map[string]any
+		validEvents     int
+		sawDone         bool
+		toolCalls       = map[int]map[string]any{}
+		toolOrder       []int
+		toolSeq         int
+		idIndex         = map[string]int{}
 	)
 	appendContent := func(txt string) {
 		if txt == "" {
@@ -581,6 +657,7 @@ func aggregateQoderSSE(r io.Reader, sentModel string) ([]byte, *OpenAIUsage, err
 			}
 			if fr, ok := c["finish_reason"].(string); ok && fr != "" {
 				finishReason = fr
+				sawFinishReason = true
 			}
 			if delta, ok := c["delta"].(map[string]any); ok {
 				if r2, ok := delta["role"].(string); ok && r2 != "" {
@@ -636,6 +713,14 @@ func aggregateQoderSSE(r io.Reader, sentModel string) ([]byte, *OpenAIUsage, err
 	}
 	if validEvents == 0 {
 		return nil, nil, errQoderEmptyStream
+	}
+	// 【上游中途断流不得聚合成成功】非流式路径同样缺完成证据就会伪造结局：
+	// finishReason 默认 "stop"、usage 缺失时直接不写 usage 字段，结果是一个看似
+	// 完整的 chat.completion（HTTP 200 + 截断内容），调用方无从分辨。此处与流式
+	// 路径 qoderSSEReader.qoderUpstreamCompleted 同口径：sawDone / 非空
+	// finish_reason / usage 尾帧任一存在才算讲完。
+	if !sawDone && !sawFinishReason && usage == nil {
+		return nil, nil, errQoderStreamTruncated
 	}
 	if id == "" {
 		id = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())

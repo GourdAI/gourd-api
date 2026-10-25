@@ -766,12 +766,18 @@ type UserSubscription struct {
 
 	// TotalLimitUSD 总额度（USD）：nil 或 <=0 = 不限额。
 	TotalLimitUSD *float64 `json:"total_limit_usd"`
-	// TotalUsageUSD 已消耗金额（总额池口径，不随日/周/月滚动重置）。
+	// TotalUsageUSD 当前窗口内已消耗金额（周期重置时只算本窗口）。
 	TotalUsageUSD float64 `json:"total_usage_usd"`
 	// RemainingUSD 剩余额度：nil 表示不限额（无上限）。
 	RemainingUSD *float64 `json:"remaining_usd"`
 	// Unlimited 便捷标记，等价于 TotalLimitUSD 归一化后为 nil。
 	Unlimited bool `json:"unlimited"`
+
+	// ResetPeriod 额度重置周期（none/daily/weekly/monthly）：
+	// none = 一次性总额池（花完为止）；其余 = 每个窗口重发 TotalLimitUSD。
+	ResetPeriod string `json:"reset_period"`
+	// WindowResetsAt 下次额度刷新时刻；nil 表示不刷新（none 周期或已过期）。
+	WindowResetsAt *time.Time `json:"window_resets_at,omitempty"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`

@@ -13,6 +13,10 @@ import (
 
 // qoder_sse_test.go 上游 SSE 解析单测：正常帧、信封 418 错误帧、业务 code 错误、
 // usage 同帧合并、[DONE] 归一化、空流、非流式聚合。
+//
+// [DONE] 归一化口径（2026-10-24 修复）：归一化器只在**上游给出完成证据**时才补
+// [DONE]（上游自己的 [DONE] / finish_reason / usage 尾帧 / 错误帧）；纯粹的上游
+// 断流与空流一律不补——否则上层的「[DONE]=成功」判据会把截断洗成成功。
 
 // qoderSSEEnvelope 辅助：构造一帧上游信封 data 行（body 为内层 JSON 字符串原样）。
 func qoderSSEEnvelope(innerJSON string, status int) string {
@@ -105,10 +109,12 @@ func TestQoderSSEReaderErrorFrames(t *testing.T) {
 
 func TestQoderSSEReaderEmptyStream(t *testing.T) {
 	t.Parallel()
-	// 只有注释行/空行的空流：补一帧 error + [DONE]。
+	// 只有注释行/空行的空流：补一帧 error，但**不补 [DONE]**。
+	// 旧断言（必须恰好一个 [DONE]）把 bug 固化成了契约：空流不是「完成」，
+	// 一个假的 [DONE] 足以让上层 raw 路径把它判成成功（2026-10-24 修复）。
 	out := string(readAllQoder(t, newQoderSSEReader(strings.NewReader(": keep-alive\n\n"), "")))
 	require.Contains(t, out, `"error"`)
-	require.Equal(t, 1, strings.Count(out, "data: [DONE]"))
+	require.NotContains(t, out, "data: [DONE]", "空流未给出完成证据，不得代为宣告完成")
 }
 
 func TestAggregateQoderSSEFull(t *testing.T) {

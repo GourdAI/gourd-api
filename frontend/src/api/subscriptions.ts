@@ -76,10 +76,56 @@ export async function getSubscriptionProgress(
   return response.data
 }
 
+/**
+ * 可自助领取的套餐（免费额度类）。
+ * 后端只返回 for_sale=true 且 self_claimable=true 的套餐，
+ * already_claimed 表示当前用户已持有同一套餐（前端据此置灰按钮）。
+ */
+export interface ClaimableSubscriptionPlan {
+  id: number
+  name: string
+  description: string
+  total_limit_usd: number | null
+  /** none = 一次性总额池；daily/weekly/monthly = 每周期重发额度 */
+  reset_period: 'none' | 'daily' | 'weekly' | 'monthly'
+  validity_days: number
+  validity_unit: string
+  features: string
+  sort_order: number
+  already_claimed: boolean
+}
+
+/** 领取结果：already_claimed=true 表示命中了幂等（未新建、未叠加额度） */
+export interface ClaimSubscriptionResult {
+  subscription: UserSubscription
+  already_claimed: boolean
+}
+
+/**
+ * Get plans the current user may self-claim
+ */
+export async function getClaimablePlans(): Promise<ClaimableSubscriptionPlan[]> {
+  const response = await apiClient.get<ClaimableSubscriptionPlan[]>('/subscriptions/claimable')
+  return response.data
+}
+
+/**
+ * Self-claim a free subscription plan.
+ * 同一套餐重复领取是幂等的（不叠加额度），因此可以安全重试。
+ */
+export async function claimPlan(planId: number): Promise<ClaimSubscriptionResult> {
+  const response = await apiClient.post<ClaimSubscriptionResult>('/subscriptions/claim', {
+    plan_id: planId
+  })
+  return response.data
+}
+
 export default {
   getMySubscriptions,
   getActiveSubscriptions,
   getSubscriptionsProgress,
   getSubscriptionSummary,
-  getSubscriptionProgress
+  getSubscriptionProgress,
+  getClaimablePlans,
+  claimPlan
 }

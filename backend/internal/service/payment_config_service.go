@@ -171,14 +171,20 @@ type CreatePlanRequest struct {
 	// TotalLimitUSD 套餐总额度（USD）：购买后快照进 user_subscriptions.total_limit_usd。
 	// nil 或 <=0 表示该套餐不限量。与 Price 完全独立：Price 是卖多少钱，
 	// 本字段是买回去能花多少钱（订阅不绑分组后，额度只能长在套餐上）。
+	//
+	// 配了 ResetPeriod（非 none）时，本字段是「每个周期发这么多」而不是一次性总量。
 	TotalLimitUSD *float64 `json:"total_limit_usd"`
-	Currency      string   `json:"currency"`
-	ValidityDays  int      `json:"validity_days"`
-	ValidityUnit  string   `json:"validity_unit"`
-	Features      string   `json:"features"`
-	ProductName   string   `json:"product_name"`
-	ForSale       bool     `json:"for_sale"`
-	SortOrder     int      `json:"sort_order"`
+	// ResetPeriod 额度重置周期：none/daily/weekly/monthly，空串归一为 none。
+	ResetPeriod string `json:"reset_period"`
+	// SelfClaimable 是否允许用户自助领取（免费额度套餐用）。
+	SelfClaimable bool   `json:"self_claimable"`
+	Currency      string `json:"currency"`
+	ValidityDays  int    `json:"validity_days"`
+	ValidityUnit  string `json:"validity_unit"`
+	Features      string `json:"features"`
+	ProductName   string `json:"product_name"`
+	ForSale       bool   `json:"for_sale"`
+	SortOrder     int    `json:"sort_order"`
 }
 
 type UpdatePlanRequest struct {
@@ -190,13 +196,17 @@ type UpdatePlanRequest struct {
 	// TotalLimitUSD 三态：nil = 不修改；>0 = 设为该额度；<=0 = 清空（改为不限量）。
 	// 与 SubscriptionService.UpdateAssignedLimit 保持同一口径。
 	TotalLimitUSD *float64 `json:"total_limit_usd"`
-	Currency      *string  `json:"currency"`
-	ValidityDays  *int     `json:"validity_days"`
-	ValidityUnit  *string  `json:"validity_unit"`
-	Features      *string  `json:"features"`
-	ProductName   *string  `json:"product_name"`
-	ForSale       *bool    `json:"for_sale"`
-	SortOrder     *int     `json:"sort_order"`
+	// ResetPeriod 三态：nil = 不修改；非 nil = 归一后写入（空串/未知值 → none）。
+	ResetPeriod *string `json:"reset_period"`
+	// SelfClaimable 三态：nil = 不修改。
+	SelfClaimable *bool   `json:"self_claimable"`
+	Currency      *string `json:"currency"`
+	ValidityDays  *int    `json:"validity_days"`
+	ValidityUnit  *string `json:"validity_unit"`
+	Features      *string `json:"features"`
+	ProductName   *string `json:"product_name"`
+	ForSale       *bool   `json:"for_sale"`
+	SortOrder     *int    `json:"sort_order"`
 }
 
 // PaymentConfigService manages payment configuration and CRUD for

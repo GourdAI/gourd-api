@@ -107,6 +107,28 @@ const (
 	SubscriptionStatusSuspended = "suspended"
 )
 
+// Subscription quota reset period constants
+//
+// 语义：额度是「每个窗口发这么多」还是「一辈子就这么多」。
+//
+//   - none    ：一次性总额池（对齐 new-api amount_total/amount_used），花完为止，
+//     有效期到期后剩余作废，不随日/周/月滚动重置。
+//   - daily   ：自然日窗口（UTC 00:00 切窗），每窗口发 ResetPeriod 对应的额度；
+//     窗口结束后上一窗口的**剩余额度作废**（不累积）。
+//   - weekly  ：自然周窗口，周一 00:00(UTC) 切窗。
+//   - monthly ：自然月窗口，每月 1 日 00:00(UTC) 切窗。
+//
+// 实现方式为「窗口起点 + 读时懒归一」，不是定时任务清零，原因：
+// 定时任务漏跑会让用户**少**拿额度（同一天莫名不能用），而懒归一漏跑只会让
+// 库里多留一会儿陈旧用量；且懒归一能把「清零」和「累加」放在同一个事务/行锁里，
+// 避免窗口边界那笔请求被重复计入或抹掉。
+const (
+	SubscriptionResetPeriodNone    = "none"
+	SubscriptionResetPeriodDaily   = "daily"
+	SubscriptionResetPeriodWeekly  = "weekly"
+	SubscriptionResetPeriodMonthly = "monthly"
+)
+
 // AntigravityGemini31ProAgentModel is the upstream route for Gemini 3.1 Pro High.
 const AntigravityGemini31ProAgentModel = "gemini-pro-agent"
 

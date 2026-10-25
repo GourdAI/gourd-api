@@ -69,9 +69,27 @@ func (UserSubscription) Fields() []ent.Field {
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
 		// 已消耗金额（USD）：随请求原子累加，订阅作废/到期不回滚。
+		// 配了 ResetPeriod 时，这里只表示「当前窗口内」的用量（见 UsageWindowStart）。
 		field.Float("total_usage_usd").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}).
 			Default(0),
+
+		// 额度重置周期快照：none/daily/weekly/monthly。
+		// none = 一次性总额池（迁移 246 的语义，花完为止）；
+		// 其余值 = total_usage_usd 在窗口边界自动归零，即「每天/每周/每月发这么多」。
+		// 发放时从套餐快照写入，改套餐不回溯已发放的订阅。
+		field.String("reset_period").
+			MaxLen(16).
+			Default(domain.SubscriptionResetPeriodNone),
+
+		// 当前额度窗口起点(UTC)：NULL = 首次使用，按 StartsAt/CreatedAt 起算。
+		// 不设定时任务强制清零，而是在读取与计费事务内按「窗口是否跨边界」
+		// 懒归一（见 service.UserSubscription.NormalizeUsageWindow）：
+		// 定时任务漏跑只会让库里的旧用量多留一会儿，不会让用户少拿额度。
+		field.Time("usage_window_start").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
 
 		field.Int64("assigned_by").
 			Optional().
@@ -113,6 +131,8 @@ func (UserSubscription) Indexes() []ent.Index {
 		index.Fields("expires_at"),
 		// 网关热路径：按用户取活跃钱包（线上由 SQL 迁移创建部分索引）。
 		index.Fields("user_id", "status", "expires_at"),
+		// 后台兜底批处理：扫「配了重置周期」的活跃行。
+		index.Fields("reset_period", "usage_window_start"),
 		index.Fields("assigned_by"),
 		index.Fields("deleted_at"),
 	}

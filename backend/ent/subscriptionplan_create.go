@@ -69,6 +69,34 @@ func (_c *SubscriptionPlanCreate) SetNillableTotalLimitUsd(v *float64) *Subscrip
 	return _c
 }
 
+// SetResetPeriod sets the "reset_period" field.
+func (_c *SubscriptionPlanCreate) SetResetPeriod(v string) *SubscriptionPlanCreate {
+	_c.mutation.SetResetPeriod(v)
+	return _c
+}
+
+// SetNillableResetPeriod sets the "reset_period" field if the given value is not nil.
+func (_c *SubscriptionPlanCreate) SetNillableResetPeriod(v *string) *SubscriptionPlanCreate {
+	if v != nil {
+		_c.SetResetPeriod(*v)
+	}
+	return _c
+}
+
+// SetSelfClaimable sets the "self_claimable" field.
+func (_c *SubscriptionPlanCreate) SetSelfClaimable(v bool) *SubscriptionPlanCreate {
+	_c.mutation.SetSelfClaimable(v)
+	return _c
+}
+
+// SetNillableSelfClaimable sets the "self_claimable" field if the given value is not nil.
+func (_c *SubscriptionPlanCreate) SetNillableSelfClaimable(v *bool) *SubscriptionPlanCreate {
+	if v != nil {
+		_c.SetSelfClaimable(*v)
+	}
+	return _c
+}
+
 // SetOriginalPrice sets the "original_price" field.
 func (_c *SubscriptionPlanCreate) SetOriginalPrice(v float64) *SubscriptionPlanCreate {
 	_c.mutation.SetOriginalPrice(v)
@@ -263,6 +291,14 @@ func (_c *SubscriptionPlanCreate) defaults() {
 		v := subscriptionplan.DefaultDescription
 		_c.mutation.SetDescription(v)
 	}
+	if _, ok := _c.mutation.ResetPeriod(); !ok {
+		v := subscriptionplan.DefaultResetPeriod
+		_c.mutation.SetResetPeriod(v)
+	}
+	if _, ok := _c.mutation.SelfClaimable(); !ok {
+		v := subscriptionplan.DefaultSelfClaimable
+		_c.mutation.SetSelfClaimable(v)
+	}
 	if _, ok := _c.mutation.Currency(); !ok {
 		v := subscriptionplan.DefaultCurrency
 		_c.mutation.SetCurrency(v)
@@ -319,6 +355,17 @@ func (_c *SubscriptionPlanCreate) check() error {
 	}
 	if _, ok := _c.mutation.Price(); !ok {
 		return &ValidationError{Name: "price", err: errors.New(`ent: missing required field "SubscriptionPlan.price"`)}
+	}
+	if _, ok := _c.mutation.ResetPeriod(); !ok {
+		return &ValidationError{Name: "reset_period", err: errors.New(`ent: missing required field "SubscriptionPlan.reset_period"`)}
+	}
+	if v, ok := _c.mutation.ResetPeriod(); ok {
+		if err := subscriptionplan.ResetPeriodValidator(v); err != nil {
+			return &ValidationError{Name: "reset_period", err: fmt.Errorf(`ent: validator failed for field "SubscriptionPlan.reset_period": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.SelfClaimable(); !ok {
+		return &ValidationError{Name: "self_claimable", err: errors.New(`ent: missing required field "SubscriptionPlan.self_claimable"`)}
 	}
 	if _, ok := _c.mutation.Currency(); !ok {
 		return &ValidationError{Name: "currency", err: errors.New(`ent: missing required field "SubscriptionPlan.currency"`)}
@@ -408,6 +455,14 @@ func (_c *SubscriptionPlanCreate) createSpec() (*SubscriptionPlan, *sqlgraph.Cre
 	if value, ok := _c.mutation.TotalLimitUsd(); ok {
 		_spec.SetField(subscriptionplan.FieldTotalLimitUsd, field.TypeFloat64, value)
 		_node.TotalLimitUsd = &value
+	}
+	if value, ok := _c.mutation.ResetPeriod(); ok {
+		_spec.SetField(subscriptionplan.FieldResetPeriod, field.TypeString, value)
+		_node.ResetPeriod = value
+	}
+	if value, ok := _c.mutation.SelfClaimable(); ok {
+		_spec.SetField(subscriptionplan.FieldSelfClaimable, field.TypeBool, value)
+		_node.SelfClaimable = value
 	}
 	if value, ok := _c.mutation.OriginalPrice(); ok {
 		_spec.SetField(subscriptionplan.FieldOriginalPrice, field.TypeFloat64, value)
@@ -598,6 +653,30 @@ func (u *SubscriptionPlanUpsert) AddTotalLimitUsd(v float64) *SubscriptionPlanUp
 // ClearTotalLimitUsd clears the value of the "total_limit_usd" field.
 func (u *SubscriptionPlanUpsert) ClearTotalLimitUsd() *SubscriptionPlanUpsert {
 	u.SetNull(subscriptionplan.FieldTotalLimitUsd)
+	return u
+}
+
+// SetResetPeriod sets the "reset_period" field.
+func (u *SubscriptionPlanUpsert) SetResetPeriod(v string) *SubscriptionPlanUpsert {
+	u.Set(subscriptionplan.FieldResetPeriod, v)
+	return u
+}
+
+// UpdateResetPeriod sets the "reset_period" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsert) UpdateResetPeriod() *SubscriptionPlanUpsert {
+	u.SetExcluded(subscriptionplan.FieldResetPeriod)
+	return u
+}
+
+// SetSelfClaimable sets the "self_claimable" field.
+func (u *SubscriptionPlanUpsert) SetSelfClaimable(v bool) *SubscriptionPlanUpsert {
+	u.Set(subscriptionplan.FieldSelfClaimable, v)
+	return u
+}
+
+// UpdateSelfClaimable sets the "self_claimable" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsert) UpdateSelfClaimable() *SubscriptionPlanUpsert {
+	u.SetExcluded(subscriptionplan.FieldSelfClaimable)
 	return u
 }
 
@@ -873,6 +952,34 @@ func (u *SubscriptionPlanUpsertOne) UpdateTotalLimitUsd() *SubscriptionPlanUpser
 func (u *SubscriptionPlanUpsertOne) ClearTotalLimitUsd() *SubscriptionPlanUpsertOne {
 	return u.Update(func(s *SubscriptionPlanUpsert) {
 		s.ClearTotalLimitUsd()
+	})
+}
+
+// SetResetPeriod sets the "reset_period" field.
+func (u *SubscriptionPlanUpsertOne) SetResetPeriod(v string) *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.SetResetPeriod(v)
+	})
+}
+
+// UpdateResetPeriod sets the "reset_period" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsertOne) UpdateResetPeriod() *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.UpdateResetPeriod()
+	})
+}
+
+// SetSelfClaimable sets the "self_claimable" field.
+func (u *SubscriptionPlanUpsertOne) SetSelfClaimable(v bool) *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.SetSelfClaimable(v)
+	})
+}
+
+// UpdateSelfClaimable sets the "self_claimable" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsertOne) UpdateSelfClaimable() *SubscriptionPlanUpsertOne {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.UpdateSelfClaimable()
 	})
 }
 
@@ -1336,6 +1443,34 @@ func (u *SubscriptionPlanUpsertBulk) UpdateTotalLimitUsd() *SubscriptionPlanUpse
 func (u *SubscriptionPlanUpsertBulk) ClearTotalLimitUsd() *SubscriptionPlanUpsertBulk {
 	return u.Update(func(s *SubscriptionPlanUpsert) {
 		s.ClearTotalLimitUsd()
+	})
+}
+
+// SetResetPeriod sets the "reset_period" field.
+func (u *SubscriptionPlanUpsertBulk) SetResetPeriod(v string) *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.SetResetPeriod(v)
+	})
+}
+
+// UpdateResetPeriod sets the "reset_period" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsertBulk) UpdateResetPeriod() *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.UpdateResetPeriod()
+	})
+}
+
+// SetSelfClaimable sets the "self_claimable" field.
+func (u *SubscriptionPlanUpsertBulk) SetSelfClaimable(v bool) *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.SetSelfClaimable(v)
+	})
+}
+
+// UpdateSelfClaimable sets the "self_claimable" field to the value that was provided on create.
+func (u *SubscriptionPlanUpsertBulk) UpdateSelfClaimable() *SubscriptionPlanUpsertBulk {
+	return u.Update(func(s *SubscriptionPlanUpsert) {
+		s.UpdateSelfClaimable()
 	})
 }
 

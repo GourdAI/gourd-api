@@ -27,6 +27,10 @@ type SubscriptionPlan struct {
 	Price float64 `json:"price,omitempty"`
 	// TotalLimitUsd holds the value of the "total_limit_usd" field.
 	TotalLimitUsd *float64 `json:"total_limit_usd,omitempty"`
+	// ResetPeriod holds the value of the "reset_period" field.
+	ResetPeriod string `json:"reset_period,omitempty"`
+	// SelfClaimable holds the value of the "self_claimable" field.
+	SelfClaimable bool `json:"self_claimable,omitempty"`
 	// OriginalPrice holds the value of the "original_price" field.
 	OriginalPrice *float64 `json:"original_price,omitempty"`
 	// Currency holds the value of the "currency" field.
@@ -76,13 +80,13 @@ func (*SubscriptionPlan) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case subscriptionplan.FieldForSale:
+		case subscriptionplan.FieldSelfClaimable, subscriptionplan.FieldForSale:
 			values[i] = new(sql.NullBool)
 		case subscriptionplan.FieldPrice, subscriptionplan.FieldTotalLimitUsd, subscriptionplan.FieldOriginalPrice:
 			values[i] = new(sql.NullFloat64)
 		case subscriptionplan.FieldID, subscriptionplan.FieldGroupID, subscriptionplan.FieldValidityDays, subscriptionplan.FieldSortOrder:
 			values[i] = new(sql.NullInt64)
-		case subscriptionplan.FieldName, subscriptionplan.FieldDescription, subscriptionplan.FieldCurrency, subscriptionplan.FieldValidityUnit, subscriptionplan.FieldFeatures, subscriptionplan.FieldProductName:
+		case subscriptionplan.FieldName, subscriptionplan.FieldDescription, subscriptionplan.FieldResetPeriod, subscriptionplan.FieldCurrency, subscriptionplan.FieldValidityUnit, subscriptionplan.FieldFeatures, subscriptionplan.FieldProductName:
 			values[i] = new(sql.NullString)
 		case subscriptionplan.FieldCreatedAt, subscriptionplan.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -137,6 +141,18 @@ func (_m *SubscriptionPlan) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.TotalLimitUsd = new(float64)
 				*_m.TotalLimitUsd = value.Float64
+			}
+		case subscriptionplan.FieldResetPeriod:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field reset_period", values[i])
+			} else if value.Valid {
+				_m.ResetPeriod = value.String
+			}
+		case subscriptionplan.FieldSelfClaimable:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field self_claimable", values[i])
+			} else if value.Valid {
+				_m.SelfClaimable = value.Bool
 			}
 		case subscriptionplan.FieldOriginalPrice:
 			if value, ok := values[i].(*sql.NullFloat64); !ok {
@@ -256,6 +272,12 @@ func (_m *SubscriptionPlan) String() string {
 		builder.WriteString("total_limit_usd=")
 		builder.WriteString(fmt.Sprintf("%v", *v))
 	}
+	builder.WriteString(", ")
+	builder.WriteString("reset_period=")
+	builder.WriteString(_m.ResetPeriod)
+	builder.WriteString(", ")
+	builder.WriteString("self_claimable=")
+	builder.WriteString(fmt.Sprintf("%v", _m.SelfClaimable))
 	builder.WriteString(", ")
 	if v := _m.OriginalPrice; v != nil {
 		builder.WriteString("original_price=")

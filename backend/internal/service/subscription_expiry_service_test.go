@@ -89,6 +89,14 @@ func (r *subscriptionExpiryRepoStub) BatchUpdateExpiredStatus(context.Context) (
 	return 0, nil
 }
 
+func (r *subscriptionExpiryRepoStub) ResetUsageWindowIfExpired(context.Context, int64, time.Time) (bool, error) {
+	return false, nil
+}
+
+func (r *subscriptionExpiryRepoStub) BatchResetExpiredUsageWindows(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
 type subscriptionExpirySettingRepoStub struct {
 	values   map[string]string
 	err      error

@@ -40,10 +40,24 @@ type UserSubscriptionRepository interface {
 	UpdateStatus(ctx context.Context, subscriptionID int64, status string) error
 	UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error
 
-	// ResetUsage 手动清零该订阅的已用额度。
+	// ResetUsage 手动清零该订阅的已用额度（不动窗口起点）。
 	ResetUsage(ctx context.Context, id int64) error
 	// IncrementUsage 原子累加已用额度。
 	IncrementUsage(ctx context.Context, id int64, costUSD float64) error
+
+	// ResetUsageWindowIfExpired 把「已跨窗口边界」的订阅用量归零，并把窗口起点
+	// 推到 newWindowStart。
+	//
+	// 必须做成条件更新（WHERE usage_window_start < newWindowStart），不能先读再写：
+	// 读-改-存在两个并发请求间会把同一窗口的用量清零两次，也可能把刚累加的
+	// 一笔抹掉。条件写在 WHERE 里，只有真正跨界的那个写入者 affected=1。
+	// 返回 true 表示本次实际发生了重置。
+	ResetUsageWindowIfExpired(ctx context.Context, id int64, newWindowStart time.Time) (bool, error)
+
+	// BatchResetExpiredUsageWindows 批量归零「配了重置周期且已跨窗口」的生效订阅，
+	// 供后台兑底任务调用。返回实际重置行数。
+	// 正确性不依赖本方法：读路径已做懒归一，这里只是避免库里用量长期虚高。
+	BatchResetExpiredUsageWindows(ctx context.Context, now time.Time) (int64, error)
 
 	BatchUpdateExpiredStatus(ctx context.Context) (int64, error)
 }

@@ -133,6 +133,9 @@ func RegisterUserRoutes(
 			subscriptions.GET("/active", h.Subscription.GetActive)
 			subscriptions.GET("/progress", h.Subscription.GetProgress)
 			subscriptions.GET("/summary", h.Subscription.GetSummary)
+			// 自助领取（免费额度套餐）：列表 + 领取。幂等，重复领不叠加额度。
+			subscriptions.GET("/claimable", h.Subscription.ListClaimable)
+			subscriptions.POST("/claim", h.Subscription.Claim)
 		}
 
 		// 渠道监控（用户只读）

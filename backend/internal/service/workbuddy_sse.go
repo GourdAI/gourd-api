@@ -33,17 +33,39 @@ import (
 // 普通读错误——空流是上游缺陷，应记 502 观测。
 var errWorkbuddyEmptyStream = errors.New("workbuddy upstream stream contained no valid data events")
 
+// errWorkbuddyStreamTruncated 上游给了内容但没给任何「讲完了」的证据（非流式聚合路径）。
+//
+// 与 errWorkbuddyEmptyStream 刻意分开：空流是「上游什么都没说」，截断是「说了一半就走」，
+// 二者在排障与告警口径上不同，且 workbuddyIsEmptyStreamError 的判据只能指向后者。
+// 同源缺陷见 Qoder 的 errQoderStreamTruncated（qoder_sse.go）：聚合函数的 finishReason
+// 默认值是 "stop"，不给这道闸门时，上游中途断流会被聚合成一个看似完整的 chat.completion
+// （HTTP 200 + finish_reason=stop）。实测（本机探针）：
+//
+//	只有一帧正文、无 finish_reason / 无 usage / 无 [DONE]
+//	→ 修复前：err=nil，body={"choices":[{"finish_reason":"stop",...}]}
+//	→ 修复后：err=errWorkbuddyStreamTruncated
+var errWorkbuddyStreamTruncated = errors.New("workbuddy upstream stream ended before any terminal chunk")
+
 // workbuddyEmptyStreamErrorFrame 网关本地空流兜底帧（绕过白名单原样写出，
 // 保留 error 字段供客户端识别；与 workbuddy2api 同文案）。
 const workbuddyEmptyStreamErrorFrame = `{"error":{"message":"empty upstream stream","type":"upstream_error","code":"upstream_parse"}}`
+
+// workbuddyEmptyStreamErrFrameCode 上面那个**本地合成**兜底帧的码。
+// 交付观察器靠它把「网关自己的解析缺陷」与「上游真的拒绝了」区分开：不区分的话，
+// 空流也会被记成上游失败，把监控噪声与账号处置搞混。
+const workbuddyEmptyStreamErrFrameCode = "upstream_parse"
+
+// upstreamInBandErrFallbackCode 上游 error 帧未携带可用 code 时的占位。
+const upstreamInBandErrFallbackCode = "upstream_error"
 
 // newWorkbuddySSEReader 包装上游 SSE 为「规范化后的标准 SSE 流」：
 //   - 逐帧 normalizeWorkbuddyFrame（白名单重建：id/object/created/model/
 //     system_fingerprint/service_tier/choices(delta 白名单/finish_reason 空转 null)/usage；
 //     error 帧原样透传；stripWorkbuddyToolCallNames 收敛 tool_call name；id 续传首帧真实 id）；
 //   - 吞掉注释行与空行，再自产 "\n\n" 帧分隔；
-//   - 保证恰好一个 `data: [DONE]`；
-//   - 上游空流时输出一帧 error + [DONE] 并记 warn（不 panic）。
+//   - 只在**上游给出完成证据**时补恰好一个 `data: [DONE]`（[DONE] 自 v2026-10-24 起
+//     不再无条件兜底：那会把上游断流伪装成正常完成，见 finish 的注释）；
+//   - 上游空流时输出一帧 error 并记 warn（不 panic），且**不补 [DONE]**。
 //
 // 实现为拉取式（无后台 goroutine）：消费方读多少、上游就消费多少，客户端断连
 // 场景下不存在写阻塞的泄漏 goroutine；上游流自然终止（EOF）时读侧收到 [DONE] 后 EOF。
@@ -61,7 +83,11 @@ func newWorkbuddySSEReader(r io.Reader) io.Reader {
 //
 // 回调不得覆盖网关自己合成的空流兜底帧（workbuddyEmptyStreamErrorFrame）：那是本地
 // 缺陷（code=upstream_parse），不是上游账号问题，误报会把好号打下线。
-func newWorkbuddySSEReaderWithHook(r io.Reader, onErrFrame func(code, message string)) io.Reader {
+//
+// 返回具体类型（而非 io.Reader）是因为交付观察器（workbuddySSEDeliveryReader）
+// 需要读 errFrameCode 才能判断「错误帧是否已交付」；具体类型本就满足 io.Reader，
+// 既有调用点无需改动。与 Qoder 的 newQoderSSEReaderWithErrorHook 同构。
+func newWorkbuddySSEReaderWithHook(r io.Reader, onErrFrame func(code, message string)) *workbuddySSEReader {
 	if r == nil {
 		r = strings.NewReader("")
 	}
@@ -75,12 +101,21 @@ func newWorkbuddySSEReaderWithHook(r io.Reader, onErrFrame func(code, message st
 // workbuddySSEReader 拉取式规范化 SSE 读取器。
 type workbuddySSEReader struct {
 	br          *bufio.Reader
-	pending     bytes.Buffer               // 已产出、待消费的规范化帧字节
-	toolSeen    map[int]bool               // delta.tool_calls 已发过首片的 index（name 收敛）
-	firstID     string                     // 首帧真实 id（后续帧缺失/空串时续传）
-	validFrames int                        // 有效帧计数（JSON 解析成功或 error 帧）
-	finished    bool                       // 已向 pending 写入 [DONE]，不再产出
-	onErrFrame  func(code, message string) // 上游 error 帧处置回调（可为 nil）
+	pending     bytes.Buffer // 已产出、待消费的规范化帧字节
+	toolSeen    map[int]bool // delta.tool_calls 已发过首片的 index（name 收敛）
+	firstID     string       // 首帧真实 id（后续帧缺失/空串时续传）
+	validFrames int          // 有效帧计数（JSON 解析成功或 error 帧）
+	finished    bool         // 已向 pending 写入 [DONE]，不再产出
+	// sawUpstreamDone 上游**自己**发过 `data: [DONE]`（不是本归一化器补的那个）。
+	sawUpstreamDone bool
+	// sawTerminalChunk 上游帧里出现过终止证据：非空 finish_reason，或 usage 尾帧。
+	// 二者与 errFrameCode 共同构成「上游讲完了」的判据，见 finish 的注释。
+	sawTerminalChunk bool
+	// errFrameCode 上游 error 帧的码（非空 = 已向客户端交付过错误帧）。
+	errFrameCode string
+	// errFrameMessage 首个上游 error 帧的 message（用于 Ops 记录的可读归因）。
+	errFrameMessage string
+	onErrFrame      func(code, message string) // 上游 error 帧处置回调（可为 nil）
 }
 
 // workbuddyErrorFrameFields 从一帧解析体取出上游 error 帧的 code 与 message。
@@ -160,7 +195,8 @@ func (r *workbuddySSEReader) pump() {
 		payload = strings.TrimSpace(payload)
 		switch {
 		case payload == "[DONE]":
-			// 上游显式结束：停止读取，[DONE] 统一由 finish 写出（保证恰好一个）。
+			// 上游显式结束：[DONE] 统一由 finish 写出（保证恰好一个）。
+			r.sawUpstreamDone = true
 			r.finish()
 			return
 		case payload != "":
@@ -188,12 +224,25 @@ func (r *workbuddySSEReader) writeFrame(payload string) {
 	// 白名单会剥掉 error 字段，客户端就看不到上游 code/msg/requestId。
 	if _, hasErr := obj["error"]; hasErr {
 		r.validFrames++
+		// 记录错误帧已交付（码为空时用占位）：否则 finish 会把带错流当空流完成。
+		if code, msg, ok := workbuddyErrorFrameFields(obj); ok && code != "" {
+			if r.errFrameCode == "" {
+				r.errFrameCode = code
+				r.errFrameMessage = msg
+			}
+		} else if r.errFrameCode == "" {
+			r.errFrameCode = upstreamInBandErrFallbackCode
+			r.errFrameMessage = msg
+		}
 		r.pending.WriteString("data: " + payload + "\n\n")
 		r.notifyErrFrame(obj)
 		return
 	}
 	// 先按 index 收敛 tool_calls name（每 index 仅首片保留，后续分片删 name 键），再规范化透传。
 	stripWorkbuddyToolCallNames(obj, r.toolSeen)
+	if workbuddyFrameHasTerminalEvidence(obj) {
+		r.sawTerminalChunk = true
+	}
 	// id 续传：首帧非空真实 id 缓存；后续帧缺 id / 空 id 一律用缓存值
 	// （同一条 SSE 消息所有帧共用一个真实 id，后台按 id 归并）。
 	if r.firstID == "" {
@@ -211,6 +260,20 @@ func (r *workbuddySSEReader) writeFrame(payload string) {
 }
 
 // finish 终止产出：空流先补一帧 error（记录 warn），再保证恰好一个 [DONE]。
+// finish 终止产出。【不再无条件补 [DONE]——与 Qoder 同构的「断流被记成功」缺陷】
+//
+// 修复前本函数恒补一个 `data: [DONE]`，而上层 streamRawChatCompletions 的成功判据
+// 正是「[DONE]/usage/finish_reason 任一出现」（openai_raw_stream_truncation.go）。
+// 二者叠加的结果：上游在正文中途静默 EOF 时，归一化器补出的假 [DONE] 让
+// forwardErr=nil，handler 走成功分支：ReportOpenAIAccountScheduleResult(success=true)
+// + usage_logs 落一条 0 token 的行，运维「请求明细」因此显示「成功」。
+//
+// 现在只在上游**确实给出终止证据**时补 [DONE]：
+//   - sawUpstreamDone  ：上游自己发过 [DONE]；
+//   - sawTerminalChunk ：帧带非空 finish_reason，或到达 usage 尾帧；
+//   - errFrameCode != ""：错误帧已写入（带内错误，不是完成，但也不得再追加 [DONE]）。
+//
+// 三者全无时不补 [DONE]，让上层按上游截断处理（计 SLA 失败；尚未写出时可透明换号）。
 func (r *workbuddySSEReader) finish() {
 	if r.finished {
 		return
@@ -219,8 +282,43 @@ func (r *workbuddySSEReader) finish() {
 		logger.L().Warn("workbuddy sse normalizer: upstream stream contained no valid data events")
 		r.pending.WriteString("data: " + workbuddyEmptyStreamErrorFrame + "\n\n")
 	}
-	r.pending.WriteString("data: [DONE]\n\n")
+	if r.workbuddyUpstreamCompleted() {
+		r.pending.WriteString("data: [DONE]\n\n")
+	}
 	r.finished = true
+}
+
+// workbuddyUpstreamCompleted 报告上游是否给出过「讲完了」的证据。
+// 错误帧已交付时同样返回 true：那是失败而不是截断，不能让上层再补一帧
+// upstream_stream_truncated 把已上报的业务错误盖掉。
+func (r *workbuddySSEReader) workbuddyUpstreamCompleted() bool {
+	return r.errFrameCode != "" || r.sawUpstreamDone || r.sawTerminalChunk
+}
+
+// workbuddyFrameHasTerminalEvidence 报告一帧是否携带「生成已结局」的证据：
+//   - choices[].finish_reason 非空；
+//   - 存在 usage 对象（include_usage 生效时的尾帧哨兵）。
+//
+// 口径与上层 openAIRawStreamTerminalState 严格对齐，避免「归一化器认为完成、
+// 上层认为截断」的左右互扑。
+func workbuddyFrameHasTerminalEvidence(obj map[string]any) bool {
+	if u, ok := obj["usage"].(map[string]any); ok && len(u) > 0 {
+		return true
+	}
+	chs, ok := obj["choices"].([]any)
+	if !ok {
+		return false
+	}
+	for _, ci := range chs {
+		c, ok := ci.(map[string]any)
+		if !ok {
+			continue
+		}
+		if fr, ok := c["finish_reason"].(string); ok && strings.TrimSpace(fr) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // stripWorkbuddyToolCallNames 收敛流式 tool_calls 的 name 语义为「每个 index 只出现一次」：
@@ -422,8 +520,12 @@ func aggregateWorkbuddySSEWithHook(r io.Reader, onErrFrame func(code, message st
 		gotAnyContent bool
 		validEvents   int
 		sawDone       bool // 上游显式发过 data: [DONE]（正常收尾）
-		toolCalls     = map[int]map[string]any{}
-		toolOrder     []int
+		// sawFinishReason 上游是否真的给过非空 finish_reason。
+		// 必须与 finishReason 的**默认值**分开记：finishReason 初值为 "stop"，缺这道
+		// 闸门时「上游一帧 finish_reason 都没发」会被聚合出 finish_reason=stop 的完整响应。
+		sawFinishReason bool
+		toolCalls       = map[int]map[string]any{}
+		toolOrder       []int
 		// toolSeq 缺 index 的 tool_call 的分配序号源：跨帧延续「最近分配」槽位，同帧内递增。
 		toolSeq int
 		// idIndex id → 已分配的 index：跨帧持续，供缺 index 时按 id 归位既有调用。
@@ -551,6 +653,7 @@ func aggregateWorkbuddySSEWithHook(r io.Reader, onErrFrame func(code, message st
 							}
 							if fr, ok := c["finish_reason"].(string); ok && fr != "" {
 								finishReason = fr
+								sawFinishReason = true
 							}
 							if delta, ok := c["delta"].(map[string]any); ok {
 								if r2, ok := delta["role"].(string); ok && r2 != "" {
@@ -584,6 +687,14 @@ func aggregateWorkbuddySSEWithHook(r io.Reader, onErrFrame func(code, message st
 		// 上游返回 200 但没有任何有效数据事件（空流/只有 [DONE]/只有注释行）：
 		// 不合成空 content 的假成功响应，直接报错，由调用方映射为 502 upstream_parse。
 		return nil, nil, errWorkbuddyEmptyStream
+	}
+	// 上游给了内容却没给任何「讲完了」的证据（sawDone / 非空 finish_reason / usage 尾帧
+	// 三者全无）⇒ 中途断流。不给这道闸门时，下面的响应体会被 finishReason 的**默认值**
+	// "stop" 粉饰成一段看似完整、HTTP 200 的 chat.completion，上层 bufferRawChatCompletions
+	// 因此 forwardErr=nil，handler 走成功分支（面板记成功）。
+	// 口径与 Qoder 的 aggregateQoderSSE 严格一致（那里是 errQoderStreamTruncated）。
+	if !sawDone && !sawFinishReason && usage == nil {
+		return nil, nil, errWorkbuddyStreamTruncated
 	}
 	if id == "" {
 		id = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())

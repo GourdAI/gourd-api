@@ -470,7 +470,19 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			break
 		}
 		// OAuth 账号在 401 错误时临时不可调度（给 token 刷新窗口）；非 OAuth 账号保持原有 SetError 行为。
-		if authAccount.Type == AccountTypeOAuth {
+		//
+		// 【WorkBuddy 例外（2026-10-24 全量 401 事件）】WorkBuddy 是 apikey 类型却持有
+		// refresh_token：它的 access_token 是会被上游轮换/过期的 JWT（实测有效期约 45 天），
+		// 撞 401 属于「过期」而不是「Cannot recover」。原实现让它落到下面的非 OAuth 分支，
+		// 一次 401 就把账号 SetError（status=error + schedulable=false）**永久下线**，
+		// 且刷新链里没有任何恢复路径，只能管理员手工重登。
+		//
+		// 实测（本机）：shouldDisable=true setError=1 setTempUnsched=0
+		//
+		// 改为与 OAuth 同一套「临时不可调度」语义：冷却期内不被选中，到期后由请求路径的
+		// 401 重试/预刷新自行恢复。判据收窄到「持有 refresh_token」，无 refresh_token 的号
+		// 确实不可自愈，仍走下方的永久禁用（那一支是正确的，不要一并放宽）。
+		if authAccount.Type == AccountTypeOAuth || isWorkbuddyRefreshableCredential(authAccount) {
 			// 1. 失效缓存
 			if s.tokenCacheInvalidator != nil {
 				if err := s.tokenCacheInvalidator.InvalidateToken(ctx, authAccount); err != nil {
@@ -479,7 +491,17 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			}
 			// 缺少 refresh_token 的 OAuth 账号无法在冷却期内自愈（后台刷新服务也会跳过），
 			// 直接走 SetError 永久禁用，避免冷却结束后再被选中产生一发无意义的 502。
-			if strings.TrimSpace(authAccount.GetCredential("refresh_token")) == "" {
+			//
+			// 【口径必须与 isWorkbuddyRefreshableCredential 同源】原来这里直接读
+			// GetCredential("refresh_token")，而 WorkBuddy 合法接受 camelCase 别名
+			// refreshToken（workbuddy.go GetWorkbuddyCredentials 的 read 函数）。两处口径不一致
+			// 时，camelCase 账号会走「外层判据放行 → 内层判空命中 → 永久禁用」，修复实际失效。
+			// 所以 WorkBuddy 也统一经 GetWorkbuddyCredentials 读；其余平台仍沿用原键名，零行为变更。
+			refreshTokenForRecovery := authAccount.GetCredential("refresh_token")
+			if authAccount.IsWorkbuddy() {
+				refreshTokenForRecovery = authAccount.GetWorkbuddyCredentials().RefreshToken
+			}
+			if strings.TrimSpace(refreshTokenForRecovery) == "" {
 				msg := "Authentication failed (401): refresh_token missing, cannot recover"
 				if upstreamMsg != "" {
 					msg = "OAuth 401 (no refresh_token): " + upstreamMsg
@@ -497,9 +519,18 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			// tryRecoverFromRefreshRace 重读 DB 发现 currentRT == usedRT 也救不回来，账号被错误 disable。
 			// 这里仅依赖 InvalidateToken + SetTempUnschedulable 让账号在冷却期内不被调度，
 			// 冷却结束后由 token_provider 的 NeedsRefresh / token_refresh_service 走带分布式锁的正路刷新。
+			// 文案按平台分流：WorkBuddy 不是 OAuth 账号，报「OAuth 401」会把排障引向错误方向
+			// （运维会去查 OAuth 授权配置，而实际只是 token 过期）。
 			msg := "Authentication failed (401): invalid or expired credentials"
 			if upstreamMsg != "" {
 				msg = "OAuth 401: " + upstreamMsg
+			}
+			if authAccount.IsWorkbuddy() {
+				msg = "WorkBuddy 401: access token rejected by upstream (expired or revoked); " +
+					"refresh_token present, cooling down for automatic recovery"
+				if upstreamMsg != "" {
+					msg += ": " + upstreamMsg
+				}
 			}
 			if authAccount.Platform == PlatformAntigravity {
 				extraUpdates := antigravityForceTokenRefreshExtra("401_invalid")
@@ -962,6 +993,39 @@ func (s *RateLimitService) GeminiCooldown(ctx context.Context, account *Account)
 		return 5 * time.Minute
 	}
 	return s.geminiQuotaService.CooldownForAccount(ctx, account)
+}
+
+// isWorkbuddyRefreshableCredential 报告该账号是否为「持有 refresh_token 的 WorkBuddy 账号」。
+//
+// 存在的理由：401 分支的「临时不可调度 vs 永久禁用」原本只按 account.Type == OAuth 分流。
+// WorkBuddy 是 apikey 类型（上游是 OpenAI CC 协议网关，不是 OAuth 授权流），但它同样
+// 持有可自愈的 refresh_token，其 access_token 是会被上游轮换/过期的 JWT。按类型分流会把它
+// 误归到「不可恢复」一侧，一次 401 就永久下线。
+//
+// 判据刻意收窄到同时满足三个条件（任一不满足即返回 false，保持原永久禁用语义）：
+//   - 平台是 WorkBuddy；
+//   - 类型是 APIKey（OAuth 分支已覆盖，不重复）；
+//   - 凭据里有非空 refresh_token（没有它就只能靠管理员重登，确实不可自愈）。
+//
+// 【凭据读取必须经 GetWorkbuddyCredentials】早先的实现直接取 GetCredential("refresh_token")，
+// 而 WorkBuddy 合法接受 camelCase 别名（refreshToken，用于直接粘贴 workbuddy2api 的 auth
+// 文件字段，见 workbuddy.go GetWorkbuddyCredentials 的 read 函数）。两处口径不一致的后果
+// 本机探针已实测：
+//
+//	camelCase 凭据 → GetWorkbuddyCredentials().RefreshToken="rt"
+//	        → isWorkbuddyRefreshableCredential=false（错误）
+//	        → workbuddyTokenRefresher.CanRefresh=true（正确）
+//
+// 即：前端/导入的 camelCase 账号撞 401 时仍会走下方的永久 SetError 分支——正是本轮的
+// 原始故障形态。后台刷新与 401 判据必须共用同一个读取函数，不得各自硬编码键名。
+func isWorkbuddyRefreshableCredential(account *Account) bool {
+	if account == nil || !account.IsWorkbuddy() {
+		return false
+	}
+	if account.Type != AccountTypeAPIKey {
+		return false
+	}
+	return strings.TrimSpace(account.GetWorkbuddyCredentials().RefreshToken) != ""
 }
 
 // handleAuthError 处理认证类错误(401/403)，停止账号调度

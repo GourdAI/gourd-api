@@ -115,7 +115,27 @@ func (s *SubscriptionExpiryService) runOnce() {
 	if updated > 0 {
 		log.Printf("[SubscriptionExpiry] Updated %d expired subscriptions", updated)
 	}
+	s.resetUsageWindows(ctx)
 	s.sendExpiryReminders(ctx)
+}
+
+// resetUsageWindows 批量归零已跨窗口的订阅用量。
+//
+// 【不是正确性依赖】读路径（EffectiveWindowUsageUSD）与计费事务已各自做懒归一，
+// 跳过本任务不会影响用户能否拿到额度。它的作用只是避免库里的 total_usage_usd
+// 长期停在上一窗口的值——后台看报表、管理员看到“已用 1$”而实际可用会是疑幻。
+// 因此它故意不带 leader lock：多实例同时跑只是重复执行同一条幂等 UPDATE。
+//
+// 失败只记日志，不影响过期状态更新与提醒（它们之间没有依赖关系）。
+func (s *SubscriptionExpiryService) resetUsageWindows(ctx context.Context) {
+	reset, err := s.userSubRepo.BatchResetExpiredUsageWindows(ctx, time.Now().UTC())
+	if err != nil {
+		log.Printf("[SubscriptionExpiry] Reset usage windows failed: %v", err)
+		return
+	}
+	if reset > 0 {
+		log.Printf("[SubscriptionExpiry] Reset usage windows for %d subscriptions", reset)
+	}
 }
 
 func (s *SubscriptionExpiryService) sendExpiryReminders(ctx context.Context) {

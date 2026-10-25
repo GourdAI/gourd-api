@@ -255,6 +255,14 @@ const (
 	SubscriptionStatusRevoked = "revoked"
 )
 
+// Subscription quota reset period constants（见 domain 层定义）。
+const (
+	SubscriptionResetPeriodNone    = domain.SubscriptionResetPeriodNone
+	SubscriptionResetPeriodDaily   = domain.SubscriptionResetPeriodDaily
+	SubscriptionResetPeriodWeekly  = domain.SubscriptionResetPeriodWeekly
+	SubscriptionResetPeriodMonthly = domain.SubscriptionResetPeriodMonthly
+)
+
 // LinuxDoConnectSyntheticEmailDomain 是 LinuxDo Connect 用户的合成邮箱后缀（RFC 保留域名）。
 const LinuxDoConnectSyntheticEmailDomain = "@linuxdo-connect.invalid"
 

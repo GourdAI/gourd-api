@@ -431,3 +431,72 @@ func TestGetUserSubscriptionsWithProgress_RepoErrorAndEmptyResult(t *testing.T) 
 	require.NotNil(t, list, "无订阅应返回空切片而非 nil")
 	require.Empty(t, list)
 }
+
+// --- 周期重置（2026-10-21）：进度必须按「当前窗口」算 ---
+
+// 跳窗后进度必须回到 0%，而不是继续显示上窗口的「已用满」。
+// 这是最容易漏的一处：RemainingUSD 会按窗口算，但若 TotalUsageUSD/Percentage
+// 直接用库里的值，用户会看到「剩余 1.00 / 已用 100%」这种自相矛盾的卡片。
+func TestCalculateProgress_ResetsPercentageAcrossWindow(t *testing.T) {
+	svc := newTestSubscriptionService()
+	now := time.Now()
+	yesterdayStart := SubscriptionWindowStart(SubscriptionResetPeriodDaily, now.AddDate(0, 0, -1))
+
+	sub := &UserSubscription{
+		ID:               1,
+		Status:           SubscriptionStatusActive,
+		ExpiresAt:        now.AddDate(0, 0, 30),
+		TotalLimitUSD:    ptrFloat64(1),
+		TotalUsageUSD:    1, // 昨天已经花光
+		ResetPeriod:      SubscriptionResetPeriodDaily,
+		UsageWindowStart: yesterdayStart,
+	}
+
+	progress := svc.calculateProgress(sub)
+	require.InDelta(t, 0, progress.TotalUsageUSD, 1e-12, "跳窗后当前窗口用量为 0")
+	require.InDelta(t, 0, progress.Percentage, 1e-12, "跳窗后进度必须回到 0%")
+	require.NotNil(t, progress.RemainingUSD)
+	require.InDelta(t, 1, *progress.RemainingUSD, 1e-12, "剩余额度必须是满额")
+	require.Equal(t, SubscriptionResetPeriodDaily, progress.ResetPeriod)
+	require.NotNil(t, progress.WindowResetsAt, "周期订阅要给出下次刷新时刻")
+}
+
+// none 周期完全不受窗口影响：进度就是库里的累计值。
+func TestCalculateProgress_NonePeriodKeepsCumulativeUsage(t *testing.T) {
+	svc := newTestSubscriptionService()
+	now := time.Now()
+
+	sub := &UserSubscription{
+		ID:            2,
+		Status:        SubscriptionStatusActive,
+		ExpiresAt:     now.AddDate(0, 0, 30),
+		TotalLimitUSD: ptrFloat64(10),
+		TotalUsageUSD: 4,
+		ResetPeriod:   SubscriptionResetPeriodNone,
+	}
+
+	progress := svc.calculateProgress(sub)
+	require.InDelta(t, 4, progress.TotalUsageUSD, 1e-12)
+	require.InDelta(t, 40, progress.Percentage, 1e-12)
+	require.Nil(t, progress.WindowResetsAt, "一次性总额池没有「下次刷新」")
+}
+
+// 同窗口内进度不受影响（窗口归一不能误伤正常展示）。
+func TestCalculateProgress_SameWindowKeepsPercentage(t *testing.T) {
+	svc := newTestSubscriptionService()
+	now := time.Now()
+
+	sub := &UserSubscription{
+		ID:               3,
+		Status:           SubscriptionStatusActive,
+		ExpiresAt:        now.AddDate(0, 0, 30),
+		TotalLimitUSD:    ptrFloat64(1),
+		TotalUsageUSD:    0.25,
+		ResetPeriod:      SubscriptionResetPeriodDaily,
+		UsageWindowStart: SubscriptionWindowStart(SubscriptionResetPeriodDaily, now),
+	}
+
+	progress := svc.calculateProgress(sub)
+	require.InDelta(t, 0.25, progress.TotalUsageUSD, 1e-12)
+	require.InDelta(t, 25, progress.Percentage, 1e-12)
+}

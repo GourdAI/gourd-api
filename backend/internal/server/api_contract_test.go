@@ -444,6 +444,7 @@ func TestAPIContracts(t *testing.T) {
 						"total_usage_usd": 4,
 						"remaining_usd": 6,
 						"unlimited": false,
+						"reset_period": "none",
 						"created_at": "2025-01-02T03:04:05Z",
 						"updated_at": "2025-01-02T03:04:05Z"
 					}
@@ -2283,6 +2284,12 @@ func (stubUserSubscriptionRepo) IncrementUsage(ctx context.Context, id int64, co
 	return errors.New("not implemented")
 }
 func (stubUserSubscriptionRepo) BatchUpdateExpiredStatus(ctx context.Context) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+func (stubUserSubscriptionRepo) ResetUsageWindowIfExpired(ctx context.Context, id int64, newWindowStart time.Time) (bool, error) {
+	return false, errors.New("not implemented")
+}
+func (stubUserSubscriptionRepo) BatchResetExpiredUsageWindows(ctx context.Context, now time.Time) (int64, error) {
 	return 0, errors.New("not implemented")
 }
 

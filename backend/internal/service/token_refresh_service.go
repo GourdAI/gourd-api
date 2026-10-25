@@ -83,6 +83,17 @@ type TokenRefreshService struct {
 
 	// Test-only duration seam; production uses TokenRefreshConfig seconds.
 	attemptTimeoutOverride time.Duration
+
+	// workbuddyRefresher 是 WorkBuddy 平台的后台刷新策略（可选依赖：未注入则不注册该平台，
+	// 保证既有部署与其测试零行为变更）。由 SetWorkBuddyRefresher 在 wire 阶段注入。
+	//
+	// 类型是 OAuthRefreshExecutor 而不是 TokenRefresher：后台周期需要 executor 来做
+	// 分布式锁（CacheKey），只有 TokenRefresher 无法与 refreshAPI 协同。
+	workbuddyRefresher OAuthRefreshExecutor
+
+	// includeAPIKeyRefreshCandidates 控制候选查询是否放宽 type 门。
+	// 仅当确实注册了 apikey 型 refresher（即 workbuddyRefresher 非 nil）时为 true。
+	includeAPIKeyRefreshCandidates bool
 }
 
 // NewTokenRefreshService 创建token刷新服务
@@ -131,6 +142,12 @@ func NewTokenRefreshService(
 
 	// Each provider is registered exactly once. The same registry supplies both
 	// execution and repository eligibility, preventing future platform drift.
+	//
+	// 基础五项在此直接注册；WorkBuddy 是第六项（2026-10-24 全量 401 事件）——它是
+	// apikey 类型但持有可自愈的 refresh_token，access_token 又是会到期的 JWT。未注册时
+	// 到期无人续命，只能昏迷 401。它依赖 HTTPUpstream 与 TLS 指纹服务，由
+	// SetWorkBuddyRefresher 在 wire 阶段（Start 之前）注入并追加注册；
+	// 不注入则本平台不出现在候选里，既有部署与其测试零行为变更。
 	s.registrations = []tokenRefreshRegistration{
 		{platform: PlatformAnthropic, refresher: claudeRefresher, executor: claudeRefresher},
 		{platform: PlatformOpenAI, refresher: openAIRefresher, executor: openAIRefresher},
@@ -182,6 +199,39 @@ func (s *TokenRefreshService) SetRefreshPolicy(policy BackgroundRefreshPolicy) {
 
 func (s *TokenRefreshService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
 	s.runtimeBlocker = blocker
+}
+
+// SetWorkBuddyRefresher 注册 WorkBuddy 后台刷新策略（第六个平台）。
+//
+// 必须在 Start() 之前调用：Start 会快照 registrations，之后再改不会生效。
+// refresher 为 nil 时为 no-op（等价于「本部署不启用 WorkBuddy 后台刷新」，
+// 既有部署与测试因此零行为变更）。
+//
+// 【为何需要这条链（2026-10-24 全量 401 事件）】WorkBuddy 的 access_token 是约 45 天
+// 寿命的 JWT，而请求路径的预刷新因凭据缺 expires_at 恒不触发；未注册后台刷新时，
+// 到期后无人换票，只能等请求撞 401 —— 而 401 对 apikey 账号原本是永久 SetError，
+// 一次就会把账号打下线且不可恢复。本方法把 WorkBuddy 接入周期刷新，从源头避免该形态。
+//
+// 同时置 includeAPIKeyRefreshCandidates：仓储查询默认硬编码 type='oauth'，
+// WorkBuddy 恒为 apikey，不开这个阀就永远查不到候选账号。该开关只在确实注册了
+// WorkBuddy refresher 时打开，因此其它环境/测试的扫描面不变。
+func (s *TokenRefreshService) SetWorkBuddyRefresher(refresher OAuthRefreshExecutor) {
+	if s == nil || refresher == nil {
+		return
+	}
+	s.workbuddyRefresher = refresher
+	s.includeAPIKeyRefreshCandidates = true
+	// 幂等追加：避免重复调用导致同一平台注册两次（候选会被处理两遍）。
+	for _, registration := range s.registrations {
+		if registration.platform == PlatformWorkbuddy {
+			return
+		}
+	}
+	s.registrations = append(s.registrations, tokenRefreshRegistration{
+		platform:  PlatformWorkbuddy,
+		refresher: refresher,
+		executor:  refresher,
+	})
 }
 
 func (s *TokenRefreshService) notifyAccountSchedulingBlocked(account *Account, until time.Time, reason string) {
@@ -533,6 +583,10 @@ func (s *TokenRefreshService) processRefreshContext(parent context.Context) {
 			IncludeSetupToken:    true,
 			RequireRefreshToken:  true,
 			ExcludeRetryCooldown: true,
+			// WorkBuddy 的凭据语义与 OAuth 同构（短期 access + 可轮换 refresh），但它恒为
+			// apikey 类型；不开这个阀时仓储的 type='oauth' 硬条件会把它全部排除在候选外，
+			// 导致到期无人刷新。仅在确实注册了 WorkBuddy refresher 时为 true。
+			IncludeAPIKeyPlatforms: s.includeAPIKeyRefreshCandidates,
 		})
 		if err != nil {
 			slog.Error("token_refresh.list_accounts_failed", "error", err, "after_id", afterID)

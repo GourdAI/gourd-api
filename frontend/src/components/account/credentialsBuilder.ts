@@ -427,9 +427,49 @@ export interface WorkBuddyCredentialFields {
 }
 
 /**
+ * 从 JWT 的 payload 段读取 exp（epoch 秒）。非 JWT / 无 exp / 解析失败均返回 null。
+ *
+ * WHY：WorkBuddy 的 access_token 是标准 JWT（实测 exp 距 iat 精确 45 天）。
+ * 凭据里必须带 expires_at，否则后端的 workbuddyTokenNeedsRefresh 会因「无过期信息」
+ * 而永不预刷新，只能等撞 401（2026-10-24 全量 401 事件的起点）。
+ *
+ * 不做签名校验：这里只读自己的 token 用来算到期时刻，不是鉴权判定。
+ * 注意：只解析 payload（第二段），且 base64url 可能缺 padding，需补齐再解。
+ */
+export function workbuddyJwtExpiry(accessToken: string): number | null {
+  const token = accessToken.trim()
+  if (!token) return null
+  const parts = token.split('.')
+  if (parts.length < 2) return null
+  let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+  const pad = payload.length % 4
+  if (pad === 2) payload += '=='
+  else if (pad === 3) payload += '='
+  else if (pad === 1) return null
+  try {
+    // atob 只在浏览器存在；测试环境（node）也有全局 atob。
+    const json = typeof atob === 'function' ? atob(payload) : ''
+    if (!json) return null
+    const claims = JSON.parse(json) as { exp?: unknown }
+    const exp = typeof claims.exp === 'number' ? claims.exp : Number(claims.exp)
+    if (!Number.isFinite(exp) || exp <= 0) return null
+    // 兼容毫秒级 epoch（极少数签发实现给 13 位）：超过 1e11 视为毫秒。
+    return exp > 1e11 ? Math.floor(exp / 1000) : Math.floor(exp)
+  } catch {
+    return null
+  }
+}
+
+/**
  * 组装 WorkBuddy 凭据（snake_case 键，与后端约定一致）。
  * 空字段不写入：密钥类字段（access_token / refresh_token / device_token）
  * 留空表示沿用现有值；uid / enterprise_id 的清空删除由调用方处理（全量替换语义）。
+ *
+ * expires_at：由 access_token 的 JWT exp 自动推导（不让用户手填——所以比 Qoder 多一层自动）。
+ * 历史上本函数**不写 expires_at 也不推导**，导致手工粘贴的账号 expires_at 恒为 0，
+ * 后端的预刷新判据因此恒假（无过期信息 → 不主动刷新）⇒ token 到期只能撞 401，
+ * 而 401 在 apikey 账号上又会永久下线。后端虽有同样的 JWT 兜底（读取侧），
+ * 但在写入侧补齐才能让数据本身完整（后台刷新与运维面板都直接读库）。
  */
 export function buildWorkbuddyCredentials(fields: WorkBuddyCredentialFields): Record<string, unknown> {
   const credentials: Record<string, unknown> = {}
@@ -442,6 +482,9 @@ export function buildWorkbuddyCredentials(fields: WorkBuddyCredentialFields): Re
 
   if (accessToken) credentials.access_token = accessToken
   if (refreshToken) credentials.refresh_token = refreshToken
+  // 只在能解出正数 exp 时写入，解不出就不伪造（保持「未知」语义）。
+  const expiresAt = workbuddyJwtExpiry(accessToken)
+  if (expiresAt !== null) credentials.expires_at = expiresAt
   if (deviceToken) credentials.device_token = deviceToken
   credentials.realm = fields.realm
   if (uid) credentials.uid = uid
@@ -454,7 +497,6 @@ export function buildWorkbuddyCredentials(fields: WorkBuddyCredentialFields): Re
 export function validateWorkbuddyCredentials(accessToken: string, refreshToken: string): boolean {
   return Boolean(accessToken.trim() || refreshToken.trim())
 }
-
 // ========== Qoder（双域 chat 网关） ==========
 // 上游为 OpenAI Chat Completions 协议，双域（国内 gateway.qoder.com.cn /
 // 国际 api1.qoder.sh）。凭据字段（snake_case，与后端约定）：

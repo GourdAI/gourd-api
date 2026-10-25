@@ -234,7 +234,7 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 // 锁定读是拆分正确性的前提：没有 FOR UPDATE，两个并发请求会各自读到旧用量、
 // 把同一份额度花两遍。ORDER BY expires_at 同时固定了加锁顺序，避免多行锁交叉等待。
 const lockUserSubscriptionWalletsSQL = `
-		SELECT id, expires_at, total_limit_usd, total_usage_usd
+		SELECT id, expires_at, total_limit_usd, total_usage_usd, reset_period, usage_window_start
 		FROM user_subscriptions
 		WHERE user_id = $1
 			AND deleted_at IS NULL
@@ -251,15 +251,27 @@ func lockUserSubscriptionWallets(ctx context.Context, tx *sql.Tx, userID int64) 
 	}
 	defer func() { _ = rows.Close() }()
 
+	now := time.Now().UTC()
 	var subs []*service.UserSubscription
+	// dirtyWindows 记录「本事务内需要归零窗口」的行：锁定读到的 total_usage_usd
+	// 可能属于上一窗口（后台兜底任务还没跑到），必须在同事务内清零后再拆分，
+	// 否则跨窗口那笔请求会把新窗口的用量接在旧值上累加（拆出的可用余量偏小）。
+	type dirtyWindow struct {
+		id          int64
+		windowStart time.Time
+	}
+	var dirtyWindows []dirtyWindow
+
 	for rows.Next() {
 		var (
-			id        int64
-			expiresAt time.Time
-			limit     sql.NullFloat64
-			usage     float64
+			id          int64
+			expiresAt   time.Time
+			limit       sql.NullFloat64
+			usage       float64
+			resetPeriod string
+			windowStart sql.NullTime
 		)
-		if err := rows.Scan(&id, &expiresAt, &limit, &usage); err != nil {
+		if err := rows.Scan(&id, &expiresAt, &limit, &usage, &resetPeriod, &windowStart); err != nil {
 			return nil, err
 		}
 		sub := &service.UserSubscription{
@@ -268,36 +280,78 @@ func lockUserSubscriptionWallets(ctx context.Context, tx *sql.Tx, userID int64) 
 			Status:        service.SubscriptionStatusActive,
 			ExpiresAt:     expiresAt,
 			TotalUsageUSD: usage,
+			ResetPeriod:   resetPeriod,
 		}
 		if limit.Valid {
 			v := limit.Float64
 			sub.TotalLimitUSD = &v
+		}
+		if windowStart.Valid {
+			sub.UsageWindowStart = windowStart.Time
+		}
+		// 窗口归一：跨边界则当前窗口用量视为 0，并记下待落库的重置。
+		if service.IsRecurringSubscriptionResetPeriod(resetPeriod) {
+			if service.SubscriptionWindowExpired(resetPeriod, sub.UsageWindowStart, now) {
+				dirtyWindows = append(dirtyWindows, dirtyWindow{
+					id:          id,
+					windowStart: service.SubscriptionWindowStart(resetPeriod, now),
+				})
+			}
+			sub.UsageWindowStart = service.SubscriptionWindowStart(resetPeriod, now)
+			sub.TotalUsageUSD = sub.EffectiveWindowUsageUSD(now)
 		}
 		subs = append(subs, sub)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	// 先写回窗口重置（已持 FOR UPDATE 行锁，写与读在同一串行区间内）。
+	const resetSQL = `
+		UPDATE user_subscriptions
+		SET total_usage_usd = 0, usage_window_start = $2, updated_at = NOW()
+		WHERE id = $1
+	`
+	for _, item := range dirtyWindows {
+		if _, err := tx.ExecContext(ctx, resetSQL, item.id, item.windowStart); err != nil {
+			return nil, err
+		}
+	}
+
 	return subs, nil
 }
 
 // applySubscriptionCost 把一笔订阅费用按「先到期先消耗」拆开并逐行累加。
 //
-// 之前主计费路径只能写单行（cmd.SubscriptionID），将整笔记到「最早到期」那份钱包：
-// 越界部分会随该行过期一起消失，等于白送（实测每人漏 5 USD）。
-// 拆分口径与网关降级路径共用同一个纯函数 service.AllocateSubscriptionRecordings，
-// 因此两条路径不会分叉；装不下时同样是「整笔记到首选钱包、让用量合法越界」而不是丢钱。
+// 口径（2026-10-21 用户拍板「免费额度花完回落自己余额」）：
+//   - 先按 SplitSubscriptionUsage 尽可能拆到各钱包；
+//   - 装不下的余量返回给调用侧并入余额扣减（绝非让免费钱包透支）。
 //
-// 返回的 fallbackAmount>0 表示这笔钱没能记到任何订阅钱包（用户已拍板口径：
-// 「宁可透支也不白送」），调用侧负贵把它转到余额扣减。
+// 旧口径是「装不下就把整笔记到首选钱包、让用量合法越界」。那个口径在用户
+// 只有免费额度、无余额时等价；但用户自己有余额时，让免费钱包透支而余额一分不动，
+// 等于平台白送，因此改为回落。
+//
+// 返回的 fallbackAmount>0 表示这笔钱有这么多没能记到任何订阅钱包，
+// 调用侧必须转入余额扣减。
 func applySubscriptionCost(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) (float64, error) {
 	subs, err := lockUserSubscriptionWallets(ctx, tx, cmd.UserID)
 	if err != nil {
 		return 0, err
 	}
 
-	allocations := service.AllocateSubscriptionRecordings(subs, cmd.SubscriptionCost)
-	if len(allocations) == 0 {
+	allocations, remainder := service.SplitSubscriptionUsage(subs, cmd.SubscriptionCost)
+
+	// 【必须区分两种「allocations 为空」】
+	//   (a) len(subs)==0：事务内锁不到任何生效钱包（行被撤销/软删，或刚跨过 expires_at）。
+	//       走下面的旧兑底：先试调用方快照里的归属行，不行再整笔回落余额。
+	//   (b) len(subs)>0 但全部耗尽：allocations 为空、remainder=全量。
+	//       这是「免费额度花完」的正常路径（2026-10-21 拍板：回落余额）。
+	//       绝不能走 (a) 的分支：那里会把整笔记到 cmd.SubscriptionID（已耗尽的钱包）
+	//       上并让用量越界，结果是「钱包透支、用户余额一分未动」——正好与本次需求相反。
+	if len(allocations) == 0 && remainder > 0 && len(subs) == 0 {
 		// 锁不到任何生效钱包：行可能已被撤销/软删，或刚跨过 expires_at（L1 缓存的陈旧切片
 		// 与事务内锁定读不是同一份数据，这个错位是结构性存在，不靠运气）。
 		// 先试调用方快照里的归属行；写不进（软删行带 deleted_at IS NULL 守卫→affected=0）
@@ -328,15 +382,17 @@ func applySubscriptionCost(ctx context.Context, tx *sql.Tx, cmd *service.UsageBi
 			// 行在锁后被并发销毁（理论上被 FOR UPDATE 挡住，但保留同一出口）：
 			// 未命中转余额回落，真 DB 故障仍然上抛（应该回滚重试，不能静默记账）。
 			if errors.Is(err, service.ErrSubscriptionNotFound) {
+				vanishedAmount := alloc.Amount
+				remainder += vanishedAmount
 				logger.LegacyPrintf("repository.usage_billing",
 					"ALERT: subscription row vanished mid-apply, falling back to balance: user=%d request=%s cost=%.8f",
-					cmd.UserID, cmd.RequestID, cmd.SubscriptionCost)
-				return cmd.SubscriptionCost, nil
+					cmd.UserID, cmd.RequestID, vanishedAmount)
+				continue
 			}
 			return 0, err
 		}
 	}
-	return 0, nil
+	return remainder, nil
 }
 
 func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscriptionID int64, costUSD float64) error {

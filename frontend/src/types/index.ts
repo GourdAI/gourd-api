@@ -2086,6 +2086,13 @@ export interface UserSubscription {
   remaining_usd?: number | null
   /** 不限额标记（等价于 total_limit_usd 归一化后为空） */
   unlimited: boolean
+  /**
+   * 额度重置周期：none = 一次性总额池（花完为止）；
+   * daily/weekly/monthly = 每个自然日/周/月重发 total_limit_usd。
+   */
+  reset_period?: 'none' | 'daily' | 'weekly' | 'monthly'
+  /** 下次额度刷新时刻；缺省 = 不刷新（none 周期或已过期） */
+  window_resets_at?: string | null
   created_at: string
   updated_at: string
   revoked_at?: string | null

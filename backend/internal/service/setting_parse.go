@@ -1205,6 +1205,16 @@ func parseDefaultSubscriptions(raw string) []DefaultSubscriptionSetting {
 		if item.ValidityDays > MaxValidityDays {
 			item.ValidityDays = MaxValidityDays
 		}
+		// 周期归一：未知值回落 none，不因字段拼错就把额度变成高频重置。
+		// 值得注意的是：none 存为空串而不是 "none" —— 序列化时 omitempty 会省掉它，
+		// 因此存量配置（一次性总额池）的 JSON 形式完全不变，不会因为一次保存
+		// 就被改写成新格式（那会让「库内容 diff」与「回滚」都变得难以推理）。
+		// 下游一律用 NormalizeSubscriptionResetPeriod 读，空串与 "none" 等价。
+		if period := NormalizeSubscriptionResetPeriod(item.ResetPeriod); period != SubscriptionResetPeriodNone {
+			item.ResetPeriod = period
+		} else {
+			item.ResetPeriod = ""
+		}
 		limit := *item.TotalLimitUSD
 		item.TotalLimitUSD = &limit
 		normalized = append(normalized, item)

@@ -97,21 +97,44 @@ func TestWorkbuddySSEReaderErrorFramePassthrough(t *testing.T) {
 
 func TestWorkbuddySSEReaderEmptyStreamFallback(t *testing.T) {
 	t.Parallel()
-	// 只有注释/空行：输出一帧 error + [DONE]，不 panic。
+	// 只有注释/空行：只输出一帧 error，**不补 [DONE]**（空流不是完成）。
+	// 旧断言（error + [DONE]）把 bug 固化成了契约：一个假的 [DONE] 足以让上层
+	// raw 路径把上游空流当成成功（2026-10-24 修复）。
 	frames := workbuddyReadAllSSE(t, ": ping\n\n\n: pong\n")
-	require.Len(t, frames, 2)
+	require.Len(t, frames, 1)
 	require.Equal(t, "empty upstream stream", gjson.Get(frames[0], "error.message").String())
 	require.Equal(t, "upstream_parse", gjson.Get(frames[0], "error.code").String())
-	require.Equal(t, "[DONE]", frames[1])
+	require.Equal(t, 0, workbuddyCountDone(frames), "空流未给出完成证据，不得代为宣告完成")
 }
 
 func TestWorkbuddySSEReaderEnsuresSingleDone(t *testing.T) {
 	t.Parallel()
-	// 上游漏发 [DONE]（EOF 收尾）：网关兜底补一个。
-	input := `data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}` + "\n"
+	// 上游发了 [DONE]：网关归一到恰好一个。
+	input := `data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}` + "\n" + "data: [DONE]\n"
 	frames := workbuddyReadAllSSE(t, input)
 	require.Len(t, frames, 2)
 	require.Equal(t, 1, workbuddyCountDone(frames))
+}
+
+// 【不得兜底补 [DONE]】上游漏发 [DONE] 且无任何完成证据（无 finish_reason、无 usage）
+// 就是**断流**，不能当成「上游忘了发」而代它宣告成功——那正是面板记「成功」的成因。
+func TestWorkbuddySSEReaderNoFakeDoneOnTruncation(t *testing.T) {
+	t.Parallel()
+	frames := workbuddyReadAllSSE(t,
+		`data: {"id":"x","choices":[{"index":0,"delta":{"content":"partial"}}]}`+"\n")
+	require.Equal(t, 0, workbuddyCountDone(frames), "无完成证据时必须留下截断信号")
+}
+
+// 反向护栏：finish_reason / usage 任一存在就属于正常收尾，网关照旧补 [DONE]。
+func TestWorkbuddySSEReaderDoneWhenTerminalEvidencePresent(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{
+		`data: {"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n",
+		`data: {"id":"x","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}` + "\n",
+	} {
+		frames := workbuddyReadAllSSE(t, input)
+		require.Equal(t, 1, workbuddyCountDone(frames), "有完成证据就是正常结束: %s", input)
+	}
 }
 
 func TestWorkbuddySSEReaderNilInput(t *testing.T) {
@@ -119,7 +142,8 @@ func TestWorkbuddySSEReaderNilInput(t *testing.T) {
 	raw, err := io.ReadAll(newWorkbuddySSEReader(nil))
 	require.NoError(t, err)
 	require.Contains(t, string(raw), "empty upstream stream")
-	require.Contains(t, string(raw), "[DONE]")
+	// 空输入没有完成证据：不得补 [DONE]（见新口径）。
+	require.NotContains(t, string(raw), "data: [DONE]")
 }
 
 func TestAggregateWorkbuddySSE(t *testing.T) {
@@ -193,11 +217,14 @@ func TestAggregateWorkbuddySSETruncatedToolCalls(t *testing.T) {
 	require.Equal(t, int64(1), gjson.GetBytes(out, "choices.0.message.tool_calls.#").Int())
 	require.Equal(t, "c2", gjson.GetBytes(out, "choices.0.message.tool_calls.0.id").String())
 
-	// 无 [DONE]（EOF 截断）：残缺参数同样丢弃。
+	// 无 [DONE] / 无 finish_reason / 无 usage = EOF 截断：
+	// **不得**再聚合成一份假成功响应（旧断言 require.NoError 是把这个 bug 固化成了契约）。
+	// 参数丢弃逻辑本身仍由上面 finish_reason=length 那段保证（那里是正常收尾，能拿到响应体）。
 	inputNoDone := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"a","arguments":"{\"x\":"}}]}}]}` + "\n"
 	out, _, err = aggregateWorkbuddySSE(strings.NewReader(inputNoDone))
-	require.NoError(t, err)
-	require.False(t, gjson.GetBytes(out, "choices.0.message.tool_calls").Exists(), "EOF 截断的残缺参数被丢弃")
+	require.ErrorIs(t, err, errWorkbuddyStreamTruncated,
+		"EOF 截断必须报错，不能聚合成 finish_reason=stop 的完整响应")
+	require.Nil(t, out)
 }
 
 func TestAggregateWorkbuddySSEReasoningAndMessageFallback(t *testing.T) {

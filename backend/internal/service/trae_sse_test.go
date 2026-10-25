@@ -218,21 +218,32 @@ func TestTraeSSEReaderErrorAsFirstFrameHasNoDone(t *testing.T) {
 	require.NotContains(t, out, "[DONE]", "错误流不得伪装成正常结束")
 }
 
-func TestTraeSSEReaderAppendsFinishAndDoneWithoutDoneEvent(t *testing.T) {
+// 【上游读过正文却 EOF = 断流，不得代盖完成章】
+//
+// 修复前本用例叫 TestTraeSSEReaderAppendsFinishAndDoneWithoutDoneEvent，断言
+// 「缺 done 时必须补 finish_reason=stop + [DONE]」——那是把 bug 固化成了契约：
+// 伪造的完成章会让上层 streamRawChatCompletions 的截断判定永不触发，
+// forwardErr=nil → handler 走成功分支 → 面板把断流记成「成功」（与 Qoder 同构）。
+func TestTraeSSEReaderTruncatedStreamHasNoFabricatedCompletion(t *testing.T) {
 	t.Parallel()
 	out := readAllTrae(t, traeNewSSEReader(strings.NewReader(sseStream(
 		sseEvent("output", `{"response":"only output"}`),
 	)), traeStreamMeta{}))
-	chunks := contentFrames(t, out)
-	require.Len(t, chunks, 2, "内容帧 + 补的 finish 帧")
-	require.Equal(t, "only output", func() string {
-		d := frameDelta(t, chunks[0])
-		s, _ := d["content"].(string)
-		return s
-	}())
-	require.Equal(t, "stop", frameFinishReason(t, chunks[1]), "缺 done 时必须补 finish_reason=stop")
-	require.Empty(t, frameDelta(t, chunks[1]), "补的结束帧 delta 应为空对象")
-	require.Equal(t, 1, countDone(out))
+	require.NotContains(t, out, "data: [DONE]", "无完成证据时不得补 [DONE]（上层靠它判截断）")
+	require.NotContains(t, out, `"finish_reason":"stop"`, "不得代上游伪造 finish_reason=stop")
+	// 正文仍要交付（已生成的字节不能因为截断就不下发）。
+	require.Contains(t, out, `"content":"only output"`)
+}
+
+// 反向护栏：上游确实发过 done 帧但没带 finish_reason —— 真完成，网关补 [DONE]。
+// （done 帧本身即完成证据，故不再额外造一帧 finish_reason=stop）；
+func TestTraeSSEReaderDoneEventWithoutFinishReasonStillCompletes(t *testing.T) {
+	t.Parallel()
+	out := readAllTrae(t, traeNewSSEReader(strings.NewReader(sseStream(
+		sseEvent("output", `{"response":"hi"}`),
+		sseEvent("done", `{}`),
+	)), traeStreamMeta{}))
+	require.Equal(t, 1, countDone(out), "done 帧来过：属真完成，补 [DONE] 合理")
 }
 
 func TestTraeSSEReaderEmptyStreamYieldsErrorFrame(t *testing.T) {
@@ -315,6 +326,9 @@ func TestTraeSSEReaderLegacyFunctionCallShape(t *testing.T) {
 	t.Parallel()
 	out := readAllTrae(t, traeNewSSEReader(strings.NewReader(sseStream(
 		sseEvent("output", `{"function_call":{"name":"lookup","arguments":"{}"}}`),
+		// 补 done 帧让流正常结束：本用例只测 function_call 归一形态，不应依赖
+		// 「缺 done 时网关代盖完成章」的旧行为（已改）。
+		sseEvent("done", `{"finish_reason":"tool_calls"}`),
 	)), traeStreamMeta{}))
 	delta := frameDelta(t, contentFrames(t, out)[0])
 	calls, ok := delta["tool_calls"].([]any)
@@ -364,6 +378,8 @@ func TestTraeSSEReaderIncrementalFinishReasonIsNull(t *testing.T) {
 	t.Parallel()
 	out := readAllTrae(t, traeNewSSEReader(strings.NewReader(sseStream(
 		sseEvent("output", `{"response":"a"}`),
+		// 补 done 帧让流正常结束；本用例只断言增量帧的 finish_reason 为 null。
+		sseEvent("done", `{"finish_reason":"stop"}`),
 	)), traeStreamMeta{ID: "keep-id", Model: "keep-model"}))
 	chunks := contentFrames(t, out)
 	obj := decodeFrame(t, chunks[0])

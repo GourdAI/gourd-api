@@ -3925,7 +3925,7 @@
                   <div
                     v-for="(item, index) in form.default_subscriptions"
                     :key="`default-sub-${index}`"
-                    class="grid grid-cols-1 gap-3 rounded border border-gray-200 p-3 md:grid-cols-[1fr_160px_auto] dark:border-dark-600"
+                    class="grid grid-cols-1 gap-3 rounded border border-gray-200 p-3 md:grid-cols-[1fr_140px_160px_auto] dark:border-dark-600"
                   >
                     <div>
                       <label
@@ -3951,9 +3951,7 @@
                       <label
                         class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
                       >
-                        {{
-                          t("admin.settings.defaults.subscriptionValidityDays")
-                        }}
+                        {{ t("admin.settings.defaults.subscriptionValidityDays") }}
                       </label>
                       <input
                         v-model.number="item.validity_days"
@@ -3962,6 +3960,31 @@
                         max="36500"
                         class="input h-[42px]"
                       />
+                    </div>
+                    <div>
+                      <label
+                        class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
+                      >
+                        {{ t("admin.settings.defaults.subscriptionResetPeriod") }}
+                      </label>
+                      <select
+                        v-model="item.reset_period"
+                        class="input h-[42px]"
+                        :title="t('admin.settings.defaults.subscriptionResetPeriodHint')"
+                      >
+                        <option value="none">
+                          {{ t("admin.settings.defaults.resetPeriodNone") }}
+                        </option>
+                        <option value="daily">
+                          {{ t("admin.settings.defaults.resetPeriodDaily") }}
+                        </option>
+                        <option value="weekly">
+                          {{ t("admin.settings.defaults.resetPeriodWeekly") }}
+                        </option>
+                        <option value="monthly">
+                          {{ t("admin.settings.defaults.resetPeriodMonthly") }}
+                        </option>
+                      </select>
                     </div>
                     <div class="flex items-end">
                       <button
@@ -10893,6 +10916,7 @@ function addDefaultSubscription() {
   form.default_subscriptions.push({
     total_limit_usd: null,
     validity_days: DEFAULT_SUBSCRIPTION_WALLET_VALIDITY_DAYS,
+    reset_period: "none",
   });
 }
 

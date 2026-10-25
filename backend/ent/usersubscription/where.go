@@ -105,6 +105,16 @@ func TotalUsageUsd(v float64) predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldEQ(FieldTotalUsageUsd, v))
 }
 
+// ResetPeriod applies equality check predicate on the "reset_period" field. It's identical to ResetPeriodEQ.
+func ResetPeriod(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldResetPeriod, v))
+}
+
+// UsageWindowStart applies equality check predicate on the "usage_window_start" field. It's identical to UsageWindowStartEQ.
+func UsageWindowStart(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldUsageWindowStart, v))
+}
+
 // AssignedBy applies equality check predicate on the "assigned_by" field. It's identical to AssignedByEQ.
 func AssignedBy(v int64) predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldEQ(FieldAssignedBy, v))
@@ -533,6 +543,121 @@ func TotalUsageUsdLT(v float64) predicate.UserSubscription {
 // TotalUsageUsdLTE applies the LTE predicate on the "total_usage_usd" field.
 func TotalUsageUsdLTE(v float64) predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldLTE(FieldTotalUsageUsd, v))
+}
+
+// ResetPeriodEQ applies the EQ predicate on the "reset_period" field.
+func ResetPeriodEQ(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldResetPeriod, v))
+}
+
+// ResetPeriodNEQ applies the NEQ predicate on the "reset_period" field.
+func ResetPeriodNEQ(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNEQ(FieldResetPeriod, v))
+}
+
+// ResetPeriodIn applies the In predicate on the "reset_period" field.
+func ResetPeriodIn(vs ...string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIn(FieldResetPeriod, vs...))
+}
+
+// ResetPeriodNotIn applies the NotIn predicate on the "reset_period" field.
+func ResetPeriodNotIn(vs ...string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotIn(FieldResetPeriod, vs...))
+}
+
+// ResetPeriodGT applies the GT predicate on the "reset_period" field.
+func ResetPeriodGT(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGT(FieldResetPeriod, v))
+}
+
+// ResetPeriodGTE applies the GTE predicate on the "reset_period" field.
+func ResetPeriodGTE(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGTE(FieldResetPeriod, v))
+}
+
+// ResetPeriodLT applies the LT predicate on the "reset_period" field.
+func ResetPeriodLT(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLT(FieldResetPeriod, v))
+}
+
+// ResetPeriodLTE applies the LTE predicate on the "reset_period" field.
+func ResetPeriodLTE(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLTE(FieldResetPeriod, v))
+}
+
+// ResetPeriodContains applies the Contains predicate on the "reset_period" field.
+func ResetPeriodContains(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldContains(FieldResetPeriod, v))
+}
+
+// ResetPeriodHasPrefix applies the HasPrefix predicate on the "reset_period" field.
+func ResetPeriodHasPrefix(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldHasPrefix(FieldResetPeriod, v))
+}
+
+// ResetPeriodHasSuffix applies the HasSuffix predicate on the "reset_period" field.
+func ResetPeriodHasSuffix(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldHasSuffix(FieldResetPeriod, v))
+}
+
+// ResetPeriodEqualFold applies the EqualFold predicate on the "reset_period" field.
+func ResetPeriodEqualFold(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEqualFold(FieldResetPeriod, v))
+}
+
+// ResetPeriodContainsFold applies the ContainsFold predicate on the "reset_period" field.
+func ResetPeriodContainsFold(v string) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldContainsFold(FieldResetPeriod, v))
+}
+
+// UsageWindowStartEQ applies the EQ predicate on the "usage_window_start" field.
+func UsageWindowStartEQ(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldUsageWindowStart, v))
+}
+
+// UsageWindowStartNEQ applies the NEQ predicate on the "usage_window_start" field.
+func UsageWindowStartNEQ(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNEQ(FieldUsageWindowStart, v))
+}
+
+// UsageWindowStartIn applies the In predicate on the "usage_window_start" field.
+func UsageWindowStartIn(vs ...time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIn(FieldUsageWindowStart, vs...))
+}
+
+// UsageWindowStartNotIn applies the NotIn predicate on the "usage_window_start" field.
+func UsageWindowStartNotIn(vs ...time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotIn(FieldUsageWindowStart, vs...))
+}
+
+// UsageWindowStartGT applies the GT predicate on the "usage_window_start" field.
+func UsageWindowStartGT(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGT(FieldUsageWindowStart, v))
+}
+
+// UsageWindowStartGTE applies the GTE predicate on the "usage_window_start" field.
+func UsageWindowStartGTE(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGTE(FieldUsageWindowStart, v))
+}
+
+// UsageWindowStartLT applies the LT predicate on the "usage_window_start" field.
+func UsageWindowStartLT(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLT(FieldUsageWindowStart, v))
+}
+
+// UsageWindowStartLTE applies the LTE predicate on the "usage_window_start" field.
+func UsageWindowStartLTE(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLTE(FieldUsageWindowStart, v))
+}
+
+// UsageWindowStartIsNil applies the IsNil predicate on the "usage_window_start" field.
+func UsageWindowStartIsNil() predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIsNull(FieldUsageWindowStart))
+}
+
+// UsageWindowStartNotNil applies the NotNil predicate on the "usage_window_start" field.
+func UsageWindowStartNotNil() predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotNull(FieldUsageWindowStart))
 }
 
 // AssignedByEQ applies the EQ predicate on the "assigned_by" field.

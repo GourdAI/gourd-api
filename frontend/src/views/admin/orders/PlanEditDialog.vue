@@ -67,6 +67,33 @@
         <div><label class="input-label">{{ t('payment.admin.validityUnit') }} <span class="text-red-500">*</span></label><Select v-model="planForm.validity_unit" :options="validityUnitOptions" /></div>
         <div><label class="input-label">{{ t('payment.admin.sortOrder') }}</label><input v-model.number="planForm.sort_order" type="number" min="0" class="input" /></div>
       </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="input-label">{{ t('payment.admin.resetPeriod') }}</label>
+          <Select v-model="planForm.reset_period" :options="resetPeriodOptions" data-test="plan-reset-period" />
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.resetPeriodHint') }}</p>
+        </div>
+        <div class="flex items-start gap-3 pt-6">
+          <button
+            type="button"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              planForm.self_claimable ? 'bg-primary-500' : 'bg-gray-300 dark:bg-dark-600'
+            ]"
+            data-test="plan-self-claimable"
+            @click="planForm.self_claimable = !planForm.self_claimable"
+          >
+            <span :class="[
+              'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+              planForm.self_claimable ? 'translate-x-5' : 'translate-x-0'
+            ]" />
+          </button>
+          <div>
+            <label class="text-sm text-gray-700 dark:text-gray-300">{{ t('payment.admin.selfClaimable') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('payment.admin.selfClaimableHint') }}</p>
+          </div>
+        </div>
+      </div>
       <div>
         <label class="input-label">{{ t('payment.admin.currency') }}</label>
         <input v-model="planForm.currency" type="text" maxlength="3" class="input uppercase" :placeholder="t('payment.admin.currencyPlaceholder')" />
@@ -135,8 +162,15 @@ const { t } = useI18n()
 const appStore = useAppStore()
 
 const saving = ref(false)
-const planForm = reactive({ name: '', group_id: null as number | null, description: '', price: 0, original_price: 0, currency: '', validity_days: 30, validity_unit: 'days', sort_order: 0, for_sale: true, total_limit_usd: null as number | null })
+const planForm = reactive({ name: '', group_id: null as number | null, description: '', price: 0, original_price: 0, currency: '', validity_days: 30, validity_unit: 'days', sort_order: 0, for_sale: true, total_limit_usd: null as number | null, reset_period: 'none' as string, self_claimable: false })
 const planFeaturesText = ref('')
+
+const resetPeriodOptions = computed(() => [
+  { value: 'none', label: t('payment.admin.resetPeriodNone') },
+  { value: 'daily', label: t('payment.admin.resetPeriodDaily') },
+  { value: 'weekly', label: t('payment.admin.resetPeriodWeekly') },
+  { value: 'monthly', label: t('payment.admin.resetPeriodMonthly') },
+])
 
 const validityUnitOptions = computed(() => [
   { value: 'days', label: t('payment.admin.days') },
@@ -188,10 +222,10 @@ const subscriptionCnyPreview = computed(() => {
 watch(() => props.show, (visible) => {
   if (!visible) return
   if (props.plan) {
-    Object.assign(planForm, { name: props.plan.name, group_id: props.plan.group_id, description: props.plan.description, price: props.plan.price, original_price: props.plan.original_price || 0, currency: props.plan.currency || '', validity_days: props.plan.validity_days, validity_unit: props.plan.validity_unit || 'days', sort_order: props.plan.sort_order || 0, for_sale: props.plan.for_sale, total_limit_usd: props.plan.total_limit_usd ?? null })
+    Object.assign(planForm, { name: props.plan.name, group_id: props.plan.group_id, description: props.plan.description, price: props.plan.price, original_price: props.plan.original_price || 0, currency: props.plan.currency || '', validity_days: props.plan.validity_days, validity_unit: props.plan.validity_unit || 'days', sort_order: props.plan.sort_order || 0, for_sale: props.plan.for_sale, total_limit_usd: props.plan.total_limit_usd ?? null, reset_period: props.plan.reset_period || 'none', self_claimable: Boolean(props.plan.self_claimable) })
     planFeaturesText.value = (props.plan.features || []).join('\n')
   } else {
-    Object.assign(planForm, { name: '', group_id: null, description: '', price: 0, original_price: 0, currency: '', validity_days: 30, validity_unit: 'days', sort_order: 0, for_sale: true, total_limit_usd: null })
+    Object.assign(planForm, { name: '', group_id: null, description: '', price: 0, original_price: 0, currency: '', validity_days: 30, validity_unit: 'days', sort_order: 0, for_sale: true, total_limit_usd: null, reset_period: 'none', self_claimable: false })
     planFeaturesText.value = ''
   }
 })
@@ -225,6 +259,10 @@ function buildPlanPayload(isUpdate: boolean) {
     // 套餐额度（USD）：与后端 AdminSubscriptionPlanResult.total_limit_usd 同名；
     // 留空 = 不限额（新建发 null，编辑发 0 表示清空；两者在后端均归一为不限量）。
     total_limit_usd: totalLimitUsd ?? (isUpdate ? 0 : null),
+    // 重置周期：none = 一次性总额池（花完为止）；daily/weekly/monthly = 每窗口重发额度。
+    reset_period: planForm.reset_period || 'none',
+    // 可自助领取：用户在订阅页一键领取，不需要管理员逐个分配（免费额度套餐用）。
+    self_claimable: planForm.self_claimable,
     features,
   }
 }
@@ -234,9 +272,13 @@ async function handleSavePlan() {
     appStore.showError(t('payment.admin.groupRequired'))
     return
   }
+  // 免费套餐（price=0）必须可自助领取，否则既不能买也不能领；
+  // 后端 validatePlanRequired 会直接 400，这里提前拦下给明确提示。
   if (!planForm.price || planForm.price <= 0) {
-    appStore.showError(t('payment.admin.priceRequired'))
-    return
+    if (!planForm.self_claimable) {
+      appStore.showError(t('payment.admin.priceRequiredOrClaimable'))
+      return
+    }
   }
   if (!planForm.validity_days || planForm.validity_days < 1) {
     appStore.showError(t('payment.admin.validityRequired'))

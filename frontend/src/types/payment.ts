@@ -127,6 +127,14 @@ export interface SubscriptionPlan {
    * 后端 json: AdminSubscriptionPlanResult.total_limit_usd (omitempty)
    */
   total_limit_usd?: number | null
+  /**
+   * 额度重置周期：none = 一次性总额池（花完为止）；
+   * daily/weekly/monthly = 每个自然日/周/月重发 total_limit_usd（剩余不结转）。
+   * 后端 json: AdminSubscriptionPlanResult.reset_period
+   */
+  reset_period?: 'none' | 'daily' | 'weekly' | 'monthly'
+  /** 是否允许用户自助领取（免费额度套餐用）；后台开关关闭后不再出现在领取列表 */
+  self_claimable?: boolean
   supported_model_scopes?: string[]
   name: string
   description: string

@@ -267,6 +267,10 @@ type AssignSubscriptionInput struct {
 	Notes        string
 
 	TotalLimitUSD *float64
+
+	// ResetPeriod 额度重置周期（none/daily/weekly/monthly），空串归一为 none。
+	// 与 TotalLimitUSD 一同构成「每周期发多少」的快照；改套餐不回溯。
+	ResetPeriod string
 }
 
 // AssignSubscription 分配订阅给用户（不允许重复分配：命中既有钱包时按幂等/冲突语义处理）
@@ -512,6 +516,14 @@ func (s *SubscriptionService) createSubscription(ctx context.Context, input *Ass
 		// 额度归一化：<=0 与 nil 同义（不限额），避免库里落 0 后管理端展示“$0”误导。
 		// 套餐额度在这里落快照：之后改 subscription_plans.total_limit_usd 不回溯。
 		TotalLimitUSD: normalizeSubLimit(input.TotalLimitUSD),
+		// 重置周期同样落快照：套餐从 weekly 改成 daily 不影响已发出的这份，
+		// 否则用户会发现自己「突然变快了」而无法解释。
+		ResetPeriod: NormalizeSubscriptionResetPeriod(input.ResetPeriod),
+	}
+	// 配了周期就初始化窗口起点到当前窗口（而不是发放时刻），
+	// 保证同一自然日内多人发放的刷新时机一致。
+	if IsRecurringSubscriptionResetPeriod(sub.ResetPeriod) {
+		sub.UsageWindowStart = SubscriptionWindowStart(sub.ResetPeriod, now)
 	}
 	// 只有当 AssignedBy > 0 时才设置（0 表示系统分配，如兑换码）
 	if input.AssignedBy > 0 {
@@ -1125,6 +1137,10 @@ type SubscriptionProgress struct {
 	RemainingUSD  *float64  `json:"remaining_usd"`
 	Percentage    float64   `json:"percentage"`
 	Unlimited     bool      `json:"unlimited"`
+	// ResetPeriod 额度重置周期（none/daily/weekly/monthly）：none = 一次性总额池。
+	ResetPeriod string `json:"reset_period"`
+	// WindowResetsAt 下次额度刷新时刻；nil = 不刷新（none 周期或已过期）。
+	WindowResetsAt *time.Time `json:"window_resets_at,omitempty"`
 }
 
 // GetSubscriptionProgress 获取订阅使用进度（纯总额池，不再查分组）
@@ -1141,18 +1157,25 @@ func (s *SubscriptionService) GetSubscriptionProgress(ctx context.Context, subsc
 // 展示口径：TotalLimitUSD 为 nil 即「不限额钱包」，RemainingUSD 也为 nil，
 // Percentage 保持 0（没有分母，前端按 Unlimited 字段显示「不限额」而不是 100%）。
 func (s *SubscriptionService) calculateProgress(sub *UserSubscription) *SubscriptionProgress {
+	// 【必须按窗口取用量】配了重置周期的订阅，库里的 TotalUsageUSD 是上窗口的值。
+	// 直接用它会算出「今天一分没花却显示已用 100%」——进度条与剩余额度互相矛盾。
+	// RemainingUSD 已经在内部按窗口算了，这里必须与它同源（EffectiveWindowUsageUSD）。
+	now := time.Now()
+	windowUsage := sub.EffectiveWindowUsageUSD(now)
 	progress := &SubscriptionProgress{
-		ID:            sub.ID,
-		Name:          sub.DisplayName(),
-		ExpiresAt:     sub.ExpiresAt,
-		ExpiresInDays: sub.DaysRemaining(),
-		TotalLimitUSD: sub.EffectiveTotalLimit(),
-		TotalUsageUSD: sub.TotalUsageUSD,
-		RemainingUSD:  sub.RemainingUSD(),
-		Unlimited:     sub.IsUnlimited(),
+		ID:             sub.ID,
+		Name:           sub.DisplayName(),
+		ExpiresAt:      sub.ExpiresAt,
+		ExpiresInDays:  sub.DaysRemaining(),
+		TotalLimitUSD:  sub.EffectiveTotalLimit(),
+		TotalUsageUSD:  windowUsage,
+		RemainingUSD:   sub.RemainingUSDAt(now),
+		Unlimited:      sub.IsUnlimited(),
+		ResetPeriod:    NormalizeSubscriptionResetPeriod(sub.ResetPeriod),
+		WindowResetsAt: sub.SubscriptionWindowResetsAt(now),
 	}
 	if limit := progress.TotalLimitUSD; limit != nil && *limit > 0 {
-		percentage := sub.TotalUsageUSD / *limit * 100
+		percentage := windowUsage / *limit * 100
 		if percentage > 100 {
 			percentage = 100
 		}

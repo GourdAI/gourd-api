@@ -29,6 +29,18 @@ type OAuthRefreshPageOptions struct {
 	IncludeSetupToken    bool
 	RequireRefreshToken  bool
 	ExcludeRetryCooldown bool
+
+	// IncludeAPIKeyPlatforms 允许「非 OAuth、但持有可刷新凭据」的平台进入候选（目前只有
+	// WorkBuddy：它是 apikey 类型而持有 refresh_token，与 OAuth 一样会在到期前自愈）。
+	//
+	// 【为何不能直接去掉 type 条件】旧 SQL 硬编码 `type = 'oauth'`，而 WorkBuddy 恒为 apikey，
+	// 导致它**永远进不了后台刷新候选**（2026-10-24 全量 401 事件的第三条根因：access_token
+	// 到期后无人续命，只能昏迷 401，而 401 又是永久 SetError）。
+	//
+	// 语义边界：本字段只放宽「类型」这一道门，platform 列表仍由调用方（eligiblePlatforms，
+	// 即已注册 refresher 的平台）决定，且 RequireRefreshToken 依旧生效——未持 refresh_token
+	// 的号依旧不会进入候选（它们确实不可自愈）。默认 false ⇒ 其它平台零行为变更。
+	IncludeAPIKeyPlatforms bool
 }
 
 // OAuthRefreshCandidatePage keeps cursor metadata from the raw SQL ID page.

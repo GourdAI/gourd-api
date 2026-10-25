@@ -43,10 +43,24 @@ func (SubscriptionPlan) Fields() []ent.Field {
 		// 套餐额度（USD）：购买后作为「一次性总额池」快照写入 user_subscriptions.total_limit_usd。
 		// NULL 或 <=0 表示该套餐不限量（有效期到期为止）。
 		// 与 price 完全独立：price 是卖多少钱，本字段是买回去能花多少钱。
+		//
+		// 注意：配了 ResetPeriod 时，本字段是「每个周期发这么多」而不是一次性总量。
 		field.Float("total_limit_usd").
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+
+		// 额度重置周期：none/daily/weekly/monthly（见 domain.SubscriptionResetPeriod*）。
+		// 发放时快照进 user_subscriptions.reset_period，之后改这里不回溯。
+		field.String("reset_period").
+			MaxLen(16).
+			Default("none"),
+
+		// 是否允许用户自助领取。
+		// true = 在售且用户可在订阅页一键领取（免费额度套餐用这个开关，
+		// 不需要管理员逐个分配）；false = 只能由管理员分配或支付/兑换码发放。
+		field.Bool("self_claimable").
+			Default(false),
 		field.Float("original_price").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,2)"}).
 			Optional().
@@ -91,5 +105,6 @@ func (SubscriptionPlan) Indexes() []ent.Index {
 	return []ent.Index{
 		index.Fields("group_id"),
 		index.Fields("for_sale"),
+		index.Fields("self_claimable"),
 	}
 }

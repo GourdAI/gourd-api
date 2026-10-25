@@ -27,8 +27,24 @@ import (
 )
 
 const (
-	// workbuddyTokenRefreshSkew 预刷新窗口：access_token 距过期不足该时长时先刷新。
-	workbuddyTokenRefreshSkew = 10 * time.Minute
+	// workbuddyTokenRefreshSkewMax 预刷新窗口的**上限**：access_token 距过期不足该时长时先刷新。
+	//
+	// 【为何按天而不按分钟】WorkBuddy 的 access_token 寿命约 45 天（实测 exp 距 iat
+	// 精确 45 天）。在旧的 10min 窗口下，token 只在「即将过期的那 10 分钟」会被请求路径
+	// 补刷；若那段时间没有流量（夜间/低峰），或恰好遇上上游抖动而刷新失败，token 会直接
+	// 过期，下一个请求就撞 401（2026-10-24 全量 401 事件）。抬到 24h 后，只要当天有任何
+	// 一次请求就会把 token 提前换新，且换后 exp 推后 45 天，不会反复刷。
+	//
+	// 【为何是「上限」而不是固定值】若上游某天只发短寿命 token（例如 expiresIn=3600），
+	// 固定 24h 窗口会变成「刚刚刷完就又认为需要刷」→ 每个请求都打一次 refresh endpoint，
+	// 形成刷新风暴（会把上游限流/风控惹毛，反而制造新的 401）。
+	// 因此实际窗口统一经 workbuddyEffectiveRefreshSkew 夹逼到「寿命的 1/4」。
+	workbuddyTokenRefreshSkewMax = 24 * time.Hour
+
+	// workbuddyTokenRefreshSkewFallback 无法从 token 推出寿命时（非 JWT / 缺 iat）的
+	// 保守预刷新窗口。保持改造前的 10min 语义：无寿命信息时宁可不提前刷，
+	// 也不能因猜测而制造刷新风暴。
+	workbuddyTokenRefreshSkewFallback = 10 * time.Minute
 
 	// workbuddyRefreshTimeout 单次 refresh 网络调用的总时长上限。
 	workbuddyRefreshTimeout = 30 * time.Second
@@ -61,10 +77,51 @@ func workbuddyRefreshLock(accountID int64) *contextMutex {
 	return mu
 }
 
+// workbuddyEffectiveRefreshSkew 计算该凭据实际生效的提前刷新窗口。
+//
+// 规则：
+//  1. 能从 token 的 iat/exp 推出寿命 L（L > 0）⇒ 窗口 = min(24h, L/4)，下限 10min；
+//  2. 推不出寿命（非 JWT / 缺 iat / 数据非法）⇒ 10min（保守旧行为）。
+//
+// 为何是 L/4：保证「刚刷完的新 token 不会被立即再刷」——只要 L > 4×窗口就不会风暴，
+// 而 L/4 天然满足。对真实的 45 天 token：L/4 ≈ 11 天 > 24h ⇒ 取 24h（设计意图）；
+// 对假设的 1h token：L/4 = 15min ⇒ 取 15min，刷完后剩 1h > 15min，不风暴。
+//
+// 回归背景（2026-10-25 实测）：固定 24h 曾把「expiresIn=3600 的刷新响应」误判为
+// 立刻又该刷，导致一次签到请求连打两次 refresh，被既有用例
+// TestWorkBuddyCheckin401RefreshesAndRetriesOnce（断言 refreshCalls==1，实际 2）当场抓到。
+// 本函数就是这个回归的防线，不要把窗口改回固定值。
+func workbuddyEffectiveRefreshSkew(creds WorkbuddyCredentials) time.Duration {
+	if lifetime := workbuddyCredentialLifetime(creds); lifetime > 0 {
+		quarter := lifetime / 4
+		if quarter < workbuddyTokenRefreshSkewFallback {
+			return workbuddyTokenRefreshSkewFallback
+		}
+		if quarter < workbuddyTokenRefreshSkewMax {
+			return quarter
+		}
+		return workbuddyTokenRefreshSkewMax
+	}
+	return workbuddyTokenRefreshSkewFallback
+}
+
+// workbuddyCredentialLifetime 从 token 的 iat/exp 估算总寿命；不可知时返回 0。
+// 用 token 自带寿命而不是 expires_at：后者是可能被 refresh 响应改写过的派生值，
+// 而 iat/exp 是签发时就固定的，不受本地回写影响。
+func workbuddyCredentialLifetime(creds WorkbuddyCredentials) time.Duration {
+	claims, ok := workbuddyParseJWTClaims(creds.AccessToken)
+	if !ok || claims.Iat <= 0 || claims.Exp <= claims.Iat {
+		return 0
+	}
+	return time.Duration(claims.Exp-claims.Iat) * time.Second
+}
+
 // workbuddyTokenNeedsRefresh 报告凭据是否需要刷新：
 //   - access_token 为空 → 必须刷新；
 //   - expires_at 缺失/非正 → 不主动刷新（无过期信息时避免把有效 token 刷掉）；
-//   - 距过期不足 workbuddyTokenRefreshSkew → 刷新。
+//     （补充：读取路径已用 JWT exp 兜底，因此这里只在 token 根本不是 JWT 时才走到，
+//     见 workbuddy_jwt.go）
+//   - 距过期不足「有效窗口」→ 刷新（见 workbuddyEffectiveRefreshSkew，最长 24h）。
 func workbuddyTokenNeedsRefresh(creds WorkbuddyCredentials, now time.Time) bool {
 	if strings.TrimSpace(creds.AccessToken) == "" {
 		return true
@@ -72,7 +129,7 @@ func workbuddyTokenNeedsRefresh(creds WorkbuddyCredentials, now time.Time) bool 
 	if creds.ExpiresAt <= 0 {
 		return false
 	}
-	return now.Add(workbuddyTokenRefreshSkew).Unix() >= creds.ExpiresAt
+	return now.Add(workbuddyEffectiveRefreshSkew(creds)).Unix() >= creds.ExpiresAt
 }
 
 // sendWorkbuddyUpstreamRequest 构建并发送 WorkBuddy chat 上游请求。
@@ -188,7 +245,16 @@ func (s *OpenAIGatewayService) sendWorkbuddyUpstreamRequest(ctx context.Context,
 		// 流式：包装为规范化 SSE 流（Content-Type 提示下游按 SSE 透传）。
 		// 注入错误帧处置回调：WorkBuddy 的主要拒绝形态是 HTTP 200 + 流内 error 帧，
 		// 不进这里的话，账号被上游限额后面板仍显示「正常」、调度持续选用。
-		resp.Body = io.NopCloser(newWorkbuddySSEReaderWithHook(resp.Body, s.workbuddyStreamErrorHandler(ctx, c, account)))
+		reader := newWorkbuddySSEReaderWithHook(resp.Body, s.workbuddyStreamErrorHandler(ctx, c, account))
+		// 【交付观察器】回调只管「落账号状态」与 Ops 事件挂靠，而 appendOpsUpstreamError
+		// 不会自己建 ops_error_logs 行，也不是 SLA 失败。没有这一层，带内错误仍被
+		// streamRawChatCompletions 当成成功（面板显示「成功」）——与 Qoder 同构缺陷。
+		resp.Body = io.NopCloser(newWorkbuddySSEDeliveryReader(reader, func() {
+			// reader 的 ErrFrameCode 已由 upstreamErrFrameDelivered 排除本地兜底帧；
+			// 这里再传一次值，由标记函数的同一道闸门收敛（两处共用一套判据）。
+			s.workbuddyMarkDeliveredInBandError(c, account, reader.errFrameCode, reader.errFrameMessage)
+		}))
+		resp.Header = resp.Header.Clone()
 		resp.Header.Set("Content-Type", "text/event-stream")
 		return resp, nil
 	}
@@ -203,6 +269,17 @@ func (s *OpenAIGatewayService) sendWorkbuddyUpstreamRequest(ctx context.Context,
 	aggregated, usage, aggErr := aggregateWorkbuddySSEWithHook(bytes.NewReader(raw), s.workbuddyStreamErrorHandler(ctx, c, account))
 	if aggErr != nil {
 		return nil, aggErr
+	}
+	// 【非流式也要计入 SLA 失败】流式路径靠 workbuddySSEDeliveryReader 在交付点补记
+	// MarkOpsStreamFailure，非流式没有那个交付点（聚合在内存里就结束了）。不补这一道时，
+	// 「上游 200 + 只有 error 帧」的非流式请求会落一份 HTTP 200 + 空 content 的响应，
+	// 而 Ops 侧只有一条挂靠的 upstream 事件、**不算请求失败**——运营面板仍然把它当成功。
+	// 本机探针实测（修复前）：status=200 object=chat.completion content="" opsMarked(SLA)=false。
+	//
+	// 语义边界：只改可观测性，**不改响应体形态**（仍回空 content 的 200；要改成错误响应
+	// 属对外协议变更，需单独决策）。客户端断开时不记，口径同流式路径。
+	if frameCode, frameMsg, ok := workbuddyInBandFailureFromAggregate(raw); ok {
+		s.workbuddyMarkDeliveredInBandError(c, account, frameCode, frameMsg)
 	}
 	// usage 已内嵌于聚合 JSON（body.usage，含补全的 total_tokens），由上层解析；
 	// 此处返回值供测试与后续集成使用。
@@ -318,9 +395,23 @@ func (s *OpenAIGatewayService) refreshWorkbuddyToken(ctx context.Context, accoun
 	if rt := strings.TrimSpace(env.Data.RefreshToken); rt != "" {
 		next["refresh_token"] = rt
 	}
-	// preserveExpiry：响应缺 expiresIn 或超量级（脏数据）时保留旧过期时间，避免过期判定漂移。
+	// preserveExpiry：响应缺 expiresIn 或超量级（脏数据）时，用**新 token 自身的 exp** 兜底。
+	//
+	// 只 preserve 旧值是不够的：旧值对应的是旧 token，而 refresh 已经把它换掉了。
+	// 本机探针实测（v2026-10-25）：refresh 响应不带 expiresIn 时，旧 expires_at（+40天）
+	// 被原样保留，而新 token 的真实 exp 只有 +2h ⇒ workbuddyTokenNeedsRefresh 返回 false，
+	// 即「刚刷完就又认为不需刷」，直到旧值到期才会再次预刷新——但新 token 那时早已过期。
+	// 更糟的是旧值比真实 exp 靠后的场景：系统会一直到旧值临近才预刷新，等于把预刷新窗口
+	// 白白算错了一整段。所以两边都没有时，宁可把旧值**清掉**（置 0 = 未知语义，
+	// workbuddyTokenNeedsRefresh 对 ExpiresAt<=0 不主动刷新），也不能留一个对应旧 token 的值。
+	// 与后台刷新器 workbuddy_token_refresher.go 同源、同优先级。
 	if env.Data.ExpiresIn > 0 && time.Duration(env.Data.ExpiresIn)*time.Second < workbuddyRefreshExpiresInMax {
 		next["expires_at"] = time.Now().Add(time.Duration(env.Data.ExpiresIn) * time.Second).Unix()
+	} else if exp := workbuddyJWTExpiry(env.Data.AccessToken); exp > 0 {
+		next["expires_at"] = exp
+	} else {
+		// 无法得知新 token 的到期时刻：删掉旧值，避免用旧 token 的过期时刻判定新 token。
+		delete(next, "expires_at")
 	}
 	if d := strings.TrimSpace(env.Data.Domain); d != "" {
 		next["domain"] = d

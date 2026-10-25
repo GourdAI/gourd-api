@@ -35,6 +35,10 @@ const (
 	FieldTotalLimitUsd = "total_limit_usd"
 	// FieldTotalUsageUsd holds the string denoting the total_usage_usd field in the database.
 	FieldTotalUsageUsd = "total_usage_usd"
+	// FieldResetPeriod holds the string denoting the reset_period field in the database.
+	FieldResetPeriod = "reset_period"
+	// FieldUsageWindowStart holds the string denoting the usage_window_start field in the database.
+	FieldUsageWindowStart = "usage_window_start"
 	// FieldAssignedBy holds the string denoting the assigned_by field in the database.
 	FieldAssignedBy = "assigned_by"
 	// FieldAssignedAt holds the string denoting the assigned_at field in the database.
@@ -94,6 +98,8 @@ var Columns = []string{
 	FieldStatus,
 	FieldTotalLimitUsd,
 	FieldTotalUsageUsd,
+	FieldResetPeriod,
+	FieldUsageWindowStart,
 	FieldAssignedBy,
 	FieldAssignedAt,
 	FieldNotes,
@@ -129,6 +135,10 @@ var (
 	StatusValidator func(string) error
 	// DefaultTotalUsageUsd holds the default value on creation for the "total_usage_usd" field.
 	DefaultTotalUsageUsd float64
+	// DefaultResetPeriod holds the default value on creation for the "reset_period" field.
+	DefaultResetPeriod string
+	// ResetPeriodValidator is a validator for the "reset_period" field. It is called by the builders before save.
+	ResetPeriodValidator func(string) error
 	// DefaultAssignedAt holds the default value on creation for the "assigned_at" field.
 	DefaultAssignedAt func() time.Time
 )
@@ -189,6 +199,16 @@ func ByTotalLimitUsd(opts ...sql.OrderTermOption) OrderOption {
 // ByTotalUsageUsd orders the results by the total_usage_usd field.
 func ByTotalUsageUsd(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldTotalUsageUsd, opts...).ToFunc()
+}
+
+// ByResetPeriod orders the results by the reset_period field.
+func ByResetPeriod(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldResetPeriod, opts...).ToFunc()
+}
+
+// ByUsageWindowStart orders the results by the usage_window_start field.
+func ByUsageWindowStart(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUsageWindowStart, opts...).ToFunc()
 }
 
 // ByAssignedBy orders the results by the assigned_by field.

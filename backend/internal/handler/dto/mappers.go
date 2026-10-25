@@ -902,6 +902,7 @@ func UserSubscriptionFromServiceAdmin(sub *service.UserSubscription) *AdminUserS
 }
 
 func userSubscriptionFromServiceBase(sub *service.UserSubscription) UserSubscription {
+	now := time.Now()
 	return UserSubscription{
 		ID:            sub.ID,
 		UserID:        sub.UserID,
@@ -910,14 +911,18 @@ func userSubscriptionFromServiceBase(sub *service.UserSubscription) UserSubscrip
 		ExpiresAt:     sub.ExpiresAt,
 		Status:        sub.Status,
 		TotalLimitUSD: sub.TotalLimitUSD,
-		TotalUsageUSD: sub.TotalUsageUSD,
-		RemainingUSD:  sub.RemainingUSD(),
-		Unlimited:     sub.IsUnlimited(),
-		CreatedAt:     sub.CreatedAt,
-		UpdatedAt:     sub.UpdatedAt,
-		RevokedAt:     sub.DeletedAt,
-		User:          UserFromServiceShallow(sub.User),
-		Plan:          subscriptionPlanRefFromService(sub.Plan),
+		// 用量与剩余都必须按当前窗口算：直接拿 TotalUsageUSD 会把上一窗口的
+		// 累计值展示给用户（「今天一分没花却显示已用完」）。
+		TotalUsageUSD:  sub.EffectiveWindowUsageUSD(now),
+		RemainingUSD:   sub.RemainingUSDAt(now),
+		Unlimited:      sub.IsUnlimited(),
+		ResetPeriod:    service.NormalizeSubscriptionResetPeriod(sub.ResetPeriod),
+		WindowResetsAt: sub.SubscriptionWindowResetsAt(now),
+		CreatedAt:      sub.CreatedAt,
+		UpdatedAt:      sub.UpdatedAt,
+		RevokedAt:      sub.DeletedAt,
+		User:           UserFromServiceShallow(sub.User),
+		Plan:           subscriptionPlanRefFromService(sub.Plan),
 	}
 }
 

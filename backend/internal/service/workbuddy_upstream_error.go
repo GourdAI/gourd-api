@@ -32,9 +32,13 @@ package service
 // 字典外的码一律不落账号状态，这条不许放宽。
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -219,6 +223,131 @@ func markWorkbuddyAccountFromBillingError(ctx context.Context, repo AccountRepos
 	// 不会反复刷 reason。session 类走 SetError（无同构守卫），但同一错误文案重复写入
 	// 同样不改变账号可用性，可接受。
 	applyWorkbuddyErrorClass(ctx, repo, account, code, class, be.Msg)
+}
+
+// workbuddySSEDeliveryReader 包装规范化读取器，在**被消费到末尾**时补记一次「流内错误
+// 已交付客户端」。
+//
+// 【为何需要这一层】WorkBuddy 的主要拒绝形态是 HTTP 200 + 流内 error 帧，而：
+//   - streamRawChatCompletions 只认 [DONE]/usage/finish_reason，不认识「带内 error 帧」；
+//   - workbuddyStreamErrorHandler 只调 appendOpsUpstreamError，而它把事件挂到
+//     **已存在的**错误行 JSON 上，本身不生成行（ops_error_logger 只在 wire>=400 或
+//     有人调 MarkOpsStreamFailure 时才落行）；
+//   - chat 域码表恒 unknown（classifyWorkbuddyChatError），applyWorkbuddyErrorClass
+//     对 unknown 直接 return，也不落账号状态。
+//
+// 三条叠加 ⇒ 账号被上游拒了，运维面板却显示「成功」、调度器继续选同一枚号。
+// 这与 Qoder 10-20 那次「报错却记成功」完全同构（Qoder 已有同名观察器，WorkBuddy 一直没有）。
+//
+// 【为何在交付点、而不在 onErrFrame 回调里】只有流被读到末尾（客户端没中途断开）才能
+// 确定错误帧真的会被用户看到。
+type workbuddySSEDeliveryReader struct {
+	*workbuddySSEReader
+	onDelivered func()
+	marked      bool
+}
+
+func (r *workbuddySSEDeliveryReader) Read(p []byte) (int, error) {
+	n, err := r.workbuddySSEReader.Read(p)
+	if err == io.EOF && !r.marked {
+		r.marked = true
+		// 只有**上游**错误帧才算失败：网关自己合成的空流兜底帧（errFrameCode 被置为
+		// workbuddyEmptyStreamErrFrameCode = "upstream_parse"）属本地解析缺陷，不该记成
+		// 上游失败——留它走恢复行口径。
+		if r.onDelivered != nil && r.upstreamErrFrameDelivered() {
+			r.onDelivered()
+		}
+	}
+	return n, err
+}
+
+// upstreamErrFrameDelivered 报告是否交付过**上游**错误帧（排除本网关合成的空流帧）。
+func (r *workbuddySSEReader) upstreamErrFrameDelivered() bool {
+	if r.errFrameCode == "" {
+		return false
+	}
+	if r.errFrameCode == workbuddyEmptyStreamErrFrameCode {
+		return false
+	}
+	return true
+}
+
+// newWorkbuddySSEDeliveryReader 用交付观察包装器包住规范化读取器。
+func newWorkbuddySSEDeliveryReader(r *workbuddySSEReader, onDelivered func()) *workbuddySSEDeliveryReader {
+	return &workbuddySSEDeliveryReader{workbuddySSEReader: r, onDelivered: onDelivered}
+}
+
+// workbuddyMarkDeliveredInBandError 在「上游错误帧已交付客户端」这一刻补记 SLA 失败。
+//
+// 不区分分类：字典外 unknown 码也记失败（与 Qoder 同口径）——不认识不等于成功。
+// 账号状态仍按既有分级处理（unknown 不落）——本函数只负责可观测性，不改变调度行为。
+//
+// 【两个消费路径共用】流式由 workbuddySSEDeliveryReader 在 EOF 交付点调用；非流式在
+// 聚合完成后调用（那里没有交付点，聚合在内存里就结束了）。参数取**值**而非 reader：
+// 非流式路径拿不到 workbuddySSEReader 实例。
+//
+// 【客户端已断开不算本次失败】raw 路径把 clientDisconnected / context.Canceled /
+// DeadlineExceeded 归为 clientAborted 并且不计上游故障（openai_gateway_chat_completions_raw.go）,
+// 此处同口径：入站 ctx 已取消说明错误帧并未真正被用户读到，记了会虚抬错误率。
+func (s *OpenAIGatewayService) workbuddyMarkDeliveredInBandError(c *gin.Context, account *Account, code, upstreamMessage string) {
+	if c == nil {
+		return
+	}
+	code = strings.TrimSpace(code)
+	if code == "" || code == workbuddyEmptyStreamErrFrameCode {
+		// 空/未交付是「无事可记」；workbuddyEmptyStreamErrFrameCode 是网关本地合成的
+		// 空流兜底帧（解析缺陷），不得记成上游失败——否则会把好号误报成账号问题。
+		return
+	}
+	if c.Request != nil {
+		if err := c.Request.Context().Err(); err != nil {
+			return
+		}
+	}
+	message := workbuddyErrorDetail(code, upstreamMessage)
+	if strings.TrimSpace(message) == "" {
+		message = "WorkBuddy upstream returned an in-stream error"
+	}
+	MarkOpsStreamFailure(c, "upstream_error", code, message, http.StatusBadGateway)
+	if s != nil && account != nil {
+		logger.L().Warn("workbuddy in-band stream error delivered to client",
+			zap.Int64("account_id", account.ID),
+			zap.String("code", code),
+			zap.Int("logic_status", http.StatusBadGateway))
+	}
+}
+
+// workbuddyInBandFailureFromAggregate 从**原始上游流**（而非聚合后的 JSON）中提取首个
+// 上游 error 帧的 code/message，用于非流式路径判定「本次请求是否应计入 SLA 失败」。
+//
+// 为何不看聚合结果：聚合函数按既有协议保持「error 帧计入 validEvents 但不改响应形态」，
+// 聚合出的 body 是一份空 content 的正常形状 chat.completion，从它身上分辨不出错误。
+// 因此直接扫原始流；只取首帧，与流式路径 errFrameCode 的「首个错误帧归一」口径一致。
+func workbuddyInBandFailureFromAggregate(raw []byte) (code, message string, ok bool) {
+	br := bufio.NewReaderSize(bytes.NewReader(raw), 64*1024)
+	for {
+		line, err := br.ReadString('\n')
+		trimmed := strings.TrimRight(line, "\r\n")
+		if payload, isData := extractOpenAISSEDataLine(trimmed); isData {
+			payload = strings.TrimSpace(payload)
+			if payload != "" && payload != "[DONE]" {
+				var obj map[string]any
+				if json.Unmarshal([]byte(payload), &obj) == nil {
+					if c, m, hasErr := workbuddyErrorFrameFields(obj); hasErr {
+						if strings.TrimSpace(c) != "" {
+							return c, m, true
+						}
+						// error 为字符串形态：无码但有消息，仍算上游失败（与流式路径的
+						// upstreamInBandErrFallbackCode 占位同口径）。
+						return upstreamInBandErrFallbackCode, m, true
+					}
+				}
+			}
+		}
+		if err != nil {
+			return "", "", false
+		}
+	}
 }
 
 // workbuddyStreamErrorHandler 返回一个可注入 SSE 规范化读取器的错误帧回调

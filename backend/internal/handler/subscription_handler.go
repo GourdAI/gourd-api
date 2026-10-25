@@ -45,6 +45,51 @@ func NewSubscriptionHandler(subscriptionService *service.SubscriptionService) *S
 	}
 }
 
+// ListClaimable handles listing plans the current user may self-claim
+// GET /api/v1/subscriptions/claimable
+func (h *SubscriptionHandler) ListClaimable(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not found in context")
+		return
+	}
+
+	plans, err := h.subscriptionService.ListClaimablePlans(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if plans == nil {
+		plans = []service.ClaimableSubscriptionPlan{}
+	}
+	response.Success(c, plans)
+}
+
+// Claim handles self-claiming a free subscription plan
+// POST /api/v1/subscriptions/claim  body: {"plan_id": 123}
+func (h *SubscriptionHandler) Claim(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not found in context")
+		return
+	}
+
+	var req struct {
+		PlanID int64 `json:"plan_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request body")
+		return
+	}
+
+	result, err := h.subscriptionService.ClaimSubscription(c.Request.Context(), subject.UserID, req.PlanID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 // List handles listing current user's subscriptions
 // GET /api/v1/subscriptions
 func (h *SubscriptionHandler) List(c *gin.Context) {

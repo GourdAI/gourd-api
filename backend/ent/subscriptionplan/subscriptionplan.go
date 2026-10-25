@@ -24,6 +24,10 @@ const (
 	FieldPrice = "price"
 	// FieldTotalLimitUsd holds the string denoting the total_limit_usd field in the database.
 	FieldTotalLimitUsd = "total_limit_usd"
+	// FieldResetPeriod holds the string denoting the reset_period field in the database.
+	FieldResetPeriod = "reset_period"
+	// FieldSelfClaimable holds the string denoting the self_claimable field in the database.
+	FieldSelfClaimable = "self_claimable"
 	// FieldOriginalPrice holds the string denoting the original_price field in the database.
 	FieldOriginalPrice = "original_price"
 	// FieldCurrency holds the string denoting the currency field in the database.
@@ -65,6 +69,8 @@ var Columns = []string{
 	FieldDescription,
 	FieldPrice,
 	FieldTotalLimitUsd,
+	FieldResetPeriod,
+	FieldSelfClaimable,
 	FieldOriginalPrice,
 	FieldCurrency,
 	FieldValidityDays,
@@ -92,6 +98,12 @@ var (
 	NameValidator func(string) error
 	// DefaultDescription holds the default value on creation for the "description" field.
 	DefaultDescription string
+	// DefaultResetPeriod holds the default value on creation for the "reset_period" field.
+	DefaultResetPeriod string
+	// ResetPeriodValidator is a validator for the "reset_period" field. It is called by the builders before save.
+	ResetPeriodValidator func(string) error
+	// DefaultSelfClaimable holds the default value on creation for the "self_claimable" field.
+	DefaultSelfClaimable bool
 	// DefaultCurrency holds the default value on creation for the "currency" field.
 	DefaultCurrency string
 	// CurrencyValidator is a validator for the "currency" field. It is called by the builders before save.
@@ -151,6 +163,16 @@ func ByPrice(opts ...sql.OrderTermOption) OrderOption {
 // ByTotalLimitUsd orders the results by the total_limit_usd field.
 func ByTotalLimitUsd(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldTotalLimitUsd, opts...).ToFunc()
+}
+
+// ByResetPeriod orders the results by the reset_period field.
+func ByResetPeriod(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldResetPeriod, opts...).ToFunc()
+}
+
+// BySelfClaimable orders the results by the self_claimable field.
+func BySelfClaimable(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSelfClaimable, opts...).ToFunc()
 }
 
 // ByOriginalPrice orders the results by the original_price field.

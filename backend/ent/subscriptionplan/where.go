@@ -80,6 +80,16 @@ func TotalLimitUsd(v float64) predicate.SubscriptionPlan {
 	return predicate.SubscriptionPlan(sql.FieldEQ(FieldTotalLimitUsd, v))
 }
 
+// ResetPeriod applies equality check predicate on the "reset_period" field. It's identical to ResetPeriodEQ.
+func ResetPeriod(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldEQ(FieldResetPeriod, v))
+}
+
+// SelfClaimable applies equality check predicate on the "self_claimable" field. It's identical to SelfClaimableEQ.
+func SelfClaimable(v bool) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldEQ(FieldSelfClaimable, v))
+}
+
 // OriginalPrice applies equality check predicate on the "original_price" field. It's identical to OriginalPriceEQ.
 func OriginalPrice(v float64) predicate.SubscriptionPlan {
 	return predicate.SubscriptionPlan(sql.FieldEQ(FieldOriginalPrice, v))
@@ -388,6 +398,81 @@ func TotalLimitUsdIsNil() predicate.SubscriptionPlan {
 // TotalLimitUsdNotNil applies the NotNil predicate on the "total_limit_usd" field.
 func TotalLimitUsdNotNil() predicate.SubscriptionPlan {
 	return predicate.SubscriptionPlan(sql.FieldNotNull(FieldTotalLimitUsd))
+}
+
+// ResetPeriodEQ applies the EQ predicate on the "reset_period" field.
+func ResetPeriodEQ(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldEQ(FieldResetPeriod, v))
+}
+
+// ResetPeriodNEQ applies the NEQ predicate on the "reset_period" field.
+func ResetPeriodNEQ(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldNEQ(FieldResetPeriod, v))
+}
+
+// ResetPeriodIn applies the In predicate on the "reset_period" field.
+func ResetPeriodIn(vs ...string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldIn(FieldResetPeriod, vs...))
+}
+
+// ResetPeriodNotIn applies the NotIn predicate on the "reset_period" field.
+func ResetPeriodNotIn(vs ...string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldNotIn(FieldResetPeriod, vs...))
+}
+
+// ResetPeriodGT applies the GT predicate on the "reset_period" field.
+func ResetPeriodGT(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldGT(FieldResetPeriod, v))
+}
+
+// ResetPeriodGTE applies the GTE predicate on the "reset_period" field.
+func ResetPeriodGTE(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldGTE(FieldResetPeriod, v))
+}
+
+// ResetPeriodLT applies the LT predicate on the "reset_period" field.
+func ResetPeriodLT(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldLT(FieldResetPeriod, v))
+}
+
+// ResetPeriodLTE applies the LTE predicate on the "reset_period" field.
+func ResetPeriodLTE(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldLTE(FieldResetPeriod, v))
+}
+
+// ResetPeriodContains applies the Contains predicate on the "reset_period" field.
+func ResetPeriodContains(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldContains(FieldResetPeriod, v))
+}
+
+// ResetPeriodHasPrefix applies the HasPrefix predicate on the "reset_period" field.
+func ResetPeriodHasPrefix(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldHasPrefix(FieldResetPeriod, v))
+}
+
+// ResetPeriodHasSuffix applies the HasSuffix predicate on the "reset_period" field.
+func ResetPeriodHasSuffix(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldHasSuffix(FieldResetPeriod, v))
+}
+
+// ResetPeriodEqualFold applies the EqualFold predicate on the "reset_period" field.
+func ResetPeriodEqualFold(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldEqualFold(FieldResetPeriod, v))
+}
+
+// ResetPeriodContainsFold applies the ContainsFold predicate on the "reset_period" field.
+func ResetPeriodContainsFold(v string) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldContainsFold(FieldResetPeriod, v))
+}
+
+// SelfClaimableEQ applies the EQ predicate on the "self_claimable" field.
+func SelfClaimableEQ(v bool) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldEQ(FieldSelfClaimable, v))
+}
+
+// SelfClaimableNEQ applies the NEQ predicate on the "self_claimable" field.
+func SelfClaimableNEQ(v bool) predicate.SubscriptionPlan {
+	return predicate.SubscriptionPlan(sql.FieldNEQ(FieldSelfClaimable, v))
 }
 
 // OriginalPriceEQ applies the EQ predicate on the "original_price" field.

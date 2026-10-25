@@ -325,6 +325,14 @@ type SystemSettings struct {
 type DefaultSubscriptionSetting struct {
 	TotalLimitUSD *float64 `json:"total_limit_usd"`
 	ValidityDays  int      `json:"validity_days"`
+	// ResetPeriod 额度重置周期（none/daily/weekly/monthly），空串归一为 none。
+	// 例：「每天发 1$」= TotalLimitUSD:1 + ResetPeriod:"daily" + ValidityDays:30（有效期 30 天，
+	// 期间每天自动恢复 1$，花不完不结转）。
+	//
+	// omitempty 必须保留：none 是零值，一次性总额池（存量全部配置）写入时不带该
+	// 字段，避免每次保存都把旧配置改写成带 reset_period 的新格式（无意义 diff 且
+	// 难以用库内容回滚）。
+	ResetPeriod string `json:"reset_period,omitempty"`
 }
 
 type PublicSettings struct {

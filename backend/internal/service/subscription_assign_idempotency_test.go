@@ -160,6 +160,14 @@ func (userSubRepoNoop) BatchUpdateExpiredStatus(context.Context) (int64, error) 
 	panic("unexpected BatchUpdateExpiredStatus call")
 }
 
+func (userSubRepoNoop) ResetUsageWindowIfExpired(context.Context, int64, time.Time) (bool, error) {
+	panic("unexpected ResetUsageWindowIfExpired call")
+}
+
+func (userSubRepoNoop) BatchResetExpiredUsageWindows(context.Context, time.Time) (int64, error) {
+	panic("unexpected BatchResetExpiredUsageWindows call")
+}
+
 // subscriptionUserSubRepoStub 是分配链路用的内存钱包仓储。
 //
 // 索引只有一个坐标 byID：钱包化后寻址靠 ListByUserID + PlanID 过滤

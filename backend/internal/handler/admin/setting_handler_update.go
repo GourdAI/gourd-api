@@ -1,4 +1,4 @@
-package admin
+﻿package admin
 
 import (
 	"context"
@@ -1411,6 +1411,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		defaultSubscriptions = append(defaultSubscriptions, service.DefaultSubscriptionSetting{
 			TotalLimitUSD: sub.TotalLimitUSD,
 			ValidityDays:  sub.ValidityDays,
+			ResetPeriod:   sub.ResetPeriod,
 		})
 	}
 
@@ -2130,6 +2131,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		updatedDefaultSubscriptions = append(updatedDefaultSubscriptions, dto.DefaultSubscriptionSetting{
 			TotalLimitUSD: sub.TotalLimitUSD,
 			ValidityDays:  sub.ValidityDays,
+			ResetPeriod:   sub.ResetPeriod,
 		})
 	}
 

@@ -221,6 +221,27 @@ func (a *Account) GetWorkbuddyCredentials() WorkbuddyCredentials {
 			creds.ExpiresAt = v
 		}
 	}
+	// 【JWT 兜底】凭据没有可用的 expires_at 时，从 access_token 自身的 exp 声明补齐。
+	//
+	// 为什么需要：前端 buildWorkbuddyCredentials 组装凭据时从不写 expires_at
+	// （Qoder 的同名函数写，WorkBuddy 漏了），而 workbuddyTokenNeedsRefresh 的判据是
+	// 「ExpiresAt <= 0 → 不主动刷新」。两者叠加会让手工粘贴 token 的账号**永不预刷新**，
+	// 只能撞 401；而 401 在 apikey 账号上又是永久 SetError（2026-10-24 全量 401 事件）。
+	//
+	// 语义边界：只在原始值缺失/非正时才回填，绝不覆盖库里已有的正数——
+	// 已经由 refresh 响应写回过 expires_at 的账号，其值是上游明文给的，比 JWT 推导更权威。
+	// 解析失败（非 JWT / 无 exp）时保持 0，即维持「未知」语义，不伪造过期时刻。
+	if creds.ExpiresAt <= 0 {
+		if exp := workbuddyJWTExpiry(creds.AccessToken); exp > 0 {
+			creds.ExpiresAt = exp
+		}
+	}
+	// uid 同理：凭据缺失时由 token 的 sub 自证（实测 sub 与 uid 逐字一致），
+	// 避免因 uid 为空而退化为 acct-<id> 派生标识（那会让同一账号的设备指纹随凭据补全
+	// 前后发生漂移，上游按设备指纹关联时反而是异常信号）。
+	if strings.TrimSpace(creds.UID) == "" {
+		creds.UID = workbuddyJWTSubject(creds.AccessToken)
+	}
 	return creds
 }
 

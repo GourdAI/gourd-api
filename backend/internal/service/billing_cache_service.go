@@ -488,11 +488,19 @@ func (s *BillingCacheService) getSubscriptionFromDB(ctx context.Context, userID 
 
 // aggregateSubscriptionWallet 将多份订阅聚合成一份钱包视图。
 // ok=false 表示用户没有任何生效订阅。
+//
+// 【窗口归一】配了重置周期的订阅，库里的 TotalUsageUSD 可能停在上一窗口。
+// 这里必须用 EffectiveWindowUsageUSD(now) 而不是 TotalUsageUSD，否则
+// 「每天 1$」的用户跳窗后在预检处仍被当成「昨天的钱花完了」直接 429，
+// 而真正扣费时又因窗口重置记到 0 起——预检与记账分叉。
+// 必须在聚合入口统一归一（而不是每个调用方各自处理）：
+// CheckBillingEligibility 和 GetSubscriptionStatus 走的都是本函数。
 func aggregateSubscriptionWallet(subs []UserSubscription) (*subscriptionCacheData, bool) {
 	if len(subs) == 0 {
 		return nil, false
 	}
 
+	now := time.Now().UTC()
 	data := &subscriptionCacheData{Status: SubscriptionStatusActive}
 	var latest time.Time
 	var version int64
@@ -506,7 +514,8 @@ func aggregateSubscriptionWallet(subs []UserSubscription) (*subscriptionCacheDat
 		}
 		if limit := sub.EffectiveTotalLimit(); limit != nil {
 			data.TotalLimit += *limit
-			data.TotalUsage += sub.TotalUsageUSD
+			// 用窗口内有效用量：跳窗即视为 0（上窗口剩余不结转）。
+			data.TotalUsage += sub.EffectiveWindowUsageUSD(now)
 		} else {
 			data.HasUnlimited = true
 		}
@@ -785,7 +794,24 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 	isSubscriptionMode := SubscriptionWalletTakesOver(subscriptions)
 
 	if isSubscriptionMode {
-		if err := s.checkSubscriptionEligibility(ctx, user.ID); err != nil {
+		err := s.checkSubscriptionEligibility(ctx, user.ID)
+		if err == nil {
+			// 订阅钱包可用
+		} else if errors.Is(err, ErrSubscriptionQuotaExhausted) {
+			// 【免费额度花完 → 回落余额（2026-10-21 用户拍板）】
+			// 以前这里直接 429，用户必须等下一个窗口才能继续，哪怕自己账上有钱。
+			// 现在改为：钱包耗尽就查余额，余额也不足才拒绝。
+			//
+			// 注意只对「额度耗尽」回落：ErrSubscriptionInvalid（无生效订阅/已过期）
+			// **不**回落——那意味着钱包本身失效，而计费侧 SubscriptionWalletTakesOver
+			// 在下一轮就会改走余额模式，两边口径一致；若在这里也回落，就会出现
+			// 「预检说余额可用、记账按订阅失败」的分叉。
+			if balanceErr := s.checkBalanceEligibility(ctx, user.ID); balanceErr != nil {
+				return balanceErr
+			}
+			// 余额可用：后续 platform quota 检查必须照走（已经不再由订阅撑住）。
+			isSubscriptionMode = false
+		} else {
 			return err
 		}
 	} else {

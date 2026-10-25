@@ -305,7 +305,11 @@ type AdminSubscriptionPlanResult struct {
 	OriginalPrice   *float64 `json:"original_price,omitempty"`
 	// TotalLimitUSD 套餐额度（USD）：nil / 缺失 = 不限额。
 	// 发放时作为快照写入 user_subscriptions.total_limit_usd，供前端套餐编辑器读写。
-	TotalLimitUSD *float64  `json:"total_limit_usd,omitempty"`
+	TotalLimitUSD *float64 `json:"total_limit_usd,omitempty"`
+	// ResetPeriod 额度重置周期（none/daily/weekly/monthly）；none = 一次性总额池。
+	ResetPeriod string `json:"reset_period"`
+	// SelfClaimable 是否允许用户自助领取（免费套餐开关）。
+	SelfClaimable bool      `json:"self_claimable"`
 	Currency      string    `json:"currency,omitempty"`
 	ValidityDays  int       `json:"validity_days"`
 	ValidityUnit  string    `json:"validity_unit"`
@@ -339,6 +343,8 @@ func adminSubscriptionPlansForResponse(plans []*dbent.SubscriptionPlan, groupInf
 			Price:           p.Price,
 			OriginalPrice:   p.OriginalPrice,
 			TotalLimitUSD:   p.TotalLimitUsd,
+			ResetPeriod:     p.ResetPeriod,
+			SelfClaimable:   p.SelfClaimable,
 			Currency:        p.Currency,
 			ValidityDays:    p.ValidityDays,
 			ValidityUnit:    p.ValidityUnit,
