@@ -3609,11 +3609,24 @@
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.quotaControl.tlsFingerprint.hint') }}
               </p>
+              <!-- 三态来源说明：开关显示的是「真实生效值」，必须告知它是默认还是覆盖。 -->
+              <p
+                data-testid="create-tls-fingerprint-state"
+                class="mt-1 text-xs"
+                :class="tlsFingerprintIsInherit ? 'text-gray-400 dark:text-gray-500' : 'text-primary-600 dark:text-primary-400'"
+              >
+                <template v-if="tlsFingerprintIsInherit">
+                  {{ tlsFingerprintPlatformDefault
+                    ? t('admin.accounts.quotaControl.tlsFingerprint.inheritOn')
+                    : t('admin.accounts.quotaControl.tlsFingerprint.inheritOff') }}
+                </template>
+                <template v-else>{{ t('admin.accounts.quotaControl.tlsFingerprint.explicitOverride') }}</template>
+              </p>
             </div>
             <button
               type="button"
               data-testid="create-tls-fingerprint-toggle"
-              @click="tlsFingerprintEnabled = !tlsFingerprintEnabled"
+              @click="toggleTlsFingerprint"
               :class="[
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
                 tlsFingerprintEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
@@ -3625,6 +3638,17 @@
                   tlsFingerprintEnabled ? 'translate-x-5' : 'translate-x-0'
                 ]"
               />
+            </button>
+          </div>
+          <!-- 取消覆盖：回到「跟随平台默认」。仅在当前已显式表态时提供。 -->
+          <div v-if="!tlsFingerprintIsInherit" class="mt-2">
+            <button
+              type="button"
+              data-testid="create-tls-fingerprint-reset-inherit"
+              class="text-xs text-gray-500 underline decoration-dotted hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              @click="resetTlsFingerprintToDefault"
+            >
+              {{ t('admin.accounts.quotaControl.tlsFingerprint.resetToPlatformDefault') }}
             </button>
           </div>
           <!-- Profile selector -->
@@ -4678,17 +4702,7 @@ const withUpstreamRequestIdHeader = <T extends Record<string, unknown> | undefin
   }
   // TLS 指纹伪装（全平台有效，防封加固）：所有创建链路都经过本 helper，
   // 在此统一注入，覆盖 apikey / oauth / 批量导入等全部路径。
-  if (tlsFingerprintEnabled.value) {
-    next.enable_tls_fingerprint = true
-    if (tlsFingerprintProfileId.value) {
-      next.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
-    } else {
-      delete next.tls_fingerprint_profile_id
-    }
-  } else {
-    delete next.enable_tls_fingerprint
-    delete next.tls_fingerprint_profile_id
-  }
+  applyTlsFingerprintExtra(next)
   return Object.keys(next).length > 0 ? next : undefined
 }
 
@@ -5725,7 +5739,41 @@ const umqModeOptions = computed(() => [
   { value: 'throttle', label: t('admin.accounts.quotaControl.rpmLimit.umqModeThrottle') },
   { value: 'serialize', label: t('admin.accounts.quotaControl.rpmLimit.umqModeSerialize') },
 ])
-const tlsFingerprintEnabled = ref(false)
+// TLS 指纹伪装三态（与 EditAccountModal 同口径）：
+//   tlsFingerprintOverride —— 管理员表态：null=跟随平台默认（不写键），true/false=显式覆盖。
+//   tlsFingerprintPlatformDefaults —— 平台级默认开关（后端 /tls-fingerprint-platform-defaults）。
+// 新建时默认不表态（跟随平台默认），但开关显示的是「真实生效值」：WorkBuddy/Trae/Qoder
+// 平台默认开启，旧实现固定 ref(false) 会让表单显示 OFF、创建完实际在伪装。
+const tlsFingerprintOverride = ref<boolean | null>(null)
+const tlsFingerprintPlatformDefaults = ref<Record<string, boolean>>({})
+const tlsFingerprintPlatformDefault = computed(
+  () => tlsFingerprintPlatformDefaults.value[form.platform] === true,
+)
+const tlsFingerprintEnabled = computed(
+  () => tlsFingerprintOverride.value ?? tlsFingerprintPlatformDefault.value,
+)
+const tlsFingerprintIsInherit = computed(() => tlsFingerprintOverride.value === null)
+const toggleTlsFingerprint = () => {
+  tlsFingerprintOverride.value = !tlsFingerprintEnabled.value
+}
+const resetTlsFingerprintToDefault = () => {
+  tlsFingerprintOverride.value = null
+}
+// applyTlsFingerprintExtra 把三态表态写进 extra。三处创建链路共用本函数，
+// 避免各自维护一份「关闭就删键」的旧语义（那对平台默认开启的三家等于关不掉）。
+const applyTlsFingerprintExtra = (extra: Record<string, unknown>) => {
+  if (tlsFingerprintOverride.value === null) {
+    delete extra.enable_tls_fingerprint
+  } else {
+    extra.enable_tls_fingerprint = tlsFingerprintOverride.value
+  }
+  if (tlsFingerprintEnabled.value && tlsFingerprintProfileId.value !== null) {
+    extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
+  } else {
+    delete extra.tls_fingerprint_profile_id
+  }
+  return extra
+}
 const tlsFingerprintProfileId = ref<number | null>(null)
 const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
 const sessionIdMaskingEnabled = ref(false)
@@ -5904,6 +5952,11 @@ watch(
       adminAPI.tlsFingerprintProfiles.list()
         .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
         .catch(() => { tlsFingerprintProfiles.value = [] })
+      // 加载各平台的 TLS 指纹默认开关：新建表单需要它才能把 WorkBuddy/Trae/Qoder
+      // 的开关显示成真实的「默认已开启」。失败时保持空对象（退化为 opt-in 显示）。
+      adminAPI.tlsFingerprintProfiles.platformDefaults()
+        .then(defaults => { tlsFingerprintPlatformDefaults.value = defaults })
+        .catch(() => { tlsFingerprintPlatformDefaults.value = {} })
       // Modal opened - fill related models
       applyDefaultModelCatalog(form.platform)
       // Antigravity: 默认使用映射模式并填充默认映射
@@ -6077,6 +6130,12 @@ watch(
     // 避免上一平台的配置行被提交到新平台账号
     headerOverrideEnabled.value = false
     headerOverrideRows.value = []
+    // TLS 指纹伪装同样是平台相关配置：WorkBuddy/Trae/Qoder 平台默认开启、其余默认关闭，
+    // 且模板形状按平台而定。切换平台时必须退回「未表态」，否则上一平台的显式表态
+    // （尤其 OFF）会被写进新平台账号，而 UI 已把它标成「已显式覆盖平台默认」——
+    // 管理员从未对新平台表过态。模板 ID 一并清空，避免跨平台携带不相干的指纹形状。
+    tlsFingerprintOverride.value = null
+    tlsFingerprintProfileId.value = null
     openAIImagesUrlToB64JsonEnabled.value = false
     grokOAuthCustomBaseUrlEnabled.value = false
     grokOAuthBaseUrl.value = ''
@@ -6562,7 +6621,9 @@ const resetForm = () => {
   rpmStrategy.value = 'tiered'
   rpmStickyBuffer.value = null
   userMsgQueueMode.value = ''
-  tlsFingerprintEnabled.value = false
+  // TLS 指纹：重置为「跟随平台默认」（不表态），而不是旧的强制 false。
+  // 写成 tlsFingerprintEnabled.value = false 已不可行：该变量现在是只读 computed。
+  tlsFingerprintOverride.value = null
   tlsFingerprintProfileId.value = null
   sessionIdMaskingEnabled.value = false
   cacheTTLOverrideEnabled.value = false
@@ -8216,13 +8277,8 @@ const handleAnthropicExchange = async (authCode: string) => {
       extra.user_msg_queue_mode = userMsgQueueMode.value
     }
 
-    // Add TLS fingerprint settings
-    if (tlsFingerprintEnabled.value) {
-      extra.enable_tls_fingerprint = true
-      if (tlsFingerprintProfileId.value) {
-        extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
-      }
-    }
+    // Add TLS fingerprint settings（三态，统一走 helper）
+    applyTlsFingerprintExtra(extra)
 
     // Add session ID masking settings
     if (sessionIdMaskingEnabled.value) {
@@ -8341,13 +8397,8 @@ const handleCookieAuth = async (sessionKey: string) => {
           extra.user_msg_queue_mode = userMsgQueueMode.value
         }
 
-        // Add TLS fingerprint settings
-        if (tlsFingerprintEnabled.value) {
-          extra.enable_tls_fingerprint = true
-          if (tlsFingerprintProfileId.value) {
-            extra.tls_fingerprint_profile_id = tlsFingerprintProfileId.value
-          }
-        }
+        // Add TLS fingerprint settings（三态，统一走 helper）
+        applyTlsFingerprintExtra(extra)
 
         // Add session ID masking settings
         if (sessionIdMaskingEnabled.value) {

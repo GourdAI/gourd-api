@@ -1257,9 +1257,14 @@ export interface Account {
   rpm_sticky_buffer?: number | null
   user_msg_queue_mode?: string | null  // "serialize" | "throttle" | null
 
-  // TLS指纹伪装（仅 Anthropic OAuth/SetupToken 账号有效）
+  // TLS指纹伪装（全平台有效，防封加固）
+  // enable_tls_fingerprint 是「管理员表态」（三态）：true 显式开 / false 显式关 / undefined 未表态。
+  // 实际是否伪装看 tls_fingerprint_effective（已叠加平台默认：WorkBuddy/Trae/Qoder 默认开启）。
   enable_tls_fingerprint?: boolean | null
   tls_fingerprint_profile_id?: number | null
+  tls_fingerprint_state?: 'explicit_on' | 'explicit_off' | 'inherit' | null
+  tls_fingerprint_platform_default?: boolean | null
+  tls_fingerprint_effective?: boolean | null
 
   // 会话ID伪装（仅 Anthropic OAuth/SetupToken 账号有效）
   // 启用后将在15分钟内固定 metadata.user_id 中的 session ID

@@ -67,6 +67,19 @@ export async function list(): Promise<TLSFingerprintProfile[]> {
   return data
 }
 
+/**
+ * 各平台的 TLS 指纹默认开关（平台级配置 gateway.<platform>.tls_fingerprint_enabled）。
+ *
+ * 新建账号表单需要它：新建时没有已存在账号、拿不到账号级三态回显，若不知道「该平台
+ * 默认开启」就会把表单显示成 OFF，而创建完实际在伪装（WorkBuddy/Trae/Qoder）。
+ */
+export async function platformDefaults(): Promise<Record<string, boolean>> {
+  const { data } = await apiClient.get<{ platform_defaults?: Record<string, boolean> }>(
+    '/admin/tls-fingerprint-platform-defaults',
+  )
+  return data?.platform_defaults ?? {}
+}
+
 export async function getById(id: number): Promise<TLSFingerprintProfile> {
   const { data } = await apiClient.get<TLSFingerprintProfile>(`/admin/tls-fingerprint-profiles/${id}`)
   return data
@@ -92,7 +105,8 @@ export const tlsFingerprintProfileAPI = {
   getById,
   create,
   update,
-  delete: deleteProfile
+  delete: deleteProfile,
+  platformDefaults
 }
 
 export default tlsFingerprintProfileAPI

@@ -69,14 +69,21 @@ func TestResolveTLSProfile_OpenAIUsesCodexRustlsDefault(t *testing.T) {
 	require.False(t, profile.EnableGREASE, "rustls has no GREASE")
 }
 
-// TestResolveTLSProfile_OtherPlatformsKeepNodeDefault 保证除 OpenAI 外所有平台零行为变更。
+// TestResolveTLSProfile_OtherPlatformsKeepNodeDefault 保证除 OpenAI 与三平台（WorkBuddy/Trae/Qoder）
+// 外所有平台零行为变更。
+//
+// 三平台已从本用例移出：它们拿的是 NodeOpenSSLH2Profile（Node/OpenSSL 形状 + ALPN h2）。
+// 移出原因不是「让测试通过」：带指纹的出站只能跑 HTTP/1.1，而账号隔离下连接上限被夹成
+// account.Concurrency（线上常见 1），同账号并发会串行排队——实测 12 并发 105ms→779ms。
+// 声明 h2 后传输层改用 http2.Transport，实测回到 104ms。见下方
+// TestResolveTLSProfile_ThreePlatformsUseHTTP2CapableDefault。
 func TestResolveTLSProfile_OtherPlatformsKeepNodeDefault(t *testing.T) {
 	svc := NewTLSFingerprintProfileService(&tlsFPStubRepo{}, nil)
 
 	platforms := []string{
 		PlatformAnthropic, PlatformGemini, PlatformAntigravity, PlatformGrok,
 		PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax,
-		PlatformOpenCodeGo, PlatformWorkbuddy, PlatformQoder, PlatformTrae,
+		PlatformOpenCodeGo,
 		PlatformComposite, "kiro", "",
 	}
 	for _, platform := range platforms {
@@ -92,7 +99,54 @@ func TestResolveTLSProfile_OtherPlatformsKeepNodeDefault(t *testing.T) {
 			"platform=%s must keep the historic node default", platform)
 		require.Empty(t, profile.CipherSuites,
 			"platform=%s must leave fields empty so dialer applies the built-in Node.js defaults", platform)
+		// 这些平台的 ALPN 必须仍为空（= 回落 http/1.1）：一旦误升 h2，
+		// 它们的 JA4 协议段会变，而官方客户端形状本仓并未采集。
+		require.Empty(t, profile.ALPNProtocols, "platform=%s must not advertise h2", platform)
 	}
+}
+
+// TestResolveTLSProfile_ThreePlatformsUseHTTP2CapableDefault 钉住三平台拿「带 h2 的 Node 形状」。
+//
+// 必须同时断言两件事：形状仍是 Node/OpenSSL（CipherSuites 为空 ⇒ JA3 不变），
+// 且 ALPN 声明 h2（⇒ 传输层走 http2.Transport，恢复多路复用）。
+// 反向护栏：把 defaultTLSProfileForPlatform 里三平台分支改回 NodeDefaultProfile，
+// 本用例必须 FAIL。
+func TestResolveTLSProfile_ThreePlatformsUseHTTP2CapableDefault(t *testing.T) {
+	svc := NewTLSFingerprintProfileService(&tlsFPStubRepo{}, nil)
+
+	for _, platform := range []string{PlatformWorkbuddy, PlatformTrae, PlatformQoder} {
+		for _, resolve := range []struct {
+			name string
+			fn   func(*Account) *tlsfingerprint.Profile
+		}{
+			{"ResolveTLSProfile", svc.ResolveTLSProfile},
+			{"ResolvePlatformProfile", svc.ResolvePlatformProfile},
+		} {
+			account := &Account{
+				ID:       7,
+				Platform: platform,
+				Type:     AccountTypeAPIKey,
+				Extra:    map[string]any{"enable_tls_fingerprint": true},
+			}
+			profile := resolve.fn(account)
+			require.NotNil(t, profile, "%s platform=%s", resolve.name, platform)
+			require.Equal(t, tlsfingerprint.ProfileNameNodeOpenSSLH2, profile.Name,
+				"%s platform=%s 必须拿带 h2 的内置默认", resolve.name, platform)
+			require.Contains(t, profile.ALPNProtocols, "h2",
+				"%s platform=%s 必须声明 h2，否则传输层只能 h1 并与小连接上限叠加成串行排队", resolve.name, platform)
+			require.Contains(t, profile.ALPNProtocols, "http/1.1",
+				"%s platform=%s 必须保留 http/1.1 声明以匹配真实 Chromium 的 ALPN 列表形状（注意：它不是可用性兜底——实测 http2.Transport 在协商到 h1 时直接硬失败，不回落）", resolve.name, platform)
+			// 形状不变：除 ALPN 外必须与 NodeDefaultProfile 字节级一致
+			require.Empty(t, profile.CipherSuites, "%s platform=%s", resolve.name, platform)
+			require.Empty(t, profile.Extensions, "%s platform=%s", resolve.name, platform)
+			require.False(t, profile.EnableGREASE, "%s platform=%s", resolve.name, platform)
+		}
+	}
+
+	// OpenAI 必须仍是 rustls 形状，不得被三平台分支误抢。
+	openai := &Account{ID: 8, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Extra: map[string]any{"enable_tls_fingerprint": true}}
+	require.Equal(t, tlsfingerprint.ProfileNameCodexRustls, svc.ResolveTLSProfile(openai).Name)
 }
 
 // TestResolveTLSProfile_ExplicitBindingBeatsPlatformDefault 显式绑定模板优先于平台回落，

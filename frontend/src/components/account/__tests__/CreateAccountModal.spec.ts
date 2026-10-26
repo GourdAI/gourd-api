@@ -9,6 +9,7 @@ const {
   showWarningMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
+  tlsFingerprintPlatformDefaultsMock,
   authIsSimpleMode,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
@@ -17,6 +18,7 @@ const {
   showWarningMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
+  tlsFingerprintPlatformDefaultsMock: vi.fn().mockResolvedValue({}),
   authIsSimpleMode: { value: true },
 }))
 
@@ -52,6 +54,7 @@ vi.mock('@/api/admin', () => ({
     },
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([]),
+      platformDefaults: tlsFingerprintPlatformDefaultsMock,
     },
   },
 }))
@@ -780,6 +783,8 @@ describe('CreateAccountModal TLS 指纹开关（全平台）', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
+    // 默认「无平台默认开启」，需要时由单个用例覆盖。
+    tlsFingerprintPlatformDefaultsMock.mockResolvedValue({})
   })
 
   it('非 Anthropic 平台（API Key）也显示 TLS 开关', async () => {
@@ -816,6 +821,82 @@ describe('CreateAccountModal TLS 指纹开关（全平台）', () => {
 
     expect(createAccountMock).toHaveBeenCalledTimes(1)
     expect(createAccountMock.mock.calls[0]?.[0]?.extra?.enable_tls_fingerprint).toBe(true)
+  })
+
+  // 以下三条覆盖「平台级默认开启」分支（WorkBuddy/Trae/Qoder 的真实形态）。
+  // 此前四个 spec 把 platformDefaults 写死成 mockResolvedValue({})，该分支从未被执行。
+  //
+  // 注意：platformDefaults 是在 watch(() => props.show) 里加载的，而该 watcher **没有**
+  // immediate。直接以 show:true 挂载不会触发加载（生产上 show 从 false→true 会触发），
+  // 所以这里先置 false 再置 true 把 watcher 跑一遍。
+  async function mountModalLoaded() {
+    const wrapper = mountModal()
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    return wrapper
+  }
+
+  it('平台默认开启时：开关显示 ON 且文案为 inheritOn，不表态则不写键', async () => {
+    tlsFingerprintPlatformDefaultsMock.mockResolvedValue({ openai: true })
+    const wrapper = await mountModalLoaded()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await flushPromises()
+
+    // 开关的真实生效值来自平台默认（未表态）
+    expect(wrapper.get('[data-testid="create-tls-fingerprint-state"]').text()).toContain(
+      'admin.accounts.quotaControl.tlsFingerprint.inheritOn',
+    )
+    // 未表态不得写键（否则把本应 inherit 的账号钉成显式表态）
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('wb-like account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra).not.toHaveProperty('enable_tls_fingerprint')
+  })
+
+  it('平台默认开启时拨 OFF：必须写显式 false（删键等于继续伪装）', async () => {
+    tlsFingerprintPlatformDefaultsMock.mockResolvedValue({ openai: true })
+    const wrapper = await mountModalLoaded()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="create-tls-fingerprint-toggle"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('wb-like account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra).toHaveProperty('enable_tls_fingerprint', false)
+  })
+
+  // 回归：切换平台时上一平台的显式表态必须作废。
+  // 旧实现不在 watch(form.platform) 里重置 tlsFingerprintOverride，于是
+  // 「默认开启的平台拨 OFF → 切到默认关闭的平台」会把 false 写进新平台账号，
+  // 而 UI 已把它标成「已显式覆盖平台默认」（管理员从未对新平台表过态）。
+  it('切换平台后不得把上一平台的显式表态写进新平台账号', async () => {
+    tlsFingerprintPlatformDefaultsMock.mockResolvedValue({ openai: true })
+    const wrapper = await mountModalLoaded()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await flushPromises()
+
+    // 先确认已表态为显式 OFF
+    await wrapper.get('[data-testid="create-tls-fingerprint-toggle"]').trigger('click')
+    expect(wrapper.get('[data-testid="create-tls-fingerprint-state"]').text()).toContain(
+      'admin.accounts.quotaControl.tlsFingerprint.explicitOverride',
+    )
+
+    // 切到默认不开启的平台（Kimi）
+    await selectButtonByText(wrapper, 'Kimi')
+    await flushPromises()
+
+    // 表态已作废：不再显示「已显式覆盖」，而是「跟随平台默认：不开启」
+    expect(wrapper.get('[data-testid="create-tls-fingerprint-state"]').text()).toContain(
+      'admin.accounts.quotaControl.tlsFingerprint.inheritOff',
+    )
   })
 })
 

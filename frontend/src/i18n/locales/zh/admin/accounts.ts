@@ -1222,7 +1222,12 @@
           label: 'TLS 指纹模拟',
           hint: '模拟该平台官方客户端的 TLS 指纹（Claude → Node.js/Claude Code，OpenAI → Codex CLI/rustls），也可指定模板',
           defaultProfile: '内置默认',
-          randomProfile: '随机'
+          randomProfile: '随机',
+          // 三态说明：开关显示的是「真实生效值」，需告知来源。
+          inheritOn: '跟随平台默认：该平台默认已开启伪装',
+          inheritOff: '跟随平台默认：该平台默认不开启',
+          explicitOverride: '已在账号上显式覆盖平台默认',
+          resetToPlatformDefault: '恢复跟随平台默认'
         },
         sessionIdMasking: {
           label: '会话 ID 伪装',

@@ -2426,6 +2426,17 @@ func (a *Account) tlsFingerprintExtraState() (enabled bool, explicit bool) {
 	return b, true
 }
 
+// TLSFingerprintExtraState 是 tlsFingerprintExtraState 的导出入口，供 DTO 层做
+// 「三态回显」用（见 dto/account_tls_fingerprint_state.go）。
+//
+// 为何必须导出：管理台此前只能拿到 IsTLSFingerprintEnabled() 这个二值视图，于是
+// 「未表态（跟随平台默认，实际可能开启）」与「显式关闭」在 API 响应里长得一模一样，
+// 管理员把开关拨到 OFF 也关不掉 WorkBuddy/Trae/Qoder 的指纹伪装。要修这个语义，
+// DTO 层必须能区分三态，而不能自己重新解析 Extra（那会造出第二套判定实现）。
+func (a *Account) TLSFingerprintExtraState() (enabled bool, explicit bool) {
+	return a.tlsFingerprintExtraState()
+}
+
 // GetTLSFingerprintProfileID 获取账号绑定的 TLS 指纹模板 ID
 // 返回 0 表示未绑定（使用内置默认 profile）
 func (a *Account) GetTLSFingerprintProfileID() int64 {

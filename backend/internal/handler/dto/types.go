@@ -266,10 +266,20 @@ type Account struct {
 	RPMStickyBuffer  *int    `json:"rpm_sticky_buffer,omitempty"`
 	UserMsgQueueMode *string `json:"user_msg_queue_mode,omitempty"`
 
-	// TLS指纹伪装（全平台有效，防封加固；默认关闭，Extra.enable_tls_fingerprint=true 启用）
-	// 从 extra 字段提取，方便前端显示和编辑
+	// TLS指纹伪装（全平台有效，防封加固）
+	// 从 extra 字段提取，方便前端显示和编辑。
+	// 注意：enable_tls_fingerprint 是**管理员表态**（三态，见 tls_fingerprint_state），
+	// 未表态时不下发；实际是否伪装请看 tls_fingerprint_effective。
 	EnableTLSFingerprint    *bool  `json:"enable_tls_fingerprint,omitempty"`
 	TLSFingerprintProfileID *int64 `json:"tls_fingerprint_profile_id,omitempty"`
+	// TLSFingerprintState 管理员表态：explicit_on / explicit_off / inherit。
+	TLSFingerprintState string `json:"tls_fingerprint_state,omitempty"`
+	// TLSFingerprintPlatformDefault 该平台级默认是否开启（取消账号覆盖后会回到此状态）。
+	TLSFingerprintPlatformDefault bool `json:"tls_fingerprint_platform_default"`
+	// TLSFingerprintEffective 真实生效值：该账号出站当前是否真的带指纹伪装。
+	// 与 IsTLSFingerprintEnabled() 的区别：后者只认账号显式 true，本字段已叠加
+	// 平台级默认（WorkBuddy/Trae/Qoder 默认开启）。
+	TLSFingerprintEffective bool `json:"tls_fingerprint_effective"`
 
 	// 会话ID伪装（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 启用后将在15分钟内固定 metadata.user_id 中的 session ID
@@ -374,21 +384,24 @@ type AccountListItem struct {
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
 	SessionWindowStatus string     `json:"session_window_status"`
 
-	WindowCostLimit         *float64 `json:"window_cost_limit,omitempty"`
-	WindowCostStickyReserve *float64 `json:"window_cost_sticky_reserve,omitempty"`
-	MaxSessions             *int     `json:"max_sessions,omitempty"`
-	SessionIdleTimeoutMin   *int     `json:"session_idle_timeout_minutes,omitempty"`
-	BaseRPM                 *int     `json:"base_rpm,omitempty"`
-	RPMStrategy             *string  `json:"rpm_strategy,omitempty"`
-	RPMStickyBuffer         *int     `json:"rpm_sticky_buffer,omitempty"`
-	UserMsgQueueMode        *string  `json:"user_msg_queue_mode,omitempty"`
-	EnableTLSFingerprint    *bool    `json:"enable_tls_fingerprint,omitempty"`
-	TLSFingerprintProfileID *int64   `json:"tls_fingerprint_profile_id,omitempty"`
-	EnableSessionIDMasking  *bool    `json:"session_id_masking_enabled,omitempty"`
-	CacheTTLOverrideEnabled *bool    `json:"cache_ttl_override_enabled,omitempty"`
-	CacheTTLOverrideTarget  *string  `json:"cache_ttl_override_target,omitempty"`
-	CustomBaseURLEnabled    *bool    `json:"custom_base_url_enabled,omitempty"`
-	CustomBaseURL           *string  `json:"custom_base_url,omitempty"`
+	WindowCostLimit               *float64 `json:"window_cost_limit,omitempty"`
+	WindowCostStickyReserve       *float64 `json:"window_cost_sticky_reserve,omitempty"`
+	MaxSessions                   *int     `json:"max_sessions,omitempty"`
+	SessionIdleTimeoutMin         *int     `json:"session_idle_timeout_minutes,omitempty"`
+	BaseRPM                       *int     `json:"base_rpm,omitempty"`
+	RPMStrategy                   *string  `json:"rpm_strategy,omitempty"`
+	RPMStickyBuffer               *int     `json:"rpm_sticky_buffer,omitempty"`
+	UserMsgQueueMode              *string  `json:"user_msg_queue_mode,omitempty"`
+	EnableTLSFingerprint          *bool    `json:"enable_tls_fingerprint,omitempty"`
+	TLSFingerprintProfileID       *int64   `json:"tls_fingerprint_profile_id,omitempty"`
+	TLSFingerprintState           string   `json:"tls_fingerprint_state,omitempty"`
+	TLSFingerprintPlatformDefault bool     `json:"tls_fingerprint_platform_default"`
+	TLSFingerprintEffective       bool     `json:"tls_fingerprint_effective"`
+	EnableSessionIDMasking        *bool    `json:"session_id_masking_enabled,omitempty"`
+	CacheTTLOverrideEnabled       *bool    `json:"cache_ttl_override_enabled,omitempty"`
+	CacheTTLOverrideTarget        *string  `json:"cache_ttl_override_target,omitempty"`
+	CustomBaseURLEnabled          *bool    `json:"custom_base_url_enabled,omitempty"`
+	CustomBaseURL                 *string  `json:"custom_base_url,omitempty"`
 
 	QuotaLimit       *float64 `json:"quota_limit,omitempty"`
 	QuotaUsed        *float64 `json:"quota_used,omitempty"`

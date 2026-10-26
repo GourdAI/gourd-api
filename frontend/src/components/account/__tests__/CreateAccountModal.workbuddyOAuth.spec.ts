@@ -46,6 +46,7 @@ vi.mock('@/api/admin', () => ({
     },
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([]),
+      platformDefaults: vi.fn().mockResolvedValue({}),
     },
     workbuddy: {
       generateWorkBuddyAuthUrl: generateWorkBuddyAuthUrlMock,

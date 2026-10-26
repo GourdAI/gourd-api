@@ -102,3 +102,43 @@ func CodexRustlsProfile() *Profile {
 func NodeDefaultProfile() *Profile {
 	return &Profile{Name: ProfileNameNodeDefault}
 }
+
+// ProfileNameNodeOpenSSLH2 是三平台（WorkBuddy/Trae/Qoder）内置默认的形状名。
+const ProfileNameNodeOpenSSLH2 = "Built-in Default (Node.js/OpenSSL + h2)"
+
+// NodeOpenSSLH2Profile 返回「Node.js/OpenSSL 握手形状 + ALPN 声明 h2」的内置默认 Profile。
+//
+// 与 NodeDefaultProfile 的唯一差别就是 ALPNProtocols；其余字段留空，由 dialer 回落到
+// 同一组包级 Node.js 24.x 常量 ⇒ **JA3 完全不变**（ALPN 值不进 JA3 串），JA4 的协议段
+// 由 h1 变 h2。
+//
+// WHY（实测，2026-10-25 排查「WorkBuddy 接口变慢」）：
+//   - e37fae9 把三平台 TLS 指纹改为默认开启后，出站从「Go 标准库 HTTP/2」变成
+//     「utls HTTP/1.1」——因为 http.Transport 走 h2 需要把连接断言成
+//     `ConnectionState() tls.ConnectionState`（crypto/tls 类型），而 utls 的
+//     ConnectionState 是它自己的 struct，断言必失败 ⇒ 永不启用 h2
+//     （Go 源码 net/http/transport.go:1892；实测 ForceAttemptHTTP2=true 仍拿到 HTTP/1.1）。
+//   - 而 resolvePoolSettings 在账号隔离下把 maxConnsPerHost 夹成 account.Concurrency
+//     （线上常见 1~3）。h2 单连接可多路复用所以从前无害；换成 h1 后，同账号并发请求
+//     **全部串行排队**，且每个排队请求还要再付一次完整 utls 握手。
+//   - 真实上游 copilot.tencent.com 实测（12 并发 GET，同机同网）：
+//     改造前 普通/h2/池1 = 105ms；改造后 指纹/h1/池1 = 779ms（**7.4 倍劣化**）；
+//     修好后 指纹/h2/池1 = 104ms。默认大池（240）下两者只差几毫秒 ⇒ 放大器正是
+//     「小 concurrency + h1 不能复用」。
+//
+// 防封侧这是**净收益**而非妥协：WorkBuddy/Trae/Qoder 的官方客户端都是
+// Electron/Chromium（BoringSSL），真实 ClientHello 的 ALPN 就是 h2；此前发 http/1.1
+// 反而与官方客户端的 JA4 协议段不符。改成 h2 让 JA4 更接近真实客户端，同时把
+// HTTP 层伪装与传输层能力重新对齐。
+//
+// 三家上游全部 19 个真实域名的 ALPN 已实测均协商到 h2（copilot.tencent.com /
+// www.workbuddy.ai / www.codebuddy.cn / api.trae.cn / api.trae.ai /
+// a0ai-api-sg.byteintlapi.com / gateway.qoder.com.cn / openapi.qoder.com.cn 等），
+// 因此切到 http2.Transport 不会遇到「对端不支持 h2」的硬失败。
+func NodeOpenSSLH2Profile() *Profile {
+	return &Profile{
+		Name: ProfileNameNodeOpenSSLH2,
+		// 顺序与 Chromium 一致：h2 优先、http/1.1 兜底。
+		ALPNProtocols: []string{"h2", "http/1.1"},
+	}
+}

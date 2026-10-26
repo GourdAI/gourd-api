@@ -663,7 +663,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 
 	// 创建带 TLS 指纹的 Transport
 	slog.Debug("tls_fingerprint_creating_new_client", "account_id", accountID, "cache_key", cacheKey, "proxy", proxyKey)
-	transport, err := buildUpstreamTransportWithTLSFingerprint(settings, parsedProxy, profile)
+	transport, err := buildUpstreamRoundTripperWithTLSFingerprint(settings, parsedProxy, profile, upstreamProfile)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("build TLS fingerprint transport: %w", err)
@@ -1474,6 +1474,23 @@ func enableHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
 	return h2, nil
 }
 
+// fingerprintNegotiatesHTTP2 报告该指纹 Profile 是否应当跑 HTTP/2。
+//
+// 判据就是 Profile 自己声明的 ALPN：包含 "h2" 就走 http2.Transport，否则保持 HTTP/1.1。
+// 这样「是否多路复用」由指纹形状单一来源决定，不会出现「ALPN 声称 h2 但传输层只会 h1」
+// 这种自相矛盾的 chimera（那正是本仓反复强调要避免的形态）。
+func fingerprintNegotiatesHTTP2(profile *tlsfingerprint.Profile) bool {
+	if profile == nil {
+		return false
+	}
+	for _, p := range profile.ALPNProtocols {
+		if strings.EqualFold(strings.TrimSpace(p), "h2") {
+			return true
+		}
+	}
+	return false
+}
+
 // buildUpstreamTransportWithTLSFingerprint 构建带 TLS 指纹伪装的 Transport
 // 使用 utls 库模拟 Claude CLI 的 TLS 指纹
 //
@@ -1490,6 +1507,26 @@ func enableHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
 //   - nil/空: 直连，使用 TLSFingerprintDialer
 //   - http/https: HTTP 代理，使用 HTTPProxyDialer（CONNECT 隧道 + utls 握手）
 //   - socks5: SOCKS5 代理，使用 SOCKS5ProxyDialer（SOCKS5 隧道 + utls 握手）
+//
+// HTTP/2 不在本函数处理，见 buildUpstreamRoundTripperWithTLSFingerprint（它才是调用方
+// 应用的入口）。本函数永远返回 *http.Transport（签名与行为与改动前一致），以免
+// 触碰既有代理路径测试的类型假设。
+//
+// 为何 h2 必须换 transport 实现而不能只设 ForceAttemptHTTP2：
+//
+//	http.Transport 在 DialTLSContext 路径上要求连接能断言成
+//	`ConnectionState() tls.ConnectionState`（crypto/tls 类型）才会走 h2
+//	（Go 源码 net/http/transport.go:1892 与 :2059 的 tlsState.NegotiatedProtocol=="h2"），
+//	而 utls 的 ConnectionState 是它自己的 struct（utls common.go:239），断言必失败
+//	⇒ 永不启用 h2。实测：ForceAttemptHTTP2=true + ALPN 声明 h2，仍拿到 HTTP/1.1。
+//
+// 不这样修的性能后果（真实上游 copilot.tencent.com，12 并发，同机同网实测）：
+//
+//	改造前 普通/h2/池1 = 105ms；改造后 指纹/h1/池1 = 779ms（7.4×）；本修复后 = 104ms。
+//
+// 根因链：指纹 transport 只能 h1，而 resolvePoolSettings 在账号隔离下把
+// maxConnsPerHost 夹成 account.Concurrency（线上常见 1~3）。h2 单连接可复用所以从前
+// 无害；h1 下同账号并发请求全部串行排队，且每个排队请求再付一次完整 utls 握手。
 func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile) (*http.Transport, error) {
 	transport := &http.Transport{
 		MaxIdleConns:          settings.maxIdleConns,
@@ -1534,6 +1571,114 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 	}
 
 	return transport, nil
+}
+
+// buildUpstreamRoundTripperWithTLSFingerprint 是带指纹出站的**推荐入口**：在
+// 「http2.Transport（单连接多路复用）」与「http.Transport（HTTP/1.1）」之间分派。
+//
+// 为何需要单独一个入口：指纹 transport 只能跑 h1（原因见下方
+// buildFingerprintHTTP2Transport 的说明），而账号隔离下 maxConnsPerHost 被
+// resolvePoolSettings 夹成 account.Concurrency（线上常见 1~3）。h1 + 小连接上限
+// = 同账号并发请求串行排队，且每个排队请求再付一次完整 utls 握手。实测
+// copilot.tencent.com 12 并发：改造前（无指纹、h2）105ms → 改造后（指纹、h1）779ms
+// → 本入口（指纹、h2）104ms。这就是 WorkBuddy/Trae/Qoder 「接口变慢」的根因。
+//
+// 分派判据是三个条件的**合取**，各自职责不同（不是冗余）：
+//
+//   - profile 的 ALPN 含 h2 —— 回答「能不能」：传输层协议必须与 ClientHello 里声明的
+//     ALPN 自洽，否则就是本仓反复避免的 chimera。由指纹形状单一来源决定。
+//   - upstreamProfile == OpenAI —— 回答「要不要」：http2.Transport **没有**
+//     ResponseHeaderTimeout 对应字段，切过去会丢掉该超时。
+//     注意实际覆盖面比「聊天主链路」大得多：三平台（WorkBuddy/Trae/Qoder）的
+//     **全部** 出站都注入 HTTPUpstreamProfileOpenAI —— 除聊天外还包括签到/余额/
+//     活跃上报/换票/模型列表（workbuddy_tasks_service.go:589、
+//     workbuddy_credits_service.go:508/667、trae_credits_service.go:803、
+//     qoder_campaign_service.go:864），因此这些辅助面也会被切到 h2。
+//     该超时丢失可接受，因为：聊天路径该值本就是 0（applyProfilePoolSettings 对
+//     OpenAI profile 置 0，默认 gateway.openai_response_header_timeout=0）；而辅助面
+//     请求全部自带 context.WithTimeout 兜底（workbuddyBillingTimeout /
+//     traeBillingTimeout / qoderCampaignTimeout 等），不会无限挂住。
+//     保留本条件的真正作用是：其它平台（OpenAI/Claude/Grok 等）的 Default/Grok 画像
+//     仍走 http.Transport，ResponseHeaderTimeout 语义零变更。
+//     【若将来把 gateway.openai_response_header_timeout 配成非 0】三平台出站会静默
+//     失去该超时，需同步给 http2.Transport 补一层 per-request context 超时。
+//   - 直连或 http CONNECT 代理 —— 见下方「代理范围」。
+//
+// 代理范围：仅直连与 http CONNECT 代理启用 h2；socks5/https 代理保持原
+// http.Transport 路径，避免一次改动同时触碰代理隧道语义。
+func buildUpstreamRoundTripperWithTLSFingerprint(
+	settings poolSettings,
+	proxyURL *url.URL,
+	profile *tlsfingerprint.Profile,
+	upstreamProfile service.HTTPUpstreamProfile,
+) (http.RoundTripper, error) {
+	if upstreamProfile == service.HTTPUpstreamProfileOpenAI &&
+		fingerprintNegotiatesHTTP2(profile) &&
+		(proxyURL == nil || strings.EqualFold(proxyURL.Scheme, "http")) {
+		return buildFingerprintHTTP2Transport(settings, proxyURL, profile)
+	}
+	return buildUpstreamTransportWithTLSFingerprint(settings, proxyURL, profile)
+}
+
+// buildFingerprintHTTP2Transport 用「utls 指纹拨号 + http2.Transport」构造可多路复用的传输层。
+//
+// 存在的理由见 buildUpstreamTransportWithTLSFingerprint 的 HTTP/2 说明：标准库
+// http.Transport 在自定义 DialTLSContext 路径上拿不到 crypto/tls 的连接状态，因此
+// 永不升级到 h2（Go 源码 transport.go:1892 的 connectionStater 接口与 :2109 的
+// pconn.conn.(*tls.Conn) **具体类型**断言；utls 的 Conn.ConnectionState 返回它自己的
+// ConnectionState（utls conn.go:1622），包一层方法也满不了 2109 那道断言），
+// 所以只能改用 http2.Transport。
+//
+// ⚠ 重要约束：http2.Transport **不会**根据 ALPN 协商结果回落到 HTTP/1.1，它把拿到的
+// 任何连接都当 h2 用。实测（httptest 起一个 NextProtos=["http/1.1"] 的 TLS 服务，客户端
+// 声明 [h2, http/1.1]）：RoundTrip 直接失败，报 "http2: failed reading the frame payload:
+// http2: frame too large, note that the frame header looked like an HTTP/1.1 header"。
+// ⇒ 若三平台账号的 base_url 被配成只支持 HTTP/1.1 的服务（中转/自建网关，
+// validateUpstreamBaseURL 不限制协议能力），该账号请求会**全量硬失败**而不是退回 h1。
+// 已实测三家官方共 19 个域名 ALPN 均协商到 h2，默认配置下不触发；但自定义 base_url
+// 场景需靠「账号级显式关闭指纹」或改回不带 h2 的模板逃生（三态修复已使前者真正可用）。
+//
+// 实测（copilot.tencent.com，12 并发，池上限 1）：HTTP/1.1 指纹路径 779ms，本路径 104ms
+// 且协商结果 HTTP/2.0；反向对照：ALPN 只声明 http/1.1 时 http2.Transport 直接报错
+// （"received record with version 5454"）⇒ 证明 h2 是真实协商结果，不是自说自话。
+//
+// 字段映射说明（诚实口径）：
+//   - IdleConnTimeout / ReadIdleTimeout / PingTimeout 直接对应；后两项沿用长流 h2 的
+//     既有常量，用于剔除被代理/NAT 静默掐断的死连接（与 enableHTTP2KeepAlive 同口径）。
+//   - maxIdleConnsPerHost / maxConnsPerHost **无法 1:1 映射**：h2 单连接多路复用，
+//     连接数上限不再等价于并发上限。这里不拿它们去限制 h2 并发，否则会把账号并发
+//     从「请求数」错解成「连接数」；真正的请求并发由调度层 tryAcquireAccountSlot
+//     （openai_account_scheduler.go:574，以 account.Concurrency 为额）控制，与本层无关。
+//   - ResponseHeaderTimeout 在 http2.Transport 上无对应字段。三平台的全部出站（聊天
+//     与签到/余额/活跃上报/换票/模型列表）都注入 HTTPUpstreamProfileOpenAI，其
+//     responseHeaderTimeout 默认被 applyProfilePoolSettings 置 0（无超时），因此默认配置下
+//     不丢语义；辅助面另有 context.WithTimeout 兜底。仅当
+//     gateway.openai_response_header_timeout 被配成非 0 时，该超时会被静默丢弃（见
+//     buildUpstreamRoundTripperWithTLSFingerprint 的告警）。
+func buildFingerprintHTTP2Transport(settings poolSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile) (http.RoundTripper, error) {
+	// 适配签名：本仓指纹拨号器是 http.Transport 形态的
+	// DialTLSContext(ctx, network, addr)，而 http2.Transport 多一个 *tls.Config 形参
+	// （标准库用它传 NextProtos/ServerName）。这里刻意**不转发** cfg：
+	// ServerName 由拨号器从 addr 自行推导，ALPN 由 Profile.ALPNProtocols 写进
+	// ClientHello（见 tlsfingerprint.buildClientHelloSpecFromProfile）。若把 cfg 的
+	// NextProtos 拿去覆盖，反而会绕过指纹声明，造出「ClientHello 与 ALPN 不一致」。
+	dialTLSContext := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+		if proxyURL == nil {
+			return tlsfingerprint.NewDialer(profile, nil).DialTLSContext(ctx, network, addr)
+		}
+		return tlsfingerprint.NewHTTPProxyDialer(profile, proxyURL).DialTLSContext(ctx, network, addr)
+	}
+	tr := &http2.Transport{
+		DialTLSContext:  dialTLSContext,
+		IdleConnTimeout: settings.idleConnTimeout,
+		ReadIdleTimeout: longStreamHTTP2ReadIdleTimeout,
+		PingTimeout:     longStreamHTTP2PingTimeout,
+	}
+	slog.Debug("tls_fingerprint_transport_http2",
+		"profile", profile.Name,
+		"alpn", strings.Join(profile.ALPNProtocols, ","),
+		"proxy", proxyURL != nil)
+	return tr, nil
 }
 
 // trackedBody 带跟踪功能的响应体包装器

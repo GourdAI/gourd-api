@@ -18,6 +18,7 @@ import (
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
@@ -142,6 +143,12 @@ func runMainServer() {
 	if cfg.RunMode == config.RunModeSimple {
 		log.Println("⚠️  WARNING: Running in SIMPLE mode - billing and quota checks are DISABLED")
 	}
+
+	// TLS 指纹三态回显需要平台级默认配置（gateway.<platform>.tls_fingerprint_enabled）。
+	// 必须在构建 handler 之前注入，否则账号 API 会把「平台默认已开启」误报成未伪装。
+	// wire 图里的 *config.Config 与本处 cfg 同源（都由 viper 全局状态构建），因此
+	// 管理台回显与出站实际伪装判定读到的是同一组值。
+	dto.SetTLSFingerprintPlatformConfig(cfg)
 
 	buildInfo := handler.BuildInfo{
 		Version:   Version,

@@ -343,10 +343,27 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		}
 	}
 
-	// TLS 指纹伪装开关（全平台有效，防封加固）
-	if a.IsTLSFingerprintEnabled() {
+	// TLS 指纹伪装：同时给出「管理员表态（三态）」与「真实生效值」。
+	//
+	// 旧实现只在显式 true 时下发 enable_tls_fingerprint，导致 WorkBuddy/Trae/Qoder（平台
+	// 默认开启）的账号在管理台上永远显示 OFF，而实际出站仍在伪装；管理员拨一下开关还会
+	// 因「删键」语义退回未表态、继续跟随平台默认。详见 account_tls_fingerprint_state.go。
+	tlsState, tlsPlatformDefault, tlsEffective := TLSFingerprintState(a)
+	out.TLSFingerprintState = tlsState
+	out.TLSFingerprintPlatformDefault = tlsPlatformDefault
+	out.TLSFingerprintEffective = tlsEffective
+	switch tlsState {
+	case TLSFingerprintStateExplicitOn:
 		enabled := true
 		out.EnableTLSFingerprint = &enabled
+	case TLSFingerprintStateExplicitOff:
+		// 显式关闭必须原样下发 false：前端需要区分「未表态」与「已关闭」，
+		// 否则无法把开关渲染成真正的 OFF。
+		disabled := false
+		out.EnableTLSFingerprint = &disabled
+	default:
+		// inherit：保持不下发（兼容旧报文形态，旧前端仍按未开启渲染）。
+		out.EnableTLSFingerprint = nil
 	}
 	// 指纹模板回显（防封加固修正）：这里此前只收 >0，于是选了「随机模板」（-1）的账号
 	// 在编辑面板被显示成「默认模板」，管理员下一次保存就把 -1 静默改写成默认（0）——
@@ -492,7 +509,9 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 		MaxSessions: a.MaxSessions, SessionIdleTimeoutMin: a.SessionIdleTimeoutMin, BaseRPM: a.BaseRPM,
 		RPMStrategy: a.RPMStrategy, RPMStickyBuffer: a.RPMStickyBuffer, UserMsgQueueMode: a.UserMsgQueueMode,
 		EnableTLSFingerprint: a.EnableTLSFingerprint, TLSFingerprintProfileID: a.TLSFingerprintProfileID,
-		EnableSessionIDMasking: a.EnableSessionIDMasking, CacheTTLOverrideEnabled: a.CacheTTLOverrideEnabled,
+		TLSFingerprintState: a.TLSFingerprintState, TLSFingerprintPlatformDefault: a.TLSFingerprintPlatformDefault,
+		TLSFingerprintEffective: a.TLSFingerprintEffective,
+		EnableSessionIDMasking:  a.EnableSessionIDMasking, CacheTTLOverrideEnabled: a.CacheTTLOverrideEnabled,
 		CacheTTLOverrideTarget: a.CacheTTLOverrideTarget, CustomBaseURLEnabled: a.CustomBaseURLEnabled,
 		CustomBaseURL: a.CustomBaseURL, QuotaLimit: a.QuotaLimit, QuotaUsed: a.QuotaUsed,
 		QuotaDailyLimit: a.QuotaDailyLimit, QuotaDailyUsed: a.QuotaDailyUsed, QuotaWeeklyLimit: a.QuotaWeeklyLimit,

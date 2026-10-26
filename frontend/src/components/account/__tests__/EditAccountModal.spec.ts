@@ -1764,8 +1764,10 @@ describe('EditAccountModal TLS 指纹开关（全平台）', () => {
     for (const platform of ['openai', 'gemini', 'grok', 'antigravity', 'workbuddy'] as const) {
       const account = buildAccount()
       account.platform = platform
-      // 回填源是后端 DTO 顶层字段（由 extra 提取而来），不是 extra 本体
+      // 回填源是后端 DTO 的三态字段（由 extra 提取而来），不是 extra 本体。
+      // 旧实现只看 enable_tls_fingerprint===true，导致平台默认开启的 workbuddy 永远显示 OFF。
       account.enable_tls_fingerprint = true
+      account.tls_fingerprint_state = 'explicit_on'
       account.tls_fingerprint_profile_id = 7
       updateAccountMock.mockResolvedValue(account)
 
@@ -1776,7 +1778,7 @@ describe('EditAccountModal TLS 指纹开关（全平台）', () => {
     }
   })
 
-  it('非 Anthropic 平台开启后写入 extra，关闭时清理相关键', async () => {
+  it('非 Anthropic 平台开启后写入 extra，关闭时写显式 false（不再删键）', async () => {
     const account = buildAccount()
     account.platform = 'gemini'
     updateAccountMock.mockResolvedValue(account)
@@ -1793,6 +1795,7 @@ describe('EditAccountModal TLS 指纹开关（全平台）', () => {
     const enabled = buildAccount()
     enabled.platform = 'gemini'
     enabled.enable_tls_fingerprint = true
+    enabled.tls_fingerprint_state = 'explicit_on'
     enabled.tls_fingerprint_profile_id = 9
     updateAccountMock.mockResolvedValue(enabled)
 
@@ -1802,9 +1805,88 @@ describe('EditAccountModal TLS 指纹开关（全平台）', () => {
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
-    expect(extra).not.toHaveProperty('enable_tls_fingerprint')
+    // 【本次修正的核心断言】旧断言是 not.toHaveProperty('enable_tls_fingerprint')，
+    // 即「关闭 = 删键」。对 WorkBuddy/Trae/Qoder 这类平台默认开启的账号，删键等于退回
+    // 未表态 → 继续跟随默认 → 仍然伪装，管理员拨到 OFF 根木关不掉。现在必须写显式 false。
+    expect(extra).toHaveProperty('enable_tls_fingerprint', false)
     expect(extra).not.toHaveProperty('tls_fingerprint_profile_id')
     closed.unmount()
+  })
+
+  it('WorkBuddy 未表态时开关显示为 ON（平台默认开启）', () => {
+    const account = buildAccount()
+    account.platform = 'workbuddy'
+    // 后端未表态且平台默认开：不下发 enable_tls_fingerprint，但 state=inherit、effective=true
+    account.tls_fingerprint_state = 'inherit'
+    account.tls_fingerprint_platform_default = true
+    account.tls_fingerprint_effective = true
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.get('[data-testid="edit-tls-fingerprint-toggle"]').classes()).toContain('bg-primary-600')
+    // 必须告知管理员这是平台默认而非账号覆盖（本 spec 的 i18n mock 返回 key 本身）
+    expect(wrapper.get('[data-testid="edit-tls-fingerprint-state"]').text()).toContain(
+      'tlsFingerprint.inheritOn',
+    )
+    // 未表态时不应提供「恢复跟随默认」（已经是默认了）
+    expect(wrapper.find('[data-testid="edit-tls-fingerprint-reset-inherit"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('WorkBuddy 拨到 OFF 再提交：写入显式 false 压过平台默认', async () => {
+    const account = buildAccount()
+    account.platform = 'workbuddy'
+    // WorkBuddy 的 apikey 表单要求凭据带 token（否则 credentialsRequired 直接 return），
+    // 这里补上存量凭据，让提交能走到 TLS 指纹写回分支。
+    account.credentials = {
+      access_token: 'wb-access-token',
+      refresh_token: 'wb-refresh-token',
+      base_url: 'https://copilot.tencent.com'
+    }
+    account.tls_fingerprint_state = 'inherit'
+    account.tls_fingerprint_platform_default = true
+    account.tls_fingerprint_effective = true
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    // 初始显示 ON（跟随默认）
+    expect(wrapper.get('[data-testid="edit-tls-fingerprint-toggle"]').classes()).toContain('bg-primary-600')
+    await wrapper.get('[data-testid="edit-tls-fingerprint-toggle"]').trigger('click')
+    expect(wrapper.get('[data-testid="edit-tls-fingerprint-toggle"]').classes()).not.toContain('bg-primary-600')
+    // 表态后出现「恢复跟随平台默认」入口
+    expect(wrapper.get('[data-testid="edit-tls-fingerprint-reset-inherit"]').exists()).toBe(true)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toHaveProperty('enable_tls_fingerprint', false)
+    wrapper.unmount()
+  })
+
+  it('已显式表态时点「恢复跟随平台默认」：删键不写表态', async () => {
+    const account = buildAccount()
+    account.platform = 'workbuddy'
+    account.credentials = {
+      access_token: 'wb-access-token',
+      refresh_token: 'wb-refresh-token',
+      base_url: 'https://copilot.tencent.com'
+    }
+    account.enable_tls_fingerprint = false
+    account.tls_fingerprint_state = 'explicit_off'
+    account.tls_fingerprint_platform_default = true
+    account.tls_fingerprint_effective = false
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    // 显式关闭：开关显示 OFF，与「未表态且默认开」区分开
+    expect(wrapper.get('[data-testid="edit-tls-fingerprint-toggle"]').classes()).not.toContain('bg-primary-600')
+    await wrapper.get('[data-testid="edit-tls-fingerprint-reset-inherit"]').trigger('click')
+    // 回到 inherit 后应重新显示平台默认（ON）
+    expect(wrapper.get('[data-testid="edit-tls-fingerprint-toggle"]').classes()).toContain('bg-primary-600')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('enable_tls_fingerprint')
+    wrapper.unmount()
   })
 
   it('未改动 TLS 时不回写 extra，避免覆盖其他运行态键', async () => {

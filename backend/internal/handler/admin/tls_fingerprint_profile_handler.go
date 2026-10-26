@@ -3,6 +3,7 @@ package admin
 import (
 	"strconv"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/model"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -60,6 +61,17 @@ func (h *TLSFingerprintProfileHandler) List(c *gin.Context) {
 		return
 	}
 	response.Success(c, profiles)
+}
+
+// PlatformDefaults 返回各平台的 TLS 指纹默认开关。
+// GET /api/v1/admin/tls-fingerprint-platform-defaults
+//
+// 供「新建账号」表单使用：新建时没有已存在账号、拿不到账号级回显字段，需要知道
+// 该平台是否默认开启伪装，否则表单显示 OFF、创建完实际在伪装（与编辑弹窗同缺陷）。
+// 路径单独开一条而不用 /tls-fingerprint-profiles/platform-defaults：后者与同组的
+// /:id 参数路由在同一层争抢，gin 路由树会报冲突。
+func (h *TLSFingerprintProfileHandler) PlatformDefaults(c *gin.Context) {
+	response.Success(c, gin.H{"platform_defaults": dto.TLSFingerprintPlatformDefaults()})
 }
 
 // GetByID 根据 ID 获取模板

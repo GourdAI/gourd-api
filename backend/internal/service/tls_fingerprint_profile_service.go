@@ -262,6 +262,16 @@ func (s *TLSFingerprintProfileService) ResolvePlatformProfile(account *Account) 
 //
 // 未列出的平台一律沿用 Node.js 默认值，保持改动前的行为不变。
 //
+// WorkBuddy/Trae/Qoder 三平台拿的是 NodeOpenSSLH2Profile（Node/OpenSSL 形状 + ALPN h2），
+// 不是 Claude 用的 NodeDefaultProfile。原因：这三家的指纹是「平台默认开启」，而
+// 带指纹的出站只能跑 HTTP/1.1（http.Transport 在自定义 DialTLSContext 下拿不到
+// crypto/tls 连接状态，永不升 h2），叠加账号隔离下 maxConnsPerHost 被夹成
+// account.Concurrency（线上常见 1），同账号并发请求会**串行排队** —— 实测
+// 12 并发从 105ms（改造前 h2）劣化到 779ms。声明 h2 后传输层会改用 http2.Transport
+// （见 repository/http_upstream.go 的 buildFingerprintHTTP2Transport），实测回到 104ms。
+// ALPN 含 h2 也与这三家官方客户端（Electron/Chromium，真实 ALPN 就是 h2）一致；
+// Claude/Anthropic 保持 h1 形状不变，避免改动既有账号的 JA4。
+//
 // 已知局限（诚实口径，不要当成 bug 修）：WorkBuddy 桌面端是 Electron/Chromium
 // （BoringSSL），而本包目前只有 Node/OpenSSL 与 rustls 两套内置形状，没有
 // Chromium 形状。WorkBuddy 走平台默认时拿到的是 Node 形状——它与官方客户端不完全
@@ -269,10 +279,14 @@ func (s *TLSFingerprintProfileService) ResolvePlatformProfile(account *Account) 
 // tls-fingerprint-web 采集一份 Chromium 形状并当作模板绑定到账号（模板表机制已就位）。
 // 此处不凭记忆手写 Chromium 参数：错配的指纹（chimera）比不伪装更容易被识别判异常。
 func defaultTLSProfileForPlatform(platform string) *tlsfingerprint.Profile {
-	if platform == PlatformOpenAI {
+	switch platform {
+	case PlatformOpenAI:
 		return tlsfingerprint.CodexRustlsProfile()
+	case PlatformWorkbuddy, PlatformTrae, PlatformQoder:
+		return tlsfingerprint.NodeOpenSSLH2Profile()
+	default:
+		return tlsfingerprint.NodeDefaultProfile()
 	}
-	return tlsfingerprint.NodeDefaultProfile()
 }
 
 // --- 缓存管理 ---

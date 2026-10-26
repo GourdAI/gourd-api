@@ -131,6 +131,15 @@ func platformDefaultTLSFor(account *Account, cfg *config.Config) bool {
 	}
 }
 
+// PlatformDefaultTLSFingerprintEnabled 是 platformDefaultTLSFor 的导出入口，供 DTO 层
+// 计算「真实生效值」用（见 dto/account_tls_fingerprint_state.go）。
+//
+// 必须复用本函数而不是在 DTO 里重写一份 switch：那会造出第二套平台判定，一旦新增
+// 默认开启的平台就只改一处，回显与实际行为再次分叉——正是本次要消除的缺陷形态。
+func PlatformDefaultTLSFingerprintEnabled(account *Account, cfg *config.Config) bool {
+	return platformDefaultTLSFor(account, cfg)
+}
+
 // resolvePlatformDefaultTLSProfile 在「平台级默认开启」语义下解析 TLS Profile：
 //
 //   - 账号 Extra 显式设置 enable_tls_fingerprint=false → 返回 nil（尊重管理员意愿）；

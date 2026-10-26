@@ -800,6 +800,8 @@ func registerTLSFingerprintProfileRoutes(admin *gin.RouterGroup, h *handler.Hand
 		profiles.PUT("/:id", h.Admin.TLSFingerprintProfile.Update)
 		profiles.DELETE("/:id", h.Admin.TLSFingerprintProfile.Delete)
 	}
+	// 平台级默认开关（新建账号表单预显示用）。与模板 CRUD 分开注册，避开 /:id 路由争抢。
+	admin.GET("/tls-fingerprint-platform-defaults", h.Admin.TLSFingerprintProfile.PlatformDefaults)
 }
 
 func registerPluginRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {

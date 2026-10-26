@@ -1152,7 +1152,12 @@
           label: 'TLS Fingerprint Simulation',
           hint: 'Simulate the official client TLS fingerprint for this platform (Claude → Node.js/Claude Code, OpenAI → Codex CLI/rustls), or pick a profile',
           defaultProfile: 'Built-in Default',
-          randomProfile: 'Random'
+          randomProfile: 'Random',
+          // Three-state hint: the toggle shows the *effective* value, so its source must be stated.
+          inheritOn: 'Following platform default: this platform is enabled by default',
+          inheritOff: 'Following platform default: disabled by default for this platform',
+          explicitOverride: 'Explicitly overridden on this account',
+          resetToPlatformDefault: 'Follow platform default again'
         },
         sessionIdMasking: {
           label: 'Session ID Masking',

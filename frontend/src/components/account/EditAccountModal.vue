@@ -3494,11 +3494,24 @@
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.quotaControl.tlsFingerprint.hint') }}
               </p>
+              <!-- 三态来源说明：开关显示的是「真实生效值」，必须告知它是账号覆盖还是平台默认。 -->
+              <p
+                data-testid="edit-tls-fingerprint-state"
+                class="mt-1 text-xs"
+                :class="tlsFingerprintIsInherit ? 'text-gray-400 dark:text-gray-500' : 'text-primary-600 dark:text-primary-400'"
+              >
+                <template v-if="tlsFingerprintIsInherit">
+                  {{ tlsFingerprintPlatformDefault
+                    ? t('admin.accounts.quotaControl.tlsFingerprint.inheritOn')
+                    : t('admin.accounts.quotaControl.tlsFingerprint.inheritOff') }}
+                </template>
+                <template v-else>{{ t('admin.accounts.quotaControl.tlsFingerprint.explicitOverride') }}</template>
+              </p>
             </div>
             <button
               type="button"
               data-testid="edit-tls-fingerprint-toggle"
-              @click="tlsFingerprintEnabled = !tlsFingerprintEnabled"
+              @click="toggleTlsFingerprint"
               :class="[
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
                 tlsFingerprintEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
@@ -3510,6 +3523,17 @@
                   tlsFingerprintEnabled ? 'translate-x-5' : 'translate-x-0'
                 ]"
               />
+            </button>
+          </div>
+          <!-- 取消覆盖：回到「跟随平台默认」。仅在当前已显式表态时提供。 -->
+          <div v-if="!tlsFingerprintIsInherit" class="mt-2">
+            <button
+              type="button"
+              data-testid="edit-tls-fingerprint-reset-inherit"
+              class="text-xs text-gray-500 underline decoration-dotted hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+              @click="resetTlsFingerprintToDefault"
+            >
+              {{ t('admin.accounts.quotaControl.tlsFingerprint.resetToPlatformDefault') }}
             </button>
           </div>
           <!-- Profile selector -->
@@ -4499,7 +4523,24 @@ const umqModeOptions = computed(() => [
   { value: 'throttle', label: t('admin.accounts.quotaControl.rpmLimit.umqModeThrottle') },
   { value: 'serialize', label: t('admin.accounts.quotaControl.rpmLimit.umqModeSerialize') },
 ])
-const tlsFingerprintEnabled = ref(false)
+// TLS 指纹伪装三态（防封加固语义修正）：
+//   tlsFingerprintOverride —— 管理员表态：null=跟随平台默认，true/false=显式覆盖。
+//   tlsFingerprintPlatformDefault —— 该平台级默认是否开启（后端 tls_fingerprint_platform_default）。
+// 开关显示的是「真实生效值」而非「是否表态」：WorkBuddy/Trae/Qoder 平台默认开启，
+// 旧实现只看 enable_tls_fingerprint===true，导致这些账号永远显示 OFF 而实际在伪装。
+const tlsFingerprintOverride = ref<boolean | null>(null)
+const tlsFingerprintPlatformDefault = ref(false)
+const tlsFingerprintEnabled = computed(
+  () => tlsFingerprintOverride.value ?? tlsFingerprintPlatformDefault.value,
+)
+const tlsFingerprintIsInherit = computed(() => tlsFingerprintOverride.value === null)
+const toggleTlsFingerprint = () => {
+  // 拨开关即表态：从「跟随默认」变为与当前生效值相反的显式覆盖。
+  tlsFingerprintOverride.value = !tlsFingerprintEnabled.value
+}
+const resetTlsFingerprintToDefault = () => {
+  tlsFingerprintOverride.value = null
+}
 const tlsFingerprintProfileId = ref<number | null>(null)
 const tlsFingerprintProfiles = ref<{ id: number; name: string }[]>([])
 const sessionIdMaskingEnabled = ref(false)
@@ -5804,7 +5845,8 @@ function loadQuotaControlSettings(account: Account) {
   rpmStrategy.value = 'tiered'
   rpmStickyBuffer.value = null
   userMsgQueueMode.value = ''
-  tlsFingerprintEnabled.value = false
+  tlsFingerprintOverride.value = null
+  tlsFingerprintPlatformDefault.value = false
   tlsFingerprintProfileId.value = null
   sessionIdMaskingEnabled.value = false
   cacheTTLOverrideEnabled.value = false
@@ -5814,9 +5856,15 @@ function loadQuotaControlSettings(account: Account) {
 
   // TLS 指纹伪装（全平台有效，防封加固）：必须在平台门控 early return 之前回填，
   // 否则非 Anthropic 账号打开弹窗时开关状态无法正确显示。
-  if (account.enable_tls_fingerprint === true) {
-    tlsFingerprintEnabled.value = true
-  }
+  // 三态回填：后端 tls_fingerprint_state 区分「未表态」与「显式关闭」，旧实现只看
+  // enable_tls_fingerprint===true，于是 WorkBuddy/Trae/Qoder（平台默认开启）永远显示 OFF。
+  tlsFingerprintOverride.value =
+    account.tls_fingerprint_state === 'explicit_on'
+      ? true
+      : account.tls_fingerprint_state === 'explicit_off'
+        ? false
+        : null
+  tlsFingerprintPlatformDefault.value = account.tls_fingerprint_platform_default === true
   tlsFingerprintProfileId.value = account.tls_fingerprint_profile_id ?? null
 
   // Remaining quota control settings only apply to Anthropic accounts
@@ -6874,27 +6922,40 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    // TLS 指纹伪装（全平台有效，防封加固）：独立于平台写入 extra，保持账号级 opt-in
-    // 语义（关闭时删除键，后端按缺失值回落到默认关闭）。必须放在所有平台专属 extra
-    // 块之后，避免被后续块以旧快照覆盖；仅在管理员实际改动时写回，避免用弹窗打开时
-    // 的快照覆盖其他平台 extra 中的运行态键。
+    // TLS 指纹伪装（全平台有效，防封加固）：独立于平台写入 extra。
+    //
+    // 【本次修正的语义坑】旧实现在关闭时 delete enable_tls_fingerprint（删键），而
+    // WorkBuddy/Trae/Qoder 是「平台级默认开启」，删键等于退回未表态 → 继续跟随默认 →
+    // 仍然伪装。管理员拨到 OFF 却关不掉。现在：显式 OFF 写 false（压过平台默认），
+    // 只有「恢复跟随平台默认」才删键。
+    //
+    // 必须放在所有平台专属 extra 块之后，避免被后续块以旧快照覆盖；仅在管理员实际改动
+    // 时写回，避免用弹窗打开时的快照覆盖其他平台 extra 中的运行态键。
     {
-      const currentEnabled = props.account.enable_tls_fingerprint === true
+      const currentOverride =
+        props.account.tls_fingerprint_state === 'explicit_on'
+          ? true
+          : props.account.tls_fingerprint_state === 'explicit_off'
+            ? false
+            : null
       const currentProfileId = props.account.tls_fingerprint_profile_id ?? null
-      const nextEnabled = tlsFingerprintEnabled.value
+      const nextOverride = tlsFingerprintOverride.value
       const nextProfileId = tlsFingerprintProfileId.value ?? null
-      if (nextEnabled !== currentEnabled || (nextEnabled && nextProfileId !== currentProfileId)) {
+      const overrideChanged = nextOverride !== currentOverride
+      // 模板只在「实际会伪装」时有意义；取消伪装时一并清除，避免下次开启静默生效。
+      const profileChanged = nextProfileId !== currentProfileId
+      if (overrideChanged || (tlsFingerprintEnabled.value && profileChanged)) {
         const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
         const newExtra: Record<string, unknown> = { ...currentExtra }
-        if (nextEnabled) {
-          newExtra.enable_tls_fingerprint = true
-          if (nextProfileId) {
-            newExtra.tls_fingerprint_profile_id = nextProfileId
-          } else {
-            delete newExtra.tls_fingerprint_profile_id
-          }
-        } else {
+        if (nextOverride === null) {
+          // 跟随平台默认：删键（后端按「未表态」解析）
           delete newExtra.enable_tls_fingerprint
+        } else {
+          newExtra.enable_tls_fingerprint = nextOverride
+        }
+        if (tlsFingerprintEnabled.value && nextProfileId !== null) {
+          newExtra.tls_fingerprint_profile_id = nextProfileId
+        } else {
           delete newExtra.tls_fingerprint_profile_id
         }
         updatePayload.extra = newExtra

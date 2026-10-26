@@ -52,6 +52,7 @@ vi.mock('@/api/admin', () => ({
     },
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([]),
+      platformDefaults: vi.fn().mockResolvedValue({}),
     },
     trae: {
       exchangeTraeToken: exchangeTraeTokenMock,
