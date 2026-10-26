@@ -133,6 +133,13 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 		if matchesAny(isAnthropicFableModel) {
 			appendKey(anthropicFableRateLimitKey)
 		}
+	case PlatformQoder:
+		// Qoder 上游只认 14 个封闭 key，而写侧（10605 RESOURCE_LIMIT 模型级冷却）
+		// 写的是**上游 modelKey**（qfmodel 等）；客户端入站却常用展示名
+		// （qwen3.8-flash）。GetMappedModel 只走账号 model_mapping、不含平台别名，
+		// 不补这一键时冷却写进 DB 却拦不住调度（与 #4936 同类读写不对称）。
+		appendKey(normalizeQoderModelKey(modelKey))
+		appendKey(normalizeQoderModelKey(raw))
 	}
 	return keys
 }

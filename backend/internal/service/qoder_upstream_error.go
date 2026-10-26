@@ -88,8 +88,121 @@ var qoderAccountRestrictedErrorCodes = map[string]struct{}{
 // 到次日 0 点），排队是**这张号此刻排不上**（上游自带 retryAfterSeconds，且明确
 // serviceAvailable=true）。因此冷却时长取上游给的秒数，绝不按日拉黑——把排队号
 // 拉到次日 0 点会在一轮拥塞里误杀整批可用号。
+//
+// 【2026-10-26 补充：同一码下的第二种形态——模型级资源限流】
+// 线上 qwen3.8-flash(qfmodel) 全量报错样本（外层 403 信封 + 内嵌 10605）：
+//
+//	{"code":"10605","message":"{\"isQueued\":true,\"modelKey\":\"qfmodel\",
+//	 \"queueCount\":0,\"queueType\":\"p3\",\"retryAfterSeconds\":30,
+//	 \"serviceAvailable\":false,\"subCode\":\"RESOURCE_LIMIT\",\"waitTime\":30}",
+//	 "subCode":"RESOURCE_LIMIT"}
+//
+// 与拥塞排队的判别字段：subCode=RESOURCE_LIMIT 或 serviceAvailable=false
+// （拥塞形态恒 serviceAvailable=true 且无 subCode；官方论坛另有一样本
+// queueCount=18/queueType=slow/serviceAvailable=false/waitTime=8968 亦属此形态）。
+// 语义差别决定处置差别：拥塞是「这张号此刻排不上」，换号可能换到不拥塞的队列；
+// RESOURCE_LIMIT 是「**这个模型**的资源池空了」，与账号无关——换任何 Qoder 号
+// 发同一个 modelKey 都会撞同一个错（实测每请求 10 次换号全中），因此该形态改为
+// (账号, 模型) 级冷却 + 不换号（见 qoderQueuedIsModelResourceLimit 的消费点）。
 var qoderQueuedErrorCodes = map[string]struct{}{
 	"10605": {}, // AIIsQueued：模型排队中（queueCount/retryAfterSeconds 随行）
+}
+
+// qoderModelResourceLimitSubCode 是 10605 第二形态的上游子码字面值。
+const qoderModelResourceLimitSubCode = "RESOURCE_LIMIT"
+
+// qoderModelResourceLimitCooldown 模型级资源限流的避让时长。
+//
+// 为何不用上游的 retryAfterSeconds（实测恒 30）：该值对拥塞形态是「队列预计
+// 等待」，对 RESOURCE_LIMIT 形态并无对应语义（资源池空不是 30s 能恢复的瞬时
+// 态，官方论坛样本的 waitTime 甚至到 8968s）。取 5min 是「避开一轮持续限流」
+// 与「不过度延迟自愈感知」的折中：冷却到期后第一个请求会重新探测，上游恢复
+// 即自然放行。
+const qoderModelResourceLimitCooldown = 5 * time.Minute
+
+// qoderModelResourceLimitReason 写入 model_rate_limits 的 reason（排障可见）。
+const qoderModelResourceLimitReason = "qoder_upstream_model_resource_limit"
+
+// qoderQueuedPayloadFields 从 10605 的错误文本里取形态判别与模型键所需的字段。
+//
+// 【三层嵌套形态】线上真实样本是三层：外层 403 信封 → 中层
+// {"code":"10605","message":"<内层串>","subCode":"RESOURCE_LIMIT"} → 内层
+// {"modelKey":"qfmodel","serviceAvailable":false,"subCode":...}。
+// 流内路径的 BusinessErr.Message 拿到的是**中层**串（subCode 在中层、
+// modelKey/serviceAvailable 在内层），因此顶层取不到的字段要向下钻一层
+// （obj["message"] 为 JSON 对象串时）补齐；已有值不被内层覆盖。
+// 非 JSON 对象形态返回零值（调用方按拥塞形态回落，保持修复前行为）。
+func qoderQueuedPayloadFields(message string) (subCode string, serviceAvailable *bool, modelKey string) {
+	obj := qoderQueuedPayloadObject(message)
+	if obj == nil {
+		return "", nil, ""
+	}
+	subCode, serviceAvailable, modelKey = qoderQueuedFieldsFromObject(obj)
+	if subCode != "" && serviceAvailable != nil && modelKey != "" {
+		return subCode, serviceAvailable, modelKey
+	}
+	// 向下钻一层：中层的 message 字段是内层 JSON 串。
+	if inner, ok := obj["message"].(string); ok {
+		if innerObj := qoderQueuedPayloadObject(inner); innerObj != nil {
+			iSub, iAvail, iKey := qoderQueuedFieldsFromObject(innerObj)
+			if subCode == "" {
+				subCode = iSub
+			}
+			if serviceAvailable == nil {
+				serviceAvailable = iAvail
+			}
+			if modelKey == "" {
+				modelKey = iKey
+			}
+		}
+	}
+	return subCode, serviceAvailable, modelKey
+}
+
+// qoderQueuedPayloadObject 把错误文本解析为 JSON 对象（非对象形态返回 nil）。
+func qoderQueuedPayloadObject(message string) map[string]any {
+	msg := strings.TrimSpace(message)
+	if msg == "" || !strings.HasPrefix(msg, "{") {
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(msg), &obj); err != nil {
+		return nil
+	}
+	return obj
+}
+
+// qoderQueuedFieldsFromObject 从单层对象里取三个判别字段。
+func qoderQueuedFieldsFromObject(obj map[string]any) (subCode string, serviceAvailable *bool, modelKey string) {
+	if v, ok := obj["subCode"].(string); ok {
+		subCode = strings.TrimSpace(v)
+	}
+	if v, ok := obj["serviceAvailable"].(bool); ok {
+		serviceAvailable = &v
+	}
+	if v, ok := obj["modelKey"].(string); ok {
+		modelKey = strings.TrimSpace(v)
+	}
+	return subCode, serviceAvailable, modelKey
+}
+
+// qoderQueuedIsModelResourceLimit 报告一个排队类（10605）错误是否为「模型级资源
+// 限流」形态（subCode=RESOURCE_LIMIT 或 serviceAvailable=false）。
+// 拥塞排队形态（serviceAvailable=true 且无 RESOURCE_LIMIT 子码）返回 false。
+func qoderQueuedIsModelResourceLimit(message string) bool {
+	subCode, serviceAvailable, _ := qoderQueuedPayloadFields(message)
+	if strings.EqualFold(subCode, qoderModelResourceLimitSubCode) {
+		return true
+	}
+	return serviceAvailable != nil && !*serviceAvailable
+}
+
+// qoderQueuedModelKey 取 10605 错误携带的上游模型键（qfmodel/dfmodel 等）。
+// 缺失时返回 ""（调用方据此放弃模型级冷却、回落账号级短冷却，宁可不冷却
+// 也不要把冷却写到一个猜出来的键上）。
+func qoderQueuedModelKey(message string) string {
+	_, _, modelKey := qoderQueuedPayloadFields(message)
+	return modelKey
 }
 
 // classifyQoderBusinessError 把上游业务错误码映射为处置分类。
@@ -277,8 +390,37 @@ func applyQoderBusinessErrorClass(ctx context.Context, repo AccountRepository, a
 				zap.Int64("account_id", account.ID), zap.String("code", resolvedCode), zap.Error(err))
 		}
 	case qoderErrorClassQueued:
-		// 排队类：只按上游给的秒数短时避让，**绝不按日拉黑**。serviceAvailable=true
-		// 说明这张号本身健康，只是此刻排不上；拉到次日 0 点会在一轮拥塞里误杀整池号。
+		// 排队类分两种形态（判别见 qoderQueuedIsModelResourceLimit）：
+		//  - 拥塞排队：这张号此刻排不上、号本身健康 → 按上游秒数做**账号级**短冷却；
+		//  - 模型级资源限流（RESOURCE_LIMIT / serviceAvailable=false）：空的是**模型**
+		//    的资源池，与账号无关 → 只写 (账号, 模型) 级冷却。写账号级会把健康号从
+		//    其它模型的调度里也摘掉（SetTempUnschedulable 是账号粒度），而换号对同
+		//    一个 modelKey 毫无意义（实测 10 次换号全中同一个错）。
+		if qoderQueuedIsModelResourceLimit(message) {
+			modelKey := qoderQueuedModelKey(message)
+			if modelKey == "" {
+				// 无模型键时无法做模型级冷却；回落拥塞口径的账号级短冷却，
+				// 至少避免同秒回灌（与修复前行为一致）。
+				cooldown := qoderQueuedCooldown(retryAfterSeconds, message)
+				reason := fmt.Sprintf("Qoder upstream queued the account (code %s): %s", resolvedCode, detail)
+				if err := repo.SetTempUnschedulable(stateCtx, account.ID, time.Now().Add(cooldown), reason); err != nil {
+					logger.L().Warn("qoder queued error set temp unschedulable failed",
+						zap.Int64("account_id", account.ID), zap.String("code", resolvedCode), zap.Error(err))
+				}
+				return
+			}
+			resetAt := time.Now().Add(qoderModelResourceLimitCooldown)
+			if err := repo.SetModelRateLimit(stateCtx, account.ID, modelKey, resetAt, qoderModelResourceLimitReason); err != nil {
+				logger.L().Warn("qoder model resource limit set model rate limit failed",
+					zap.Int64("account_id", account.ID), zap.String("code", resolvedCode),
+					zap.String("model", modelKey), zap.Error(err))
+				return
+			}
+			logger.L().Info("qoder model resource limit cooled",
+				zap.Int64("account_id", account.ID), zap.String("model", modelKey),
+				zap.Time("reset_at", resetAt))
+			return
+		}
 		cooldown := qoderQueuedCooldown(retryAfterSeconds, message)
 		reason := fmt.Sprintf("Qoder upstream queued the account (code %s): %s", resolvedCode, detail)
 		if err := repo.SetTempUnschedulable(stateCtx, account.ID, time.Now().Add(cooldown), reason); err != nil {
@@ -390,7 +532,13 @@ func newQoderStreamFailoverError(err error, now time.Time) *UpstreamFailoverErro
 	case qoderErrorClassQueued:
 		// 排队类直接把等待时长透下去，与落库的冷却时长同源（qoderQueuedCooldown 取同一个
 		// 结构化值，不会因 message 不含该字段而退到回落值）。
-		headers.Set("Retry-After", strconv.FormatInt(int64(qoderQueuedCooldown(env.RetryAfterSeconds, env.Message).Seconds()), 10))
+		// 【RESOURCE_LIMIT 形态】冷却写的是模型级 5min（见 applyQoderBusinessErrorClass），
+		// Retry-After 必须同源，否则客户端会按 30s 提前重试、在冷却窗内白撞。
+		if qoderQueuedIsModelResourceLimit(env.Message) {
+			headers.Set("Retry-After", strconv.FormatInt(int64(qoderModelResourceLimitCooldown.Seconds()), 10))
+		} else {
+			headers.Set("Retry-After", strconv.FormatInt(int64(qoderQueuedCooldown(env.RetryAfterSeconds, env.Message).Seconds()), 10))
+		}
 	}
 
 	body, marshalErr := json.Marshal(map[string]any{
@@ -411,8 +559,22 @@ func newQoderStreamFailoverError(err error, now time.Time) *UpstreamFailoverErro
 		Stage:             GatewayFailureStageInference,
 		Scope:             GatewayFailureScopeAccount,
 		Reason:            GatewayFailureReason("qoder_" + string(class)),
-		NextAccountAction: NextAccountRetry,
+		NextAccountAction: qoderQueuedNextAccountAction(class, env.Message),
 	}
+}
+
+// qoderQueuedNextAccountAction 决定排队类错误是否值得换号重试。
+//
+// 拥塞排队：换号可能换到不拥塞的队列 → 保持 NextAccountRetry（修复前行为）。
+// 模型级资源限流：空的是模型资源池，换任何号发同一 modelKey 都撞同一个错
+// （2026-10-26 实测每请求 10 次换号全中）→ NextAccountStop，让 handler 直接
+// 以 429 + Retry-After 收尾。此时 (账号, 模型) 冷却已写入，后续请求在调度层
+// 就被 model_rate_limited 闸门挡下，不会再来白撞。
+func qoderQueuedNextAccountAction(class qoderUpstreamErrorClass, message string) NextAccountAction {
+	if class == qoderErrorClassQueued && qoderQueuedIsModelResourceLimit(message) {
+		return NextAccountStop
+	}
+	return NextAccountRetry
 }
 
 // qoderStreamFailoverError 同时是「可换号的 UpstreamFailoverError」与「上游信封错误」。
