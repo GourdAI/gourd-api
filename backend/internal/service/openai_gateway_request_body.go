@@ -2328,6 +2328,21 @@ func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
 	return normalizeOpenAIReasoningEffort(raw)
 }
 
+// qoderReasoningEffortModelScale 把 Qoder 封闭模型 key 还原为底层家族名（小写），
+// 供 max 档位白名单做前缀判定。非 Qoder key（含未知 key、"auto" 之外的普通模型名）
+// 返回空串，由调用方保持原有判定不变——绝不给没取证过的模型族凭空宣告 max 能力。
+func qoderReasoningEffortModelScale(model string) string {
+	key := strings.ToLower(strings.TrimSpace(lastOpenAIModelSegment(model)))
+	if key == "" {
+		return ""
+	}
+	name, ok := qoderModelCatalog[key]
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+}
+
 // supportsOpenAIReasoningEffortMax reports model families whose upstream scale
 // has a distinct max level. Other models keep the legacy max -> xhigh behavior.
 func supportsOpenAIReasoningEffortMax(model string) bool {
@@ -2337,6 +2352,13 @@ func supportsOpenAIReasoningEffortMax(model string) bool {
 
 	normalized := strings.ToLower(lastOpenAIModelSegment(model))
 	normalized = strings.ReplaceAll(normalized, "_", "-")
+	// Qoder 只对外暴露封闭模型 key（dfmodel/dmodel/gmodel/kmodel_latest…），这些
+	// key 不带任何品牌前缀，直接落到下面的前缀判定会**全部**判为「无 max 档」，
+	// 于是客户端请求 max 被静默折叠成 xhigh（用量记录、计费倍率、上限策略同口径
+	// 跟着错）。先按静态目录还原成底层家族名再判，与前缀白名单复用同一套口径。
+	if scale := qoderReasoningEffortModelScale(model); scale != "" {
+		normalized = scale
+	}
 	switch {
 	case strings.HasPrefix(normalized, "deepseek-v4"), strings.HasPrefix(normalized, "deepseek-flash"):
 		// deepseek-flash（= DeepSeek-V4.1-Flash）与 v4 系同为 low/high/max 档位。
