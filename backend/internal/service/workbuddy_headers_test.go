@@ -168,8 +168,11 @@ func TestWorkbuddyConversationHeaderFamilyInvalidTraceFallback(t *testing.T) {
 	})
 	messageID := req.Header.Get("X-Conversation-Message-ID")
 	require.Equal(t, messageID, req.Header.Get("X-B3-TraceId"))
-	// X-Conversation-ID 无来源 → 不发（透传优先，不伪造）。
-	require.Empty(t, req.Header.Get("X-Conversation-ID"))
+	// X-Conversation-ID 无来源 → 仍恒发（国际版渠道校验按存在性拦截，缺头即 400/11128）。
+	// 断言从「Empty」翻转而来：旧断言把缺陷固化成了规格（2026-10 国际版全量 11128 事件）。
+	convID := req.Header.Get("X-Conversation-ID")
+	require.NotEmpty(t, convID, "X-Conversation-ID 必须恒发")
+	require.True(t, workbuddyValidTraceID(convID), "兜底派生的会话 ID 必须是 32 hex")
 	// X-Trace-ID 回落 conversationRequestID。
 	require.Equal(t, "not-a-hex-trace-id", req.Header.Get("X-Trace-ID"))
 }
@@ -183,7 +186,7 @@ func TestResolveWorkbuddyChatMeta(t *testing.T) {
 	c.Request.Header.Set("X-Conversation-Request-ID", "inbound-conv-req")
 	c.Request.Header.Set("X-Trace-ID", "inbound-trace")
 	c.Request.Header.Set("X-Conversation-ID", "inbound-conv")
-	meta := resolveWorkbuddyChatMeta(c, []byte(`{"conversationId":"body-conv"}`))
+	meta := resolveWorkbuddyChatMeta(c, []byte(`{"conversationId":"body-conv"}`), "u-1")
 	require.Equal(t, "inbound-conv-req", meta.ConversationRequestID)
 	require.Equal(t, "inbound-trace", meta.TraceID)
 	require.Equal(t, "inbound-conv", meta.ConversationID)
@@ -192,14 +195,93 @@ func TestResolveWorkbuddyChatMeta(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	c2, _ := gin.CreateTestContext(rec2)
 	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	meta2 := resolveWorkbuddyChatMeta(c2, []byte(`{"conversationId":"body-conv"}`))
+	meta2 := resolveWorkbuddyChatMeta(c2, []byte(`{"conversationId":"body-conv"}`), "u-1")
 	require.True(t, workbuddyValidTraceID(meta2.ConversationRequestID), "生成的聚合主键必须是 32 hex")
 	require.Equal(t, "body-conv", meta2.ConversationID)
 	require.Empty(t, meta2.TraceID)
 
 	// 无 gin 上下文也不 panic。
-	meta3 := resolveWorkbuddyChatMeta(nil, nil)
+	meta3 := resolveWorkbuddyChatMeta(nil, nil, "u-1")
 	require.True(t, workbuddyValidTraceID(meta3.ConversationRequestID))
+	// body 无任何会话标识 → 派生兜底，绝不空（空即国际版 11128）。
+	require.Equal(t, workbuddyDeriveConversationID("u-1", nil), meta3.ConversationID)
+	require.NotEmpty(t, meta3.ConversationID)
+}
+
+// TestResolveWorkbuddyChatMetaAlwaysHasConversationID 国际版 11128 回归：
+// 普通 OpenAI 客户端（curl / Claude Code / LiteLLM）从不传 conversation_id，
+// 修复前 X-Conversation-ID 会被静默省略，www.workbuddy.ai 渠道校验按存在性
+// 拦截 → 国际版账号 100% 回 HTTP 400 {"code":11128,"msg":"request illegal"}。
+func TestResolveWorkbuddyChatMetaAlwaysHasConversationID(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"hello there"}]}`)
+
+	rec, _ := gin.CreateTestContext(httptest.NewRecorder())
+	rec.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	meta := resolveWorkbuddyChatMeta(rec, body, "u-intl")
+	require.NotEmpty(t, meta.ConversationID, "无入站头、无 body 会话字段时仍必须发会话 ID")
+	require.True(t, workbuddyValidTraceID(meta.ConversationID), "派生值必须为 32 hex")
+
+	// 多轮稳定：同一对话（首条 user 相同）的后续轮次派生同值，不破坏会话聚合。
+	followUp := []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"hello there"},{"role":"assistant","content":"hi"},{"role":"user","content":"and then?"}]}`)
+	require.Equal(t, meta.ConversationID, resolveWorkbuddyChatMeta(rec, followUp, "u-intl").ConversationID,
+		"同一会话的后续轮次必须复用同一 ID")
+
+	// 账号隔离：同首句不同 uid 不得同 ID（否则跨账号串会话）。
+	require.NotEqual(t, meta.ConversationID, resolveWorkbuddyChatMeta(rec, body, "u-other").ConversationID)
+	// 会话区分：不同首句必须不同 ID。
+	other := []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"completely different"}]}`)
+	require.NotEqual(t, meta.ConversationID, resolveWorkbuddyChatMeta(rec, other, "u-intl").ConversationID)
+}
+
+// TestWorkbuddyFirstUserText 会话 ID 派生种子的提取边界（string / multipart / 无 user）。
+func TestWorkbuddyFirstUserText(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "hi",
+		workbuddyFirstUserText([]byte(`{"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)))
+	require.Equal(t, "ab",
+		workbuddyFirstUserText([]byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"a"},{"type":"image_url","image_url":{"url":"x"}},{"type":"text","text":"b"}]}]}`)))
+	require.Equal(t, "", workbuddyFirstUserText([]byte(`{"messages":[{"role":"system","content":"s"}]}`)))
+	require.Equal(t, "", workbuddyFirstUserText(nil))
+	require.Equal(t, "", workbuddyFirstUserText([]byte(`not json`)))
+}
+
+// TestWorkbuddyConversationHeadersNeverDropsID 直接构造 meta（绕过 resolve）时
+// 头族注入层仍兜底，防止未来新增调用点又把头丢掉——本次故障的确切形态。
+func TestWorkbuddyConversationHeadersNeverDropsID(t *testing.T) {
+	t.Parallel()
+	account := &Account{ID: 11, Platform: PlatformWorkbuddy}
+	req := httptest.NewRequest(http.MethodPost, "https://www.workbuddy.ai/v2/chat/completions", nil)
+	applyWorkbuddyChatHeaders(req, WorkbuddyCredentials{AccessToken: "t", UID: "u-11"}, account, "global", workbuddyChatMeta{})
+
+	convID := req.Header.Get("X-Conversation-ID")
+	require.NotEmpty(t, convID, "即使 meta 绕过 resolve 构造，三件套也不得缺项")
+	require.NotEmpty(t, req.Header.Get("X-Conversation-Request-ID"))
+	require.NotEmpty(t, req.Header.Get("X-Conversation-Message-ID"))
+	require.True(t, workbuddyValidTraceID(convID))
+}
+
+// TestWorkbuddyConversationIDFallbackNotConstant 兜底分支不得串起整个账号池。
+//
+// 为什么单独一条：上一版兜底用 workbuddyDeriveConversationID("", nil)，那是
+// sha256("|") 编译期常量——一旦触发，所有账号发出同一个 X-Conversation-ID，
+// 成为上游关联账号池的静默指纹。只断言 NotEmpty 的用例对这种缺陷全绿（假绿），
+// 故必须直接断言「两次独立兜底不得同值」。
+func TestWorkbuddyConversationIDFallbackNotConstant(t *testing.T) {
+	t.Parallel()
+	account := &Account{ID: 12, Platform: PlatformWorkbuddy}
+	seen := make(map[string]struct{}, 8)
+	for i := 0; i < 8; i++ {
+		req := httptest.NewRequest(http.MethodPost, "https://www.workbuddy.ai/v2/chat/completions", nil)
+		applyWorkbuddyChatHeaders(req, WorkbuddyCredentials{AccessToken: "t"}, account, "global", workbuddyChatMeta{})
+		cid := req.Header.Get("X-Conversation-ID")
+		require.NotEmpty(t, cid)
+		require.True(t, workbuddyValidTraceID(cid), "兜底值必须是 32 hex")
+		require.NotEqual(t, workbuddyDeriveConversationID("", nil), cid,
+			"兜底绝不得用无账号因子的内容派生常量")
+		seen[cid] = struct{}{}
+	}
+	require.Len(t, seen, 8, "8 次独立兜底必须得到 8 个不同 ID（跨请求/跨账号隔离）")
 }
 
 func TestWorkbuddyResolveConversationID(t *testing.T) {

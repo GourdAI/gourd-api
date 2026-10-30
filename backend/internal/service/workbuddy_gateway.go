@@ -216,7 +216,7 @@ func (s *AccountTestService) testWorkbuddyAccountConnection(c *gin.Context, acco
 		return s.sendErrorAndEnd(c, "Failed to create WorkBuddy request")
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	applyWorkbuddyChatHeaders(req, creds, account, realm, resolveWorkbuddyChatMeta(c, prepared))
+	applyWorkbuddyChatHeaders(req, creds, account, realm, resolveWorkbuddyChatMeta(c, prepared, payloadCreds.UID))
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

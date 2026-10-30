@@ -181,7 +181,8 @@ func (s *OpenAIGatewayService) sendWorkbuddyUpstreamRequest(ctx context.Context,
 	targetURL := strings.TrimRight(validatedBase, "/") + workbuddyChatPath
 
 	// 会话头族元数据：入站透传优先；本函数内多次出站（401 重试）复用同一聚合主键。
-	meta := resolveWorkbuddyChatMeta(c, prepared)
+	// payloadCreds.UID 作为会话 ID 派生的账号隔离因子（与 prompt_cache_key 同源）。
+	meta := resolveWorkbuddyChatMeta(c, prepared, payloadCreds.UID)
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
