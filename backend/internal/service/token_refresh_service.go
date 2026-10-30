@@ -91,8 +91,14 @@ type TokenRefreshService struct {
 	// 分布式锁（CacheKey），只有 TokenRefresher 无法与 refreshAPI 协同。
 	workbuddyRefresher OAuthRefreshExecutor
 
+	// traeRefresher 是 Trae 平台的后台刷新策略（同样为可选依赖，由 SetTraeRefresher 注入）。
+	//
+	// Trae 与 WorkBuddy 同形：恒为 apikey 类型却持有可轮换的 refresh_token，因此它俩
+	// 共用 includeAPIKeyRefreshCandidates 这道类型门（任一个注册了就开）。
+	traeRefresher OAuthRefreshExecutor
+
 	// includeAPIKeyRefreshCandidates 控制候选查询是否放宽 type 门。
-	// 仅当确实注册了 apikey 型 refresher（即 workbuddyRefresher 非 nil）时为 true。
+	// 仅当确实注册了 apikey 型 refresher（workbuddyRefresher 或 traeRefresher 非 nil）时为 true。
 	includeAPIKeyRefreshCandidates bool
 }
 
@@ -229,6 +235,39 @@ func (s *TokenRefreshService) SetWorkBuddyRefresher(refresher OAuthRefreshExecut
 	}
 	s.registrations = append(s.registrations, tokenRefreshRegistration{
 		platform:  PlatformWorkbuddy,
+		refresher: refresher,
+		executor:  refresher,
+	})
+}
+
+// SetTraeRefresher 注册 Trae 后台刷新策略（第七个平台）。
+//
+// 必须在 Start() 之前调用：Start 会快照 registrations，之后再改不会生效。
+// refresher 为 nil 时为 no-op（既有部署与测试零行为变更）。
+//
+// 【为何需要这条链（2026-10-27 Trae 续期排查）】与 WorkBuddy 完全同形：Trae 的
+// access_token 是 3~14 天寿命的 JWT、凭据里常缺 expires_at（预刷新永不触发）、
+// 而 401/1001 对 apikey 账号原本是永久 SetError。未注册后台刷新时，上游到期后没有任何
+// 角色会去续命，只能等真实请求撞 401 把账号打下线 —— 与 2026-10-29 Qoder 签到
+// TOKEN_EXPIRE、2026-10-24 WorkBuddy 全量 401 是同一个坑，不要再让第三个平台重演。
+//
+// 与 WorkBuddy 共用 includeAPIKeyRefreshCandidates：仓储查询默认硬编码 type='oauth'，
+// 而 Trae 恒为 apikey，不开这个阀就永远查不到候选账号。该开关只在确实注册了
+// apikey 型 refresher 时打开，因此其它环境/测试的扫描面不变。
+func (s *TokenRefreshService) SetTraeRefresher(refresher OAuthRefreshExecutor) {
+	if s == nil || refresher == nil {
+		return
+	}
+	s.traeRefresher = refresher
+	s.includeAPIKeyRefreshCandidates = true
+	// 幂等追加：避免重复调用导致同一平台注册两次（候选会被处理两遍）。
+	for _, registration := range s.registrations {
+		if registration.platform == PlatformTrae {
+			return
+		}
+	}
+	s.registrations = append(s.registrations, tokenRefreshRegistration{
+		platform:  PlatformTrae,
 		refresher: refresher,
 		executor:  refresher,
 	})

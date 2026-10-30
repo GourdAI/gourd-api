@@ -1633,10 +1633,24 @@ func buildUpstreamRoundTripperWithTLSFingerprint(
 // 任何连接都当 h2 用。实测（httptest 起一个 NextProtos=["http/1.1"] 的 TLS 服务，客户端
 // 声明 [h2, http/1.1]）：RoundTrip 直接失败，报 "http2: failed reading the frame payload:
 // http2: frame too large, note that the frame header looked like an HTTP/1.1 header"。
-// ⇒ 若三平台账号的 base_url 被配成只支持 HTTP/1.1 的服务（中转/自建网关，
+// ⇒ 若平台账号的 base_url 被配成只支持 HTTP/1.1 的服务（中转/自建网关，
 // validateUpstreamBaseURL 不限制协议能力），该账号请求会**全量硬失败**而不是退回 h1。
-// 已实测三家官方共 19 个域名 ALPN 均协商到 h2，默认配置下不触发；但自定义 base_url
-// 场景需靠「账号级显式关闭指纹」或改回不带 h2 的模板逃生（三态修复已使前者真正可用）。
+//
+// 【❗本节曾写错过，不要照旧版本改回去（2026-10-27 线上全量报错）】
+// 早期版本这里写的是“已实测三家官方共 19 个域名 ALPN 均协商到 h2，默认配置下不触发”。
+// 那是按域名清单**推断**而非逐个实测得出的错误结论：Trae CN 聊天域
+// trae-api-cn.mchost.guru **只协商 HTTP/1.1**，于是“默认配置”下 Trae 全量账号硬失败。
+// 逐个实测（本包真实指纹拨号器）后只有该域名是 h1-only，其余均 h2：
+//
+//	trae-api-cn.mchost.guru → http/1.1（唯一 h1-only）
+//	a0ai-api-sg.byteintlapi.com / api.trae.cn / api.trae.com.cn / api-sg-central.trae.ai → h2
+//	copilot.tencent.com / www.workbuddy.ai / www.codebuddy.cn → h2
+//	gateway.qoder.com.cn / openapi.qoder.com.cn / api1.qoder.sh / docs.qoder.cn → h2
+//
+// 因此 Trae 已改为走 NodeOpenSSLH1Profile（不得并入 WorkBuddy/Qoder 的 h2 分支，
+// 见 service/defaultTLSProfileForPlatform 的“Trae 例外”注释与 profiles.go 的告警）。
+// 自定义 base_url 场景需靠「账号级显式关闭指纹」或改回不带 h2 的模板逃生
+// （三态修复已使前者真正可用）。
 //
 // 实测（copilot.tencent.com，12 并发，池上限 1）：HTTP/1.1 指纹路径 779ms，本路径 104ms
 // 且协商结果 HTTP/2.0；反向对照：ALPN 只声明 http/1.1 时 http2.Transport 直接报错

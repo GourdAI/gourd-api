@@ -140,6 +140,20 @@ func (s *OpenAIGatewayService) sendQoderUpstreamRequest(ctx context.Context, c *
 	if err != nil {
 		return nil, err
 	}
+	// 2.5) 思考强度真实下发：把客户端档位收敛到该模型已取证的档位集合后写进
+	// parameters（与 max_tokens 平级）。必须在 COSY 编码/签名**之前**做——签名
+	// 覆盖最终 body，注入放在签名后会被上游判 Signature invalid。
+	// qoderForwardedEffort 是「真正下发的档位」唯一真源，网关记录侧调同一个函数
+	// （见 forwardQoderChatCompletions），两侧口径不可能背离。
+	// 不支持思考强度的模型（Qwen3.7 系 / MiniMax / auto）不注入，出站体与改动前
+	// 逐字节一致。
+	if forwarded := qoderForwardedEffort(modelKey, ccBody); forwarded != "" {
+		withEffort, effErr := applyQoderReasoningEffortToJSON(prepared, forwarded)
+		if effErr != nil {
+			return nil, fmt.Errorf("qoder payload: inject reasoning effort: %w", effErr)
+		}
+		prepared = withEffort
+	}
 	// 出站体 COSY 编码（Encode=1）：签名与签名体均为编码后形态。
 	encodedBody := QoderCosyEncode(prepared)
 

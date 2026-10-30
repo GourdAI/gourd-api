@@ -252,6 +252,16 @@ func (a *Account) GetTraeCredentials() TraeCredentials {
 			creds.ExpiresAt = ts
 		}
 	}
+	// 【JWT 兜底（仅在缺失/非法时）】存量凭据可能压根没写 expires_at：
+	//   - 早期前端 buildTraeCredentials 只在「换票响应回填」或用户手填时才写该键；
+	//   - 从 traework2api auth 文件导入、或手工只粘 access_token 的账号也常缺它。
+	// 而 traeTokenNeedsRefresh 对 ExpiresAt<=0 直接 return false（不主动刷新），
+	// 于是这些 token 到期后只能等请求撞 401 —— 对 apikey 类型的 Trae 就是永久下线。
+	// Trae 的 access_token 是标准 JWT，exp 就是权威到期时刻，读它不引入任何猜测。
+	// 只在缺失/解析失败时兜底，不覆盖凭据里的显式值（它与上游 TokenExpireAt 同源）。
+	if creds.ExpiresAt <= 0 {
+		creds.ExpiresAt = traeJWTExpiry(creds.AccessToken)
+	}
 	if raw := read("refresh_expires_at", "refreshExpiresAt", "refreshExpiredAt"); raw != "" {
 		if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
 			creds.RefreshExpireAt = traeNormalizeEpochSeconds(v)

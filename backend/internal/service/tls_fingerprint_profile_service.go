@@ -262,15 +262,22 @@ func (s *TLSFingerprintProfileService) ResolvePlatformProfile(account *Account) 
 //
 // 未列出的平台一律沿用 Node.js 默认值，保持改动前的行为不变。
 //
-// WorkBuddy/Trae/Qoder 三平台拿的是 NodeOpenSSLH2Profile（Node/OpenSSL 形状 + ALPN h2），
-// 不是 Claude 用的 NodeDefaultProfile。原因：这三家的指纹是「平台默认开启」，而
-// 带指纹的出站只能跑 HTTP/1.1（http.Transport 在自定义 DialTLSContext 下拿不到
+// WorkBuddy/Qoder 拿的是 NodeOpenSSLH2Profile（Node/OpenSSL 形状 + ALPN h2），
+// 不是 Claude 用的 NodeDefaultProfile。原因：这两家的指纹是「平台默认开启」，而
+// 带指纹的出站默认只能跑 HTTP/1.1（http.Transport 在自定义 DialTLSContext 下拿不到
 // crypto/tls 连接状态，永不升 h2），叠加账号隔离下 maxConnsPerHost 被夹成
 // account.Concurrency（线上常见 1），同账号并发请求会**串行排队** —— 实测
 // 12 并发从 105ms（改造前 h2）劣化到 779ms。声明 h2 后传输层会改用 http2.Transport
 // （见 repository/http_upstream.go 的 buildFingerprintHTTP2Transport），实测回到 104ms。
-// ALPN 含 h2 也与这三家官方客户端（Electron/Chromium，真实 ALPN 就是 h2）一致；
-// Claude/Anthropic 保持 h1 形状不变，避免改动既有账号的 JA4。
+// ALPN 含 h2 也与这两家官方客户端（Electron/Chromium，真实 ALPN 就是 h2）一致。
+//
+// 【Trae 例外：只能是 h1，不得跟随上面的 h2 改造】
+// 2026-10-27 实测（本包真实指纹拨号器，非推断）：Trae CN 聊天域
+// trae-api-cn.mchost.guru 只协商 HTTP/1.1，而 http2.Transport **不会**按 ALPN 回落 h1。
+// 把它归到三平台 h2 分支会造成「所有 Trae CN 账号全量请求失败」，上游报错逐字为
+// `http2: frame too large, note that the frame header looked like an HTTP/1.1 header`。
+// 其余 Trae 域（国际聊天域 / UG 域 / OAuth 域）虽然都支持 h2，但它们与聊天域共用
+// 同一个平台默认 Profile，因此只能整体取 h1。
 //
 // 已知局限（诚实口径，不要当成 bug 修）：WorkBuddy 桌面端是 Electron/Chromium
 // （BoringSSL），而本包目前只有 Node/OpenSSL 与 rustls 两套内置形状，没有
@@ -282,8 +289,11 @@ func defaultTLSProfileForPlatform(platform string) *tlsfingerprint.Profile {
 	switch platform {
 	case PlatformOpenAI:
 		return tlsfingerprint.CodexRustlsProfile()
-	case PlatformWorkbuddy, PlatformTrae, PlatformQoder:
+	case PlatformWorkbuddy, PlatformQoder:
 		return tlsfingerprint.NodeOpenSSLH2Profile()
+	case PlatformTrae:
+		// 不得并入上一分支，原因见本函数注释「Trae 例外」。
+		return tlsfingerprint.NodeOpenSSLH1Profile()
 	default:
 		return tlsfingerprint.NodeDefaultProfile()
 	}

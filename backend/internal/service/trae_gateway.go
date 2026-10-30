@@ -188,7 +188,24 @@ func (s *AccountTestService) testTraeAccountConnection(c *gin.Context, account *
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, traeUpstreamErrorBodyLimit))
 		bodyText := traeTruncateForError(string(body))
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			_ = s.accountRepo.SetError(ctx, account.ID, fmt.Sprintf("Trae authentication failed (401): %s", bodyText))
+			// 【不得永久 SetError（与主请求路径同口径）】测试连接要走与聊天完全相同的
+			// 账号状态处置：Trae 持有 refresh_token 时 401 是「 token 过期」而非「不可恢复」，
+			// 永久下线会让账号退出后台刷新候选集（status 变 error），从此再也不会被续命。
+			// 这里之前单独写了一份 SetError，与主路径的修复分叉——测试一次就把号打死，
+			// 而管理员点测试的动机往往正是「想看看是不是 token 过期」。
+			// 【判据与两条主路径同源（2026-10-30 自查修复）】原来只认
+			// isRefreshableAPIKeyCredential（排 OAuth 类型），已改为 canSelfHealSessionFailure。
+			// 反向护栏：把本行改回 isRefreshableAPIKeyCredential(account)，
+			// TestTraeConnectionTestOAuthType401CoolsDown 必须 FAIL。
+			if canSelfHealSessionFailure(account) {
+				until := time.Now().Add(traeSessionRecoveryCooldown)
+				_ = s.accountRepo.SetTempUnschedulable(ctx, account.ID, until,
+					fmt.Sprintf("Trae 401 on connection test: access token rejected; refresh_token present, "+
+						"cooling down for automatic recovery: %s", bodyText))
+			} else {
+				_ = s.accountRepo.SetError(ctx, account.ID,
+					fmt.Sprintf("Trae authentication failed (401, no refresh_token): %s", bodyText))
+			}
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Trae API (%s) returned %d: %s", attempts[0].path, resp.StatusCode, bodyText))
 	}

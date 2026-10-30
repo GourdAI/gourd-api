@@ -66,6 +66,19 @@ func TestFingerprintHTTP2Dispatch(t *testing.T) {
 		require.True(t, isH1, "未声明 h2 的 Profile 必须保持 *http.Transport，实得 %T", tr)
 	})
 
+	t.Run("Trae 的 h1 形状必须拿 http.Transport（不得进 http2.Transport）", func(t *testing.T) {
+		// 【为何单独一句（2026-10-27 线上全量报错）】Trae CN 聊天域
+		// trae-api-cn.mchost.guru 实测只协商 HTTP/1.1，而 http2.Transport 不会按
+		// ALPN 回落 h1 ⇒ 一旦被分派到 h2 就是全量硬失败（报错形如
+		// "frame too large, note that the frame header looked like an HTTP/1.1 header"）。
+		// 这条断言把“形状”与“传输层选型”钉在一起，防止将来有人把 Trae 改回 h2 形状
+		// 而只跑 service 层用例没发现。
+		tr, err := buildUpstreamRoundTripperWithTLSFingerprint(settings, nil, tlsfingerprint.NodeOpenSSLH1Profile(), chat)
+		require.NoError(t, err)
+		_, isH1 := tr.(*http.Transport)
+		require.True(t, isH1, "Trae 的 h1 形状必须走 http.Transport，实得 %T（http2 不会回落 h1）", tr)
+	})
+
 	t.Run("OpenAI rustls 形状未被误升 h2", func(t *testing.T) {
 		// CodexRustlsProfile 的 ALPN 是 ["http/1.1"]（有意偏离，见 profiles.go 说明）
 		tr, err := buildUpstreamRoundTripperWithTLSFingerprint(settings, nil, tlsfingerprint.CodexRustlsProfile(), chat)

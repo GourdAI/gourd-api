@@ -114,17 +114,44 @@ func TestMarkTraeAccountQuotaSetsTempUnschedulable(t *testing.T) {
 		until.Format(time.RFC3339), "额度类恢复到次日 0 点")
 }
 
-// 会话失效（1001）→ 置错误态（必须人工重新登录，不能靠自动恢复继续调度）。
-func TestMarkTraeAccountSessionSetsError(t *testing.T) {
+// 会话失效（1001）：**持 refresh_token 时不得永久下线**。
+//
+// 【本用例已被改写（2026-10-27）】旧版本名 TestMarkTraeAccountSessionSetsError，
+// 断言“1001 → SetError 且 tempCalls=0”，把“一次会话失效就永久下线账号”固化成契约。
+// 那个形状对 Trae 是错的：Trae 是 apikey 但持有可轮换的 refresh_token，1001 通常只是
+// access_token 过期；而 SetError 会写 status=error，后台刷新候选查询带 status='active'
+// ⇒ 账号永久退出刷新集，与 Qoder 签到 TOKEN_EXPIRE、WorkBuddy 全量 401 完全同形。
+// 现改为：有 refresh_token → 临时冷却（可自愈）；无 refresh_token → 仍永久 SetError
+// （它确实不可自愈，那一支由 TestMarkTraeAccountSessionWithoutRefreshTokenSetsError 盯住）。
+func TestMarkTraeAccountSessionCoolsDownWithRefreshToken(t *testing.T) {
 	t.Parallel()
 	repo := &traeErrRecordingRepo{}
 	svc := newWorkbuddyTestService(&workbuddyTestUpstream{}, repo)
-	account := &Account{ID: 902, Platform: PlatformTrae}
+	account := &Account{ID: 902, Platform: PlatformTrae, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"refresh_token": "rt-902"}}
+
+	svc.markTraeAccountFromBusinessError(context.Background(), newTraeErrTestGinContext(), account, "1001", "token expired")
+
+	tempCalls, until, tempReason, errorCalls, _ := repo.snapshot()
+	require.Equal(t, 1, tempCalls, "有 refresh_token 时必须走临时冷却")
+	require.Zero(t, errorCalls, "绝不能永久下线：SetError 会把账号踢出后台刷新候选集")
+	require.Contains(t, tempReason, "cooling down for automatic recovery")
+	require.Contains(t, tempReason, "token expired")
+	require.False(t, until.IsZero())
+}
+
+// 无 refresh_token 时，1001 仍应永久 SetError（确实不可自愈）。
+func TestMarkTraeAccountSessionWithoutRefreshTokenSetsError(t *testing.T) {
+	t.Parallel()
+	repo := &traeErrRecordingRepo{}
+	svc := newWorkbuddyTestService(&workbuddyTestUpstream{}, repo)
+	account := &Account{ID: 903, Platform: PlatformTrae, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"access_token": "at-903"}}
 
 	svc.markTraeAccountFromBusinessError(context.Background(), newTraeErrTestGinContext(), account, "1001", "token expired")
 
 	tempCalls, _, _, errorCalls, msg := repo.snapshot()
-	require.Equal(t, 0, tempCalls)
+	require.Zero(t, tempCalls)
 	require.Equal(t, 1, errorCalls)
 	require.Contains(t, msg, "rejected the session")
 	require.Contains(t, msg, "token expired")
@@ -191,6 +218,9 @@ func TestMarkTraeAccountDedupsRepeatedFrames(t *testing.T) {
 	t.Parallel()
 	repo := &traeErrRecordingRepo{}
 	svc := newWorkbuddyTestService(&workbuddyTestUpstream{}, repo)
+	// 刻意不持 refresh_token：本用例验的是「去重闸门」本身，需要一个确定会走
+	// SetError 的错误形状作为观测点。若用持 refresh_token 的账号，1001 改走临时冷却
+	// （另一个计数器），本用例就会变成“什么也没验”的假通过。
 	account := &Account{ID: 906, Platform: PlatformTrae}
 	c := newTraeErrTestGinContext()
 

@@ -42,6 +42,14 @@ const (
 	traeErrorClassRestrict traeUpstreamErrorClass = "account_restricted" // 风控限制：需人工处理
 )
 
+// traeSessionRecoveryCooldown 会话类错误（1001/401）叠加 refresh_token 时的冷却时长。
+//
+// 为何是 10 分钟而不是更长：Trae 后台刷新周期的间隔远大于它，而请求路径的预刷新
+// 会在下一次请求时自行换票成功。冷却这么久只是为了避开「同一批并发请求连环撞 401」
+// 和「刷新刚成功但缓存未失效」两个窗口；与 rate_limit.oauth_401_cooldown_minutes
+// 的默认值（10）保持一致，避免同一平台的两条恢复路径给出不同冷却时长。
+const traeSessionRecoveryCooldown = 10 * time.Minute
+
 // traeQuotaErrorCodes 额度/积分类错误码（可自动恢复）。
 var traeQuotaErrorCodes = map[string]struct{}{
 	"1005": {}, // 套餐/积分额度耗尽（plan or credits limit）
@@ -150,9 +158,35 @@ func applyTraeBusinessErrorClass(ctx context.Context, repo AccountRepository, ac
 				zap.Int64("account_id", account.ID), zap.String("code", code), zap.Error(err))
 		}
 	case traeErrorClassSession:
-		msg := fmt.Sprintf("Trae upstream rejected the session: %s", detail)
-		if err := repo.SetError(stateCtx, account.ID, msg); err != nil {
-			logger.L().Warn("trae session error mark failed",
+		// 【不得永久 SetError（2026-10-27 续期排查）】1001/401 在本平台是「access token
+		// 过期或会话失活」，而 Trae 持有可轮换的 refresh_token（apikey 类型但凭据语义与
+		// OAuth 同构）。永久 SetError 会写 status=error + schedulable=false，后台刷新器
+		// 的候选查询带 `status = 'active'` 条件（account_repo.ListOAuthRefreshCandidatePage）
+		// ⇒ 账号再也不会被刷新，只能管理员手工重登 —— 与 Qoder 签到 TOKEN_EXPIRE、
+		// WorkBuddy 全量 401 完全同形的坑。
+		//
+		// 改为临时不可调度：冷却期内不被选中，到期后由后台刷新器或请求路径预刷新自愈。
+		// 无 refresh_token 的号确实不可自愈，仍走永久 SetError（否则冷却结束后只是再撞一次）。
+		//
+		// 【判据必须与 HTTP 401 路径同源（2026-10-30 自查修复）】这里原来只调
+		// isRefreshableAPIKeyCredential（内含 Type==APIKey 门），而 401 分支用的是泛化判据。
+		// 同一个 Trae 账号、同样撞令牌过期，只因 Type 不同就一个冷却、一个永久下线：
+		// 临时探针实测 Type=oauth 在此分支落到 setError=1 / tempUnsched=0。
+		// 现在统一走 canSelfHealSessionFailure（= 可自愈类型族 ∧ 真的拿得到票）。
+		// 反向护栏：把本行改回 !isRefreshableAPIKeyCredential(account)，
+		// TestApplyTraeBusinessErrorClass_SessionOAuthTypeCoolsDown 必须 FAIL。
+		if !canSelfHealSessionFailure(account) {
+			msg := fmt.Sprintf("Trae upstream rejected the session (code %s, no refresh_token): %s", code, detail)
+			if err := repo.SetError(stateCtx, account.ID, msg); err != nil {
+				logger.L().Warn("trae session error mark failed",
+					zap.Int64("account_id", account.ID), zap.String("code", code), zap.Error(err))
+			}
+			break
+		}
+		msg := fmt.Sprintf("Trae session expired (code %s): refresh_token present, cooling down for automatic recovery: %s", code, detail)
+		until := time.Now().Add(traeSessionRecoveryCooldown)
+		if err := repo.SetTempUnschedulable(stateCtx, account.ID, until, msg); err != nil {
+			logger.L().Warn("trae session error set temp unschedulable failed",
 				zap.Int64("account_id", account.ID), zap.String("code", code), zap.Error(err))
 		}
 	case traeErrorClassRestrict:

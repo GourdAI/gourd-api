@@ -105,16 +105,20 @@ func TestResolveTLSProfile_OtherPlatformsKeepNodeDefault(t *testing.T) {
 	}
 }
 
-// TestResolveTLSProfile_ThreePlatformsUseHTTP2CapableDefault 钉住三平台拿「带 h2 的 Node 形状」。
+// TestResolveTLSProfile_ThreePlatformsUseHTTP2CapableDefault 钉住 WorkBuddy/Qoder 拿「带 h2 的 Node 形状」。
 //
 // 必须同时断言两件事：形状仍是 Node/OpenSSL（CipherSuites 为空 ⇒ JA3 不变），
 // 且 ALPN 声明 h2（⇒ 传输层走 http2.Transport，恢复多路复用）。
-// 反向护栏：把 defaultTLSProfileForPlatform 里三平台分支改回 NodeDefaultProfile，
+// 反向护栏：把 defaultTLSProfileForPlatform 里该分支改回 NodeDefaultProfile，
 // 本用例必须 FAIL。
+//
+// 【Trae 已从本用例移出（2026-10-27）】它不再拿 h2 形状：Trae CN 聊天域
+// trae-api-cn.mchost.guru 实测只协商 HTTP/1.1，而 http2.Transport 不会回落 ⇒ 全部请求
+// 硬失败。Trae 的新契约由 TestResolveTLSProfile_TraeUsesHTTP1Default 钉住。
 func TestResolveTLSProfile_ThreePlatformsUseHTTP2CapableDefault(t *testing.T) {
 	svc := NewTLSFingerprintProfileService(&tlsFPStubRepo{}, nil)
 
-	for _, platform := range []string{PlatformWorkbuddy, PlatformTrae, PlatformQoder} {
+	for _, platform := range []string{PlatformWorkbuddy, PlatformQoder} {
 		for _, resolve := range []struct {
 			name string
 			fn   func(*Account) *tlsfingerprint.Profile

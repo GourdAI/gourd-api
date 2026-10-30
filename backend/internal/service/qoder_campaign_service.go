@@ -13,8 +13,13 @@ package service
 //        claimStatus, startAt, endAt, benefit:{kind,amount,validity}, placements}]}。
 //   - 领取活动权益：POST {openapi}/sash/api/v1/me/campaigns/{campaignId}/claim
 //     → {grantId, status:"CLAIMED", replayed, benefit, claimedAt, expiresAt}。
-//     上游对同一轮重复领取天然幂等（replayed=true 且 claimedAt 不变，不再发钱），
-//     因此本模块不需要分布式锁即可安全多实例部署。
+//     上游对同一轮重复领取幂等（replayed=true 且 claimedAt 不变，不再发钱），
+//     因此本模块不需要**独立**的分布式锁即可安全多实例部署。
+//     边界（2026-10-30 补充，勿当成无条件保证）：该幂等只对「同一轮内重复领取」有
+//     一手依据；若两实例各自交换出了不同的 jobToken 再各自 claim，则属跨令牌重试，
+//     上游是否仍按同一幂等键去重**未取证**。实际风险极低（两者携带的是同一个
+//     campaignId 且 claim 不幂等的唯一后果是拿到 already/replayed 类回包），
+//     但不要据此推导出「POST /claim 可以任意重试」。
 //
 // ⚠ 客户端类型定向（实测差分矩阵，2026-09-24）：服务端按 cosy-clienttype 决定是否
 // 下发活动——5（IDE，即 chat 签名链路使用的值）与 6 一律返回空 campaigns，只有 10
@@ -31,6 +36,17 @@ package service
 //
 // 并发：同一账号的查询/领取分别由 singleflight 合并（列表页自动探测、手动连点、
 // 定时任务三方并发时只打一次上游）。
+//
+// 令牌自愈（2026-10-27）：上游对过期凭据回 HTTP 401 {"code":"TOKEN_EXPIRE"}。
+// 本域原只有「access_token 为空才做 jobToken 交换」一条路——token 过期（非空但
+// 失效）后签到/领取/余额永久报 TOKEN_EXPIRE，21 点兜底窗口同样救不回（实测线上
+// 报障）。现补齐 WorkBuddy 同构三件套中的两件（见 qoderOpenAPIRequestWithAuthRetry）：
+//   - openapi 调用撞 401 → 强制重交换 jobToken → 重试一次；claim 的幂等性只对
+//     「同一轮重复领取」有一手依据（replayed=true），**跨令牌重试未取证**，
+//     接受重试的理由与边界见 qoderClaimCampaignWithAuthRetry 的注释；403 是资格
+//     问题（PAT 交换本身被拒），不重试；
+//   - 仅持 dt-（无 pt-/drt-）的账号确实不可自愈：Detail 给出「需重新登录」明确
+//     提示，而不是裸上游报文。
 
 import (
 	"bytes"
@@ -469,14 +485,20 @@ func (s *QoderCreditsService) queryCreditsForAccount(ctx context.Context, accoun
 		result.Error = err.Error()
 		return result
 	}
-	quota, err := s.qoderFetchQuota(ctx, account, endpoints, token)
+	quota, err := s.qoderFetchQuotaWithAuthRetry(ctx, account, endpoints, token)
 	if err != nil {
 		result.Error = err.Error()
 		return result
 	}
 	s.applyQoderQuota(result, quota)
+	// 401 自愈可能已改写账号令牌：采纳新值，避免后续调用再撞一次 401 白打上游。
+	if latest := strings.TrimSpace(account.GetQoderCredentials().AccessToken); latest != "" {
+		token = latest
+	}
 	// 活动列表是增强信息：拉取失败不得把已拿到的余额判定为失败。
-	campaigns, campErr := s.qoderFetchCampaigns(ctx, account, endpoints, token)
+	// 复用同一次重交换的成果：若 quota 已把令牌换过，campaigns 直接拿新令牌；
+	// 若 quota 没撞 401 而 campaigns 撞了，重试内部会再查（快照双检不会重复换票）。
+	campaigns, campErr := s.qoderFetchCampaignsWithAuthRetry(ctx, account, endpoints, token)
 	if campErr != nil {
 		slog.Debug("qoder campaigns probe failed", "account_id", account.ID, "error", campErr)
 		// 上游抖动时回退本地快照，避免把「本轮已领」显示成「未领」。
@@ -639,12 +661,16 @@ func (s *QoderCreditsService) checkinForAccount(ctx context.Context, account *Ac
 		result.Detail = err.Error()
 		return result
 	}
-	campaigns, err := s.qoderFetchCampaigns(ctx, account, endpoints, token)
+	campaigns, err := s.qoderFetchCampaignsWithAuthRetry(ctx, account, endpoints, token)
 	if err != nil {
 		result.Status = QoderCheckinStatusFail
 		result.Detail = err.Error()
 		s.persistQoderCheckinSnapshot(ctx, account, result)
 		return result
+	}
+	// campaigns 路径的 401 自愈可能已重换令牌：claim 直接采纳新值，不再白撞一次 401。
+	if latest := strings.TrimSpace(account.GetQoderCredentials().AccessToken); latest != "" {
+		token = latest
 	}
 	now := time.Now().Unix()
 	var target *qoderCampaignDTO
@@ -688,7 +714,7 @@ func (s *QoderCreditsService) checkinForAccount(ctx context.Context, account *Ac
 	}
 	result.Amount = benefitAmount(target)
 
-	claim, err := s.qoderClaimCampaign(ctx, account, endpoints, token, target.CampaignID)
+	claim, err := s.qoderClaimCampaignWithAuthRetry(ctx, account, endpoints, token, target.CampaignID)
 	if err != nil {
 		result.Status = QoderCheckinStatusFail
 		result.Detail = err.Error()
@@ -725,7 +751,7 @@ func (s *QoderCreditsService) refreshQoderCreditsAfterCheckin(ctx context.Contex
 	if err != nil {
 		return
 	}
-	quota, err := s.qoderFetchQuota(ctx, account, endpoints, token)
+	quota, err := s.qoderFetchQuotaWithAuthRetry(ctx, account, endpoints, token)
 	if err != nil {
 		slog.Debug("qoder credits refresh after claim failed", "account_id", account.ID, "error", err)
 		return
@@ -743,13 +769,15 @@ func (s *QoderCreditsService) refreshQoderCreditsAfterCheckin(ctx context.Contex
 // ---------------------------------------------------------------------------
 
 // qoderCampaignToken 解析可直接用于 openapi 业务接口的 Bearer 令牌与端点集合。
-// dt- 设备令牌直用；仅有 PAT(pt-) 的账号先做一次 jobToken 交换（与 chat 链路同一实现）。
+// dt- 设备令牌直用；access_token 为空且持 pt-/drt- 时先做一次 jobToken 交换。
+// 令牌过期（非空但 401）不在这里处理——由 qoderOpenAPIRequestWithAuthRetry 撞 401
+// 后强制重交换兜底（dt- 失效没有刷新端点，只能重新 OAuth 登录）。
 func (s *QoderCreditsService) qoderCampaignToken(ctx context.Context, account *Account) (string, qoderEndpoints, error) {
 	endpoints := s.campaignEndpoints(account)
 	creds := account.GetQoderCredentials()
 	token := strings.TrimSpace(creds.AccessToken)
 	if token == "" && (strings.TrimSpace(creds.PersonalToken) != "" || strings.TrimSpace(creds.RefreshToken) != "") {
-		if err := s.ensureQoderJobToken(ctx, account); err != nil {
+		if err := s.ensureQoderJobToken(ctx, account, ""); err != nil {
 			return "", endpoints, fmt.Errorf("qoder jobToken exchange failed: %w", err)
 		}
 		token = strings.TrimSpace(account.GetQoderCredentials().AccessToken)
@@ -768,10 +796,50 @@ func (s *QoderCreditsService) campaignEndpoints(account *Account) qoderEndpoints
 	return resolveQoderEndpoints(account.GetQoderRealm(), account.GetQoderBaseURL())
 }
 
+// qoderRenewCampaignTokenAfter401 openapi 调用撞 401 TOKEN_EXPIRE 后的令牌重交换：
+// 以刚失效的 expiredToken 为双检基准调 ensureQoderJobToken——锁内若 AccessToken 已被
+// 他人改写则直接采纳新值（不重复换票），仍等于 expiredToken 则真正重换一次。
+// 返回值 ok=false 表示不可自愈：账号只持 dt-（无 pt-/drt- 可换）、交换失败，或换回
+// 的仍是同一个失效 token。调用方此时应保留原始 401 错误并附 reloginHint，不得用
+// 交换错误顶掉真实上游报文。
+func (s *QoderCreditsService) qoderRenewCampaignTokenAfter401(ctx context.Context, account *Account, expiredToken string) (string, bool) {
+	creds := account.GetQoderCredentials()
+	if strings.TrimSpace(creds.PersonalToken) == "" && strings.TrimSpace(creds.RefreshToken) == "" {
+		return "", false
+	}
+	if err := s.ensureQoderJobToken(ctx, account, expiredToken); err != nil {
+		slog.Warn("qoder openapi 401: jobToken re-exchange failed",
+			"account_id", account.ID, "error", err)
+		return "", false
+	}
+	token := strings.TrimSpace(account.GetQoderCredentials().AccessToken)
+	if token == "" || token == expiredToken {
+		return "", false
+	}
+	return token, true
+}
+
+// qoderCampaignReloginHint 仅持 dt-（或交换救不回）时的处置口径：Qoder 没有设备
+// 令牌刷新端点，只能重新 OAuth 登录（与 qoder_client.go 文件头口径一致）。
+const qoderCampaignReloginHint = "qoder token expired and not self-healable (no pt-/drt- credential to exchange a new jobToken; re-login required)"
+
+// qoderIsTokenExpiredError 报告 err 是否为 HTTP 401（上游 {"code":"TOKEN_EXPIRE"}
+// 令牌过期的实测形态）。不复用 qoderIsUnauthorizedError（其含 403）：403 在活动域
+// 是资格/权限问题（PAT 交换被拒也回 403），重换令牌后重试只会白打上游；实测样本见
+// qoder_campaign_service_test.go 与 TestQoderCheckinClaimHTTPErrorIsFail（403 不重试）。
+func qoderIsTokenExpiredError(err error) bool {
+	var ce *qoderCampaignError
+	return errors.As(err, &ce) && ce.Status == http.StatusUnauthorized
+}
+
 // ensureQoderJobToken 账号级锁 + 锁内双检的 PAT 交换（独立于网关那份实现，
 // 语义一致：并发只换一次，成功后经 persistAccountCredentials 持久化）。
-func (s *QoderCreditsService) ensureQoderJobToken(ctx context.Context, account *Account) error {
-	snapshot := strings.TrimSpace(account.GetQoderCredentials().AccessToken)
+// snapshot 是「他人应已改写」的比对基准：预交换路径传当前 AccessToken（入口时
+// 恒为空串）；401 自愈路径传刚撞 401 的失效 token，据此区分「已被他人换新」与
+// 「仍需自己换」。端点走 s.campaignEndpoints：生产与网关 resolveQoderEndpoints
+// 同口径（jobToken 域受 credentials.base_url 中转覆盖的规则一致），测试可经
+// endpointsOverride 注入。
+func (s *QoderCreditsService) ensureQoderJobToken(ctx context.Context, account *Account, snapshot string) error {
 	lock := qoderJobTokenLock(account.ID)
 	if err := lock.Lock(ctx); err != nil {
 		return err
@@ -788,7 +856,7 @@ func (s *QoderCreditsService) ensureQoderJobToken(ctx context.Context, account *
 	if token == "" {
 		return fmt.Errorf("qoder account %d has no personal token or refresh token", account.ID)
 	}
-	endpoints := resolveQoderEndpoints(account.GetQoderRealm(), account.GetQoderBaseURL())
+	endpoints := s.campaignEndpoints(account)
 	resp, err := QoderExchangeJobToken(qoderGatewayTransport(s.httpUpstream), endpoints, qoderFingerprintSeed(creds.UID, token), token)
 	if err != nil {
 		return err
@@ -807,8 +875,11 @@ func (s *QoderCreditsService) ensureQoderJobToken(ctx context.Context, account *
 	return persistAccountCredentials(ctx, s.accountRepo, account, next)
 }
 
-func (s *QoderCreditsService) qoderFetchQuota(ctx context.Context, account *Account, endpoints qoderEndpoints, token string) (*qoderQuotaUsageResp, error) {
-	raw, err := s.qoderOpenAPIRequest(ctx, account, endpoints.QuotaURL, http.MethodGet, token, nil)
+// qoderFetchQuotaWithAuthRetry 401 TOKEN_EXPIRE → 重交换 jobToken → 重试一次
+// （与 WorkBuddy billing 的 workbuddyBillingRequestWithAuthRetry 同构，见其注释）。
+// 不可自愈时返回「原始 401 + reloginHint」合并错误，保留上游报文供排障。
+func (s *QoderCreditsService) qoderFetchQuotaWithAuthRetry(ctx context.Context, account *Account, endpoints qoderEndpoints, token string) (*qoderQuotaUsageResp, error) {
+	raw, err := s.qoderOpenAPIRequestWithAuthRetry(ctx, account, http.MethodGet, endpoints.QuotaURL, token, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -819,8 +890,9 @@ func (s *QoderCreditsService) qoderFetchQuota(ctx context.Context, account *Acco
 	return &resp, nil
 }
 
-func (s *QoderCreditsService) qoderFetchCampaigns(ctx context.Context, account *Account, endpoints qoderEndpoints, token string) (*qoderCampaignsResp, error) {
-	raw, err := s.qoderOpenAPIRequest(ctx, account, endpoints.CampaignsURL, http.MethodGet, token, nil)
+// qoderFetchCampaignsWithAuthRetry 活动列表：401 重换令牌后重试一次（判据见 qoderFetchQuotaWithAuthRetry）。
+func (s *QoderCreditsService) qoderFetchCampaignsWithAuthRetry(ctx context.Context, account *Account, endpoints qoderEndpoints, token string) (*qoderCampaignsResp, error) {
+	raw, err := s.qoderOpenAPIRequestWithAuthRetry(ctx, account, http.MethodGet, endpoints.CampaignsURL, token, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -831,12 +903,26 @@ func (s *QoderCreditsService) qoderFetchCampaigns(ctx context.Context, account *
 	return &resp, nil
 }
 
-func (s *QoderCreditsService) qoderClaimCampaign(ctx context.Context, account *Account, endpoints qoderEndpoints, token, campaignID string) (*qoderClaimResp, error) {
+// qoderClaimCampaignWithAuthRetry 领取：401 重换令牌后重试一次。
+//
+// 【幂等边界（诚实话径，不得当成无条件保证）】已知且有一手依据的只有一条：
+// **同一轮内重复领取**由上游幂等处理（replayed=true 且不再发钱，见文件头与 config 同名注释，
+// 已有用例 qoderClaimReplayedBody 覆盖）。
+//
+// 而本函数重试时携带的是**重新交换后的新 jobToken**（身份令牌已变），上游是否仍按
+// 同一幂等键去重，本仓库**没有一手取证**。因此不能写成“POST 重试天然安全”。
+//
+// 为何仍然接受这个重试：
+//   - 触发条件是 HTTP 401 TOKEN_EXPIRE，即第一次请求根本没通过鉴权，几乎不可能已发放；
+//   - 不重试的代价是确定的：token 过期后的签到/领取永久失败（本函数就是为此而存在）。
+//
+// 若将来取得“跨令牌重试也幂等”的一手证据，再把本注释改成无条件结论。
+func (s *QoderCreditsService) qoderClaimCampaignWithAuthRetry(ctx context.Context, account *Account, endpoints qoderEndpoints, token, campaignID string) (*qoderClaimResp, error) {
 	if strings.TrimSpace(campaignID) == "" {
 		return nil, fmt.Errorf("qoder campaign id is empty")
 	}
 	target := endpoints.CampaignClaimBase + "/" + strings.Trim(campaignID, "/") + "/claim"
-	raw, err := s.qoderOpenAPIRequest(ctx, account, target, http.MethodPost, token, strings.NewReader("{}"))
+	raw, err := s.qoderOpenAPIRequestWithAuthRetry(ctx, account, http.MethodPost, target, token, []byte("{}"))
 	if err != nil {
 		return nil, err
 	}
@@ -845,6 +931,42 @@ func (s *QoderCreditsService) qoderClaimCampaign(ctx context.Context, account *A
 		return nil, fmt.Errorf("parse qoder claim response: %w", err)
 	}
 	return &resp, nil
+}
+
+// qoderOpenAPIRequestWithAuthRetry 发送一次 openapi 请求；撞 401 时强制重交换
+// jobToken 后重试一次。
+//
+// 判据只认 401（qoderIsTokenExpiredError）：上游对过期凭据回
+// HTTP 401 {"code":"TOKEN_EXPIRE"}，这正是线上签到报障的形态；403 是资格问题，
+// 重换令牌救不了。
+//
+// body 传 []byte（nil 表示无请求体）而**不是** io.Reader：io.Reader 不可重放，
+// 重试时只能靠调用方打补丁重新构造，这里直接用字节体每次新建 reader——新增 POST
+// 端点忘改重试分支也不会发出空体请求。
+// 不可自愈（仅持 dt- 或交换失败）时返回「原始 401 + 处置提示」的合并错误。
+func (s *QoderCreditsService) qoderOpenAPIRequestWithAuthRetry(
+	ctx context.Context,
+	account *Account,
+	method, targetURL, token string,
+	body []byte,
+) (json.RawMessage, error) {
+	newReader := func() io.Reader {
+		if body == nil {
+			return nil
+		}
+		return bytes.NewReader(body)
+	}
+	data, err := s.qoderOpenAPIRequest(ctx, account, targetURL, method, token, newReader())
+	if err == nil || !qoderIsTokenExpiredError(err) {
+		return data, err
+	}
+	newToken, ok := s.qoderRenewCampaignTokenAfter401(ctx, account, token)
+	if !ok {
+		return nil, fmt.Errorf("%w; %s", err, qoderCampaignReloginHint)
+	}
+	slog.Info("qoder openapi 401: token re-exchanged, retrying once",
+		"account_id", account.ID, "url", targetURL)
+	return s.qoderOpenAPIRequest(ctx, account, targetURL, method, newToken, newReader())
 }
 
 // qoderOpenAPIRequest 发送一次 openapi 域请求：纯 Bearer + 桌面端身份头，无 COSY 签名。

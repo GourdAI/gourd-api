@@ -477,31 +477,30 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		// 一次 401 就把账号 SetError（status=error + schedulable=false）**永久下线**，
 		// 且刷新链里没有任何恢复路径，只能管理员手工重登。
 		//
+		// 【Trae 同理（2026-10-27 续期排查）】Trae 也是 apikey + 可轮换 refresh_token，
+		// access_token 寿命 3~14 天。与 WorkBuddy 的唯一差别是它的凭据键同义（没有 camelCase 别名），
+		// 但判据走同一个函数，避免第四个平台再踩一遍。
+		//
 		// 实测（本机）：shouldDisable=true setError=1 setTempUnsched=0
 		//
 		// 改为与 OAuth 同一套「临时不可调度」语义：冷却期内不被选中，到期后由请求路径的
 		// 401 重试/预刷新自行恢复。判据收窄到「持有 refresh_token」，无 refresh_token 的号
 		// 确实不可自愈，仍走下方的永久禁用（那一支是正确的，不要一并放宽）。
-		if authAccount.Type == AccountTypeOAuth || isWorkbuddyRefreshableCredential(authAccount) {
-			// 1. 失效缓存
+		// 【两层次判据】外层 isSessionSelfHealFamily 只分流错误文案（族外 = 需重新授权），
+		// 内层 canSelfHealSessionFailure 才是「临时冷却 vs 永久下线」的唯一判据。
+		// 这样保留了两种排障方向的区分度，但**不会因为两层读法不一致而静默失效**：
+		// 两个函数共用 sessionRecoveryCredential，不存在第二处硬编码键名。
+		// 反向护栏：把 canSelfHealSessionFailure 改回只看 Type==OAuth，
+		// TestHandleUpstreamError_Trae401CoolsDown 必须 FAIL。
+		if isSessionSelfHealFamily(authAccount) {
+			// 1. 失效缓存（无票也要失效：旧 access_token 已不可用，不能让缓存继续发）
 			if s.tokenCacheInvalidator != nil {
 				if err := s.tokenCacheInvalidator.InvalidateToken(ctx, authAccount); err != nil {
 					slog.Warn("oauth_401_invalidate_cache_failed", "account_id", authAccount.ID, "error", err)
 				}
 			}
-			// 缺少 refresh_token 的 OAuth 账号无法在冷却期内自愈（后台刷新服务也会跳过），
-			// 直接走 SetError 永久禁用，避免冷却结束后再被选中产生一发无意义的 502。
-			//
-			// 【口径必须与 isWorkbuddyRefreshableCredential 同源】原来这里直接读
-			// GetCredential("refresh_token")，而 WorkBuddy 合法接受 camelCase 别名
-			// refreshToken（workbuddy.go GetWorkbuddyCredentials 的 read 函数）。两处口径不一致
-			// 时，camelCase 账号会走「外层判据放行 → 内层判空命中 → 永久禁用」，修复实际失效。
-			// 所以 WorkBuddy 也统一经 GetWorkbuddyCredentials 读；其余平台仍沿用原键名，零行为变更。
-			refreshTokenForRecovery := authAccount.GetCredential("refresh_token")
-			if authAccount.IsWorkbuddy() {
-				refreshTokenForRecovery = authAccount.GetWorkbuddyCredentials().RefreshToken
-			}
-			if strings.TrimSpace(refreshTokenForRecovery) == "" {
+			if !canSelfHealSessionFailure(authAccount) {
+				// 族内但拿不到票：冷却期内无人能刷新它，结束后还会被选中再 502 一次。
 				msg := "Authentication failed (401): refresh_token missing, cannot recover"
 				if upstreamMsg != "" {
 					msg = "OAuth 401 (no refresh_token): " + upstreamMsg
@@ -527,6 +526,14 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			}
 			if authAccount.IsWorkbuddy() {
 				msg = "WorkBuddy 401: access token rejected by upstream (expired or revoked); " +
+					"refresh_token present, cooling down for automatic recovery"
+				if upstreamMsg != "" {
+					msg += ": " + upstreamMsg
+				}
+			}
+			if authAccount.IsTrae() {
+				// 同样不报「OAuth 401」：Trae 也是 apikey，报 OAuth 会把排障引向授权配置。
+				msg = "Trae 401: access token rejected by upstream (expired or revoked); " +
 					"refresh_token present, cooling down for automatic recovery"
 				if upstreamMsg != "" {
 					msg += ": " + upstreamMsg
@@ -997,17 +1004,28 @@ func (s *RateLimitService) GeminiCooldown(ctx context.Context, account *Account)
 
 // isWorkbuddyRefreshableCredential 报告该账号是否为「持有 refresh_token 的 WorkBuddy 账号」。
 //
+// 现存为兼容别名：实际判据已泛化为 isRefreshableAPIKeyCredential（覆盖 WorkBuddy 与
+// Trae 两个「apikey 但持可轮换 refresh_token」的平台）。保留本函数是因为既有测试与
+// 审计脚本按该名字引用，且它的语义（只问 WorkBuddy）的确是其子集。
+func isWorkbuddyRefreshableCredential(account *Account) bool {
+	return account != nil && account.IsWorkbuddy() && isRefreshableAPIKeyCredential(account)
+}
+
+// isRefreshableAPIKeyCredential 报告该账号是否为「apikey 类型但持有可轮换 refresh_token」
+// 的平台账号（目前是 WorkBuddy 与 Trae）。
+//
 // 存在的理由：401 分支的「临时不可调度 vs 永久禁用」原本只按 account.Type == OAuth 分流。
-// WorkBuddy 是 apikey 类型（上游是 OpenAI CC 协议网关，不是 OAuth 授权流），但它同样
-// 持有可自愈的 refresh_token，其 access_token 是会被上游轮换/过期的 JWT。按类型分流会把它
+// WorkBuddy / Trae 都是 apikey 类型（上游是固定协议网关，不是 OAuth 授权流），但它们同样
+// 持有可自愈的 refresh_token，其 access_token 是会被上游轮换/过期的 JWT。按类型分流会把它们
 // 误归到「不可恢复」一侧，一次 401 就永久下线。
 //
 // 判据刻意收窄到同时满足三个条件（任一不满足即返回 false，保持原永久禁用语义）：
-//   - 平台是 WorkBuddy；
+//   - 平台属于 refreshableAPIKeyPlatforms（WorkBuddy / Trae，且必须与
+//     TokenRefreshService 里已注册后台刷新器的平台保持一致）；
 //   - 类型是 APIKey（OAuth 分支已覆盖，不重复）；
 //   - 凭据里有非空 refresh_token（没有它就只能靠管理员重登，确实不可自愈）。
 //
-// 【凭据读取必须经 GetWorkbuddyCredentials】早先的实现直接取 GetCredential("refresh_token")，
+// 【凭据读取必须经平台自己的归一化函数】早先的实现直接取 GetCredential("refresh_token")，
 // 而 WorkBuddy 合法接受 camelCase 别名（refreshToken，用于直接粘贴 workbuddy2api 的 auth
 // 文件字段，见 workbuddy.go GetWorkbuddyCredentials 的 read 函数）。两处口径不一致的后果
 // 本机探针已实测：
@@ -1016,16 +1034,87 @@ func (s *RateLimitService) GeminiCooldown(ctx context.Context, account *Account)
 //	        → isWorkbuddyRefreshableCredential=false（错误）
 //	        → workbuddyTokenRefresher.CanRefresh=true（正确）
 //
-// 即：前端/导入的 camelCase 账号撞 401 时仍会走下方的永久 SetError 分支——正是本轮的
+// 即：前端/导入的 camelCase 账号撞 401 时仍会走下方的永久 SetError 分支——正是当时的
 // 原始故障形态。后台刷新与 401 判据必须共用同一个读取函数，不得各自硬编码键名。
-func isWorkbuddyRefreshableCredential(account *Account) bool {
-	if account == nil || !account.IsWorkbuddy() {
+func isRefreshableAPIKeyCredential(account *Account) bool {
+	if account == nil {
 		return false
 	}
 	if account.Type != AccountTypeAPIKey {
 		return false
 	}
-	return strings.TrimSpace(account.GetWorkbuddyCredentials().RefreshToken) != ""
+	switch account.Platform {
+	case PlatformWorkbuddy:
+		return strings.TrimSpace(account.GetWorkbuddyCredentials().RefreshToken) != ""
+	case PlatformTrae:
+		// Trae 的键同义（snake_case 为主，兼容 camelCase），统一经 GetTraeCredentials 读。
+		return strings.TrimSpace(account.GetTraeCredentials().RefreshToken) != ""
+	default:
+		return false
+	}
+}
+
+// sessionRecoveryCredential 返回该账号用于「自动换票」的 refresh_token，按平台自己的
+// 归一化读取函数取（空串表示确实拿不到票）。
+//
+// 【不得直接 GetCredential("refresh_token")】WorkBuddy 合法接受 camelCase 别名
+// refreshToken，Trae 也兼容 camelCase；直接读键名会让「前端/导入的别名账号」被判成
+// 无票而永久下线（isRefreshableAPIKeyCredential 的注释里记着这个实测形态）。
+func sessionRecoveryCredential(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	switch account.Platform {
+	case PlatformWorkbuddy:
+		return strings.TrimSpace(account.GetWorkbuddyCredentials().RefreshToken)
+	case PlatformTrae:
+		return strings.TrimSpace(account.GetTraeCredentials().RefreshToken)
+	default:
+		return strings.TrimSpace(account.GetCredential("refresh_token"))
+	}
+}
+
+// isSessionSelfHealFamily 报告该账号是否属于「会话类失败本可自愈」的类型族：
+// OAuth 类型，或持可轮换 refresh_token 的 apikey 型平台（WorkBuddy / Trae）。
+//
+// 它只回答「该类型有没有自愈机制」，**不回答「这次能不能自愈」**——后者是
+// canSelfHealSessionFailure（本函数 ∧ 真的拿得到 refresh_token）。
+//
+// 单独暴出本函数的唯一用途是给错误文案分流：
+//   - 族内但没票 → 「refresh_token missing, cannot recover」（运维补票即可）
+//   - 族外       → 「invalid or expired credentials」（要重新授权）
+//
+// 两种情况的排障方向完全不同，文案不得合并（既有测试守着这条）。
+func isSessionSelfHealFamily(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	return account.Type == AccountTypeOAuth || isRefreshableAPIKeyCredential(account)
+}
+
+// canSelfHealSessionFailure 报告「会话/令牌类失败」对该账号是否**可自愈**：
+// 冷却期内是否存在会去换票的角色（后台刷新器或请求路径的预刷新）。
+//
+// 这是「临时冷却 vs 永久下线」的**唯一判据**，三条路径必须共用：
+//   - HTTP 401 —— HandleUpstreamError 的 401 分支；
+//   - 流内业务码 1001/401 —— applyTraeBusinessErrorClass 的 session 分支；
+//   - 账号测试连接的 401 —— testTraeAccountConnection。
+//
+// 判据是「凭据能不能换新」，**不是**「账号类型」：OAuth 类型天然带 refresh_token 语义，
+// 而 WorkBuddy / Trae 是 apikey 类型却同样持可轮换 refresh_token；两类都可能自愈，
+// 但都必须真的拿得到票（没票就换不出新票，冷却结束只是再撞一次）。
+//
+// 【为何必须收敛成一个函数（2026-10-30 代码自查实证）】曾经只有 401 分支用了泛化判据，
+// 而流内 1001 分支仍只认 isRefreshableAPIKeyCredential（内部含 Type==APIKey 门）。
+// 临时探针实测同一个 Trae 账号（都持 refresh_token）：
+//
+//	Type=apikey → 流内 1001：临时冷却（正确）
+//	Type=oauth  → 流内 1001：永久 SetError（错误——退出后台刷新候选集，永不恢复）
+//
+// 即「同一个坑在流内路径上没堵完」。凡是「是否可自愈」的判定，一律调本函数；
+// 不要再在各调用点自己拼 `Type == OAuth || isRefreshableAPIKeyCredential(...)`。
+func canSelfHealSessionFailure(account *Account) bool {
+	return isSessionSelfHealFamily(account) && sessionRecoveryCredential(account) != ""
 }
 
 // handleAuthError 处理认证类错误(401/403)，停止账号调度

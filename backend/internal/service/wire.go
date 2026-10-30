@@ -139,6 +139,9 @@ func ProvideTokenRefreshService(
 	// 注册 WorkBuddy 后台刷新（第六个平台，apikey 类型但凭据语义与 OAuth 同构）。
 	// 必须在 Start() 之前，否则 Start 已快照 registrations。
 	svc.SetWorkBuddyRefresher(NewWorkBuddyTokenRefresher(httpUpstream, tlsProfileService, cfg))
+	// 注册 Trae 后台刷新（第七个平台，与 WorkBuddy 同形：apikey + 可轮换 refresh_token）。
+	// 没有这条链时 Trae 的 access_token 到期只能等真实请求撞 401，而那会永久下线账号。
+	svc.SetTraeRefresher(NewTraeTokenRefresher(httpUpstream, tlsProfileService, cfg))
 	// 调用侧显式注入后台刷新策略，避免策略漂移
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
 	svc.SetAccountRuntimeBlocker(runtimeBlocker)

@@ -88,7 +88,18 @@ func (s *OpenAIGatewayService) forwardQoderChatCompletions(
 		upstreamBody = ReplaceModelInBody(body, upstreamModel)
 	}
 
-	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
+	// 记录口径对齐**真实下发**：出站侧 sendQoderUpstreamRequest 注入的档位只由
+	// qoderForwardedEffort 决定，因此这里必须调**同一个函数**，而不是自己收敛
+	// extractOpenAIReasoningEffortFromBody 的结果——后者会在无显式 effort 字段时
+	// 从模型名后缀推导（qwen3.8-max → xhigh），而 send 侧只认显式字段（模型的 Max
+	// 是**型号**不是档位），两边不同源会出现「记录有档位、实际没下发」。
+	// 实测背离形态见 qoder_thinking_effort_test.go::TestQoderRecordedEffortMatchesForwarded。
+	// 空串（模型不支持思考强度 / 客户端未传档位）一律置 nil：上游没收到档位，
+	// 不得记成本生效（reasoning_effort 是计费倍率与分组上限策略的输入）。
+	var reasoningEffort *string
+	if forwarded := qoderForwardedEffort(qoderResolveUpstreamModelKey(account, upstreamBody), upstreamBody); forwarded != "" {
+		reasoningEffort = &forwarded
+	}
 	serviceTier := extractOpenAIServiceTierFromBody(upstreamBody)
 
 	SetActualOpenAIUpstreamEndpoint(c, qoderChatPath)
@@ -119,6 +130,20 @@ func (s *OpenAIGatewayService) forwardQoderChatCompletions(
 	}
 	if result != nil {
 		result.UpstreamEndpoint = qoderChatPath
+		// 「请求档位」与「转发档位」双列口径（后台用量页）：raw 路径默认不填
+		// RequestedReasoningEffort，记录层 coalesceRequestedReasoningEffort 会回落到
+		// 转发值，于是两列同值、看不到「请求 max → 转发 xhigh」这类收敛。
+		//
+		// 这里**只认显式档位字段**（reasoning.effort / reasoning_effort /
+		// output_config.effort），不用 CanonicalRequestedReasoningEffort——后者会在无
+		// 显式字段时从模型名后缀推导，而 Qoder 的 model 是型号名（Qwen3.8-Max 的 Max
+		// 是型号，不是档位），那会凭空给客户端安上一个它从未请求的档位，让「请求」
+		// 列失去意义。客户需对比的正是「客户端真传了什么」vs「上游真收到什么」。
+		if raw := explicitRequestedReasoningEffortFromBody(upstreamBody); raw != "" {
+			if requested := NormalizeMaxReasoningEffort(raw); requested != "" {
+				result.RequestedReasoningEffort = &requested
+			}
+		}
 	}
 	return result, forwardErr
 }

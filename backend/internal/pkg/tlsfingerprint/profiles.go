@@ -131,14 +131,52 @@ const ProfileNameNodeOpenSSLH2 = "Built-in Default (Node.js/OpenSSL + h2)"
 // 反而与官方客户端的 JA4 协议段不符。改成 h2 让 JA4 更接近真实客户端，同时把
 // HTTP 层伪装与传输层能力重新对齐。
 //
-// 三家上游全部 19 个真实域名的 ALPN 已实测均协商到 h2（copilot.tencent.com /
-// www.workbuddy.ai / www.codebuddy.cn / api.trae.cn / api.trae.ai /
-// a0ai-api-sg.byteintlapi.com / gateway.qoder.com.cn / openapi.qoder.com.cn 等），
-// 因此切到 http2.Transport 不会遇到「对端不支持 h2」的硬失败。
+// 【❗不要把 Trae 改成用本 Profile（2026-10-27 全量报错事件）】
+// Trae CN 聊天域 trae-api-cn.mchost.guru **只协商 HTTP/1.1**。早期版本的本注释曾写
+// 「三家共 19 个域名均协商到 h2」，那是按域名清单**推断**而非逐个实测得出的错误结论；
+// 2026-10-27 用本包真实指纹拨号器逐个复测，结果如下（profile = 本 Profile）：
+//
+//	trae-api-cn.mchost.guru      → http/1.1   ← 唯一 h1-only
+//	a0ai-api-sg.byteintlapi.com  → h2
+//	api.trae.cn / api.trae.com.cn / api-sg-central.trae.ai → h2
+//	copilot.tencent.com / www.codebuddy.cn / www.workbuddy.ai → h2
+//	gateway.qoder.com.cn / openapi.qoder.com.cn / api1.qoder.sh / docs.qoder.cn → h2
+//
+// 因为 http2.Transport **不会**按 ALPN 回落 h1（见 http_upstream.go 的告警），Trae CN
+// 账号一旦被分派到本 Profile 就是**全量硬失败**，报错逐字为：
+//
+//	http2: failed reading the frame payload: http2: frame too large,
+//	note that the frame header looked like an HTTP/1.1 header
+//
+// 所以 Trae 走 NodeOpenSSLH1Profile（见 defaultTLSProfileForPlatform）。
 func NodeOpenSSLH2Profile() *Profile {
 	return &Profile{
 		Name: ProfileNameNodeOpenSSLH2,
 		// 顺序与 Chromium 一致：h2 优先、http/1.1 兜底。
+		// 注意：这里的 http/1.1 只是让 JA4 协议列表贴近真实 Chromium，**不是**可用性兜底
+		// —— 协商到 h1 时 http2.Transport 直接报错，不会退回去。
 		ALPNProtocols: []string{"h2", "http/1.1"},
 	}
+}
+
+// ProfileNameNodeOpenSSLH1 是 Trae 的内置默认形状名。
+//
+// 与 ProfileNameNodeDefault 刻意分开命名：两者握手参数完全相同（字段全空 ⇒ dialer 回落
+// 同一组包级 Node.js 24.x 常量），但 Name 会进 Profile.CacheKey，因此 Trae 账号与
+// Claude 账号的指纹传输层缓存互不复用，日志里也能一眼看出「这个账号是 Trae 的 h1 形状」。
+const ProfileNameNodeOpenSSLH1 = "Built-in Default (Node.js/OpenSSL + http/1.1)"
+
+// NodeOpenSSLH1Profile 返回「Node.js/OpenSSL 握手形状 + 只声明 http/1.1」的内置默认 Profile。
+//
+// 目前只有 Trae 用它，原因见 NodeOpenSSLH2Profile 的告警：Trae CN 聊天域
+// trae-api-cn.mchost.guru 是实测唯一不支持 h2 的上游，而 http2.Transport 不会回落。
+//
+// 性能代价（诚实口径）：h1 下连接不能多路复用，而账号隔离会把 maxConnsPerHost 夹成
+// account.Concurrency（线上常见 1~3）⇒ 同账号并发请求串行排队。对 Trae 这是**唯一可用**
+// 的选项（h2 是硬失败而非慢），而不是在「快 vs 慢」之间做的取舍。
+//
+// 形状一致性：ALPN 只声明 http/1.1 与 HTTP 层实际版本自洽；JA3 不受 ALPN 影响，
+// 因此与 NodeOpenSSLH2Profile 的 JA3 逐字节相同，只差 JA4 的协议段。
+func NodeOpenSSLH1Profile() *Profile {
+	return &Profile{Name: ProfileNameNodeOpenSSLH1}
 }

@@ -1242,7 +1242,9 @@ type GatewayWorkbuddyConfig struct {
 // Qoder 的「每日领取 100 Credits」是 campaigns 活动体系（不是单一签到端点）：
 // 先 GET /sash/api/v1/me/campaigns 拿到本轮 CLAIMABLE 的 campaignId，再 POST
 // 该 id 的 /claim。上游对同一轮重复领取幂等（replayed=true、不再发钱），所以
-// 多实例部署无需分布式锁。
+// 多实例部署无需分布式锁。（边界：该幂等只对「同一轮内重复领取」有一手依据；
+// 跨令牌重试的幂等性未取证，见 qoder_campaign_service.go 文件头与该文件的
+// qoderClaimCampaignWithAuthRetry 注释。）
 //
 // 触发模型与 WorkBuddy 对齐：hours 列表里的每个整点打开一个「执行窗口」，窗口内
 // 逐号推进（不是全量齐发），详见 spread_window_seconds / account_gap_* 三项。
