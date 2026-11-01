@@ -136,7 +136,7 @@ func workbuddyTokenNeedsRefresh(creds WorkbuddyCredentials, now time.Time) bool 
 //
 // 流程：
 //  1. 取凭据；access_token 为空或临近过期且有 refresh_token → 先刷新；
-//  2. PrepareWorkbuddyBody 变换 body（强制 stream、协议归一、cache key、global 兜底 system）；
+//  2. PrepareWorkbuddyBody 变换 body（强制 stream、协议归一、global 兜底 system）；
 //  3. 目标 URL = 账号 base_url + /v2/chat/completions（经 validateUpstreamBaseURL 校验）；
 //  4. 分离上游 context + OpenAI HTTP profile + 全套 workbuddy 头（会话头族从 gin.Context 透传）；
 //  5. >=400：读 body（1MB 上限）后回卷；401 且有 refresh_token → 刷新一次后重试一次
@@ -162,7 +162,10 @@ func (s *OpenAIGatewayService) sendWorkbuddyUpstreamRequest(ctx context.Context,
 			creds = account.GetWorkbuddyCredentials()
 		}
 	}
-	// 2) body 变换：realm 归一化 + uid 兜底（空 uid 用 acct-<id>，保证 cache key 账号隔离）。
+	// 2) body 变换：realm 归一化 + uid 兜底。【注意】prompt_cache_key 注入已于 2026-11-01
+	//    剔除，当前 PrepareWorkbuddyBody 只读 creds.Realm 与 creds.SanitizeFingerprints，
+	//    不再读 UID —— 保留兜底是为了后续消费点不得拿到空 uid，而不是为了派生身份值
+	//    （拿 uid 派生任何出站恒定值正是本次剔除的形态，见 workbuddyStableUID 注释）。
 	payloadCreds := creds
 	payloadCreds.Realm = realm
 	if strings.TrimSpace(payloadCreds.UID) == "" {
@@ -181,8 +184,8 @@ func (s *OpenAIGatewayService) sendWorkbuddyUpstreamRequest(ctx context.Context,
 	targetURL := strings.TrimRight(validatedBase, "/") + workbuddyChatPath
 
 	// 会话头族元数据：入站透传优先；本函数内多次出站（401 重试）复用同一聚合主键。
-	// payloadCreds.UID 作为会话 ID 派生的账号隔离因子（与 prompt_cache_key 同源）。
-	meta := resolveWorkbuddyChatMeta(c, prepared, payloadCreds.UID)
+	// 【2026-11-01】不再传 uid：会话 ID 的跨轮派生已删除，缺标识时每请求新生成随机值。
+	meta := resolveWorkbuddyChatMeta(c, prepared)
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()

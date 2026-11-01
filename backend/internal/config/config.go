@@ -1196,7 +1196,11 @@ type GatewayCNProvidersConfig struct {
 //   - checkin_enabled: 是否启用每日自动签到（默认 true）
 //   - checkin_hours: 每日签到触发小时（本地时区 0-23，默认 [9, 21]；21 点为兜底窗口，
 //     只补当天仍未成功的号，已成功的不再重打上游）
-//   - activity_enabled: 是否启用对话活跃上报周期任务（默认 true；CN 与 global 账号都上报）
+//   - activity_enabled: 是否启用对话活跃上报周期任务（**默认 false，2026-11-01 由 true 翻转**；
+//     CN 与 global 账号都上报。该任务每日向 /v2/report 送 N 条**凭空捏造的
+//     chat_request_send 事件**，是本次 WorkBuddy 国内站 11140 账号封禁排查中
+//     风险最高的可疑源；参考实现完全不做这类上报。需要时显式置 true，
+//     或直接用后台手动入口单账号跑一次）
 //   - activity_hours: 活跃上报触发小时（本地时区，默认 [10]）
 //   - activity_report_count: 每号每次上报条数（默认 5；<=0 归 1，兼容旧行为）
 //   - travel_enabled: 是否启用猫猫旅行周期任务（默认 true；仅 CN 账号实际执行）
@@ -2632,7 +2636,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.workbuddy.checkin_hours", []int{9, 21})
 	// WorkBuddy 任务三件套：活跃上报（CN+global 都发，默认 10 点，每号 5 条）
 	// 与猫猫旅行（仅 CN，默认 9 点派出 + 21 点兜底领奖）。
-	viper.SetDefault("gateway.workbuddy.activity_enabled", true)
+	viper.SetDefault("gateway.workbuddy.activity_enabled", false) // 2026-11-01: 默认关，理由见上方字段说明与 workbuddyActivityTaskEnabled
 	viper.SetDefault("gateway.workbuddy.activity_hours", []int{10})
 	viper.SetDefault("gateway.workbuddy.activity_report_count", 5)
 	viper.SetDefault("gateway.workbuddy.travel_enabled", true)

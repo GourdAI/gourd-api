@@ -365,13 +365,34 @@ func NewWorkBuddyTasksService(credits *WorkBuddyCreditsService, accountRepo Acco
 	}
 }
 
+// workbuddyActivityTaskEnabled 报告是否应启动「对话活跃上报」定时任务。
+//
+// 【2026-11-01 默认翻转：nil 配置 = 关闭】
+// 原门控是 `s.cfg == nil || ActivityEnabled`，nil 直接放行；现在 nil 归入「关」。
+// config.go 的 viper 默认值同步翻为 false，两处必须一致 —— 否则「默认关」会被
+// `cfg == nil` 那条短路绕开，在无人显式配置的环境里把可疑流量放出去。
+//
+// 为什么翻：该任务每日向 billing 域 POST /v2/report 送 N 条**凭空捏造的
+// chat_request_send 事件**（inputLength 随机、requestModelId 从白名单挑、
+// conversationId 全新随机），而上游根本看不到与之对应的真实会话。
+// 参考实现（dsh-connect-workbuddy 5.16.0）**完全不做**这类上报
+// （全仓 /v2/report 与 chat_request_send 零命中），只保留只读积分与自家签到。
+// 经 mitmproxy 抓包复盘的封号归因是「通道可识别 + 设备指纹缺失 + 机器行为画像」
+// 三者叠加，而凭空捏造的活跃记录恰好是第三类中最不像人类的那一个。
+//
+// 手动入口不受本开关影响（RunActivity 仍可在后台单账号触发）：需要该能力时
+// 可显式跑一次，而不是每日自动跑。
+func workbuddyActivityTaskEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.Gateway.Workbuddy.ActivityEnabled
+}
+
 // Start 启动任务循环：activity 与 travel 各一个 goroutine，按各自小时列表唤醒。
 // 门控：对应 Enabled=false 或小时列表全非法时不启动对应 loop。
 func (s *WorkBuddyTasksService) Start() {
 	if s == nil || s.credits == nil || s.accountRepo == nil {
 		return
 	}
-	if s.cfg == nil || s.cfg.Gateway.Workbuddy.ActivityEnabled {
+	if workbuddyActivityTaskEnabled(s.cfg) {
 		if hours := workbuddyTasksHours(s.cfg, "activity"); len(hours) > 0 {
 			settings := workbuddySpreadSettingsFrom(s.cfg)
 			slog.Info("workbuddy activity task started",
@@ -386,6 +407,11 @@ func (s *WorkBuddyTasksService) Start() {
 				s.loop(hours, s.runActivityOnce)
 			}()
 		}
+	} else {
+		// 默认路径：必须留一条日志。否则管理员无法从启动日志区分「已按新默认
+		// 关闭」与「配置没读到、静默未启动」——两者外观完全相同。
+		slog.Info("workbuddy activity task disabled (default off since 2026-11-01); " +
+			"set gateway.workbuddy.activity_enabled=true to re-enable")
 	}
 	if s.cfg == nil || s.cfg.Gateway.Workbuddy.TravelEnabled {
 		if hours := workbuddyTasksHours(s.cfg, "travel"); len(hours) > 0 {

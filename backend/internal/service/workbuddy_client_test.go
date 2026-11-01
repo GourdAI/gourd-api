@@ -168,14 +168,21 @@ func TestSendWorkbuddyUpstreamRequestStreamingPathAndHeaders(t *testing.T) {
 	require.Equal(t, "1", gotReqID)
 	require.True(t, gjson.Get(gotBody, "stream").Bool(), "上游 body 被强制 stream:true")
 	require.True(t, gjson.Get(gotBody, "stream_options.include_usage").Bool())
-	require.NotEmpty(t, gjson.Get(gotBody, "prompt_cache_key").String(), "注入了 prompt_cache_key")
+	require.False(t, gjson.Get(gotBody, "prompt_cache_key").Exists(),
+		"网关不得自造 prompt_cache_key（修复前注入 wb2a- 前缀值，字面自报工具身份）")
+	require.NotContains(t, gotBody, "wb2a", "出站 body 不得残留 wb2a 盐串")
 
 	reqs, _ := upstream.snapshot()
 	require.Len(t, reqs, 1)
 	require.Equal(t, "application/json, text/event-stream", reqs[0].Header.Get("Accept"))
 	require.Equal(t, "https://www.codebuddy.cn", reqs[0].Header.Get("Origin"))
 	require.True(t, workbuddyValidTraceID(reqs[0].Header.Get("X-Conversation-Request-ID")))
-	require.Equal(t, reqs[0].Header.Get("X-Conversation-Message-ID"), reqs[0].Header.Get("X-Request-ID"))
+	require.NotEmpty(t, reqs[0].Header.Get("X-Conversation-Message-ID"), "三件套必发（渠道闸判据）")
+	require.NotEmpty(t, reqs[0].Header.Get("X-Conversation-ID"), "三件套必发（渠道闸判据）")
+	// X-Request-ID 属身份声明，默认关（修复前每请求必发，与 Message-ID 同值）。
+	// 开启 usage_identity 后的同值关系由 TestWorkbuddyChatHeadersUsageIdentityOn 覆盖。
+	require.Empty(t, reqs[0].Header.Get("X-Request-ID"),
+		"默认不发 X-Request-ID（usage_identity 未开）")
 	require.Equal(t, 0, repo.calls(), "无刷新场景不写凭据")
 }
 
@@ -193,7 +200,7 @@ func TestSendWorkbuddyUpstreamRequest401RefreshRetry(t *testing.T) {
 			refreshHits++
 			mu.Unlock()
 			require.Equal(t, "rt-1", r.Header.Get("X-Refresh-Token"))
-			require.Equal(t, "plugin", r.Header.Get("X-Auth-Refresh-Source"))
+			require.Equal(t, "workbuddy", r.Header.Get("X-Auth-Refresh-Source"))
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"code":0,"msg":"","data":{"accessToken":"tok-2","refreshToken":"rt-2","expiresIn":3600,"domain":"copilot.tencent.com"}}`)
 		case workbuddyChatPath:
@@ -404,7 +411,7 @@ func TestRefreshWorkbuddyTokenWritesBack(t *testing.T) {
 	require.Equal(t, "rt-9", repo.lastCredentials["refresh_token"])
 
 	require.Equal(t, "rt-old", gotHeaders.Get("X-Refresh-Token"))
-	require.Equal(t, "plugin", gotHeaders.Get("X-Auth-Refresh-Source"))
+	require.Equal(t, "workbuddy", gotHeaders.Get("X-Auth-Refresh-Source"))
 	require.Equal(t, workbuddyUAFor("global"), gotHeaders.Get("User-Agent"))
 	require.Equal(t, "1", gotHeaders.Get("X-CodeBuddy-Request"))
 }

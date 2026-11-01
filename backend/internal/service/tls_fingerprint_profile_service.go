@@ -156,8 +156,12 @@ func (s *TLSFingerprintProfileService) GetProfileByID(id int64) *tlsfingerprint.
 // "传输层形状要与 HTTP 层身份自洽"直接矛盾）。
 //
 // 新语义：**同账号恒定、跨账号互异、跨重启可复现** —— 用 sha256(盐 + 账号ID) 取模选模板，
-// 与本仓既有纪律同源（geminicli.InstallationID、workbuddyDeriveAccountStableID、
-// traeFingerprintSeed 都是"固定盐、账号间互异、跨重启稳定"的派生）。
+// 与本仓既有纪律同源（geminicli.InstallationID、traeFingerprintSeed 都是"固定盐、
+// 账号间互异、跨重启稳定"的派生）。
+// 【口径修正 2026-11-01】WorkBuddy 侧原先同源的 X-Machine-ID / X-Session-ID 派生已删除：
+// 它们不是传输层 seed（seed 只影响本地选模板，不出站），而是**逐字发给上游的恒定设备号**，
+// 9router #4946 实测官方对话请求不带该两枚头，网关发恒定派生值本身就是一处网关特征。
+// 本函数的 seed 仍保持原语义：它不进入任何出站身份头。
 //
 // 候选集必须按模板 ID 升序取：localCache 是 map，直接 range 的遍历顺序是随机的，
 // 那么即便索引确定，"第 i 个模板"指向谁仍会逐次变化 —— 那等于把随机换了一个更隐蔽的位置。

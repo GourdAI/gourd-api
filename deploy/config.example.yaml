@@ -460,6 +460,15 @@ gateway:
   #
   # WorkBuddy task suite: activity report (+streak reward chain) and buddy travel.
   # 任务三件套：对话活跃上报（含连登奖励链）与猫猫旅行。
+  #
+  # activity_enabled defaults to FALSE since 2026-11-01. That task POSTs N fabricated
+  # chat_request_send events per account per day to /v2/report — activity the upstream
+  # never sees in a real session — and it was the highest-risk candidate found in the
+  # WorkBuddy CN account-restriction (code 11140) investigation. The reference
+  # implementation never does this. Set it back to true only if you accept that risk.
+  # activity_enabled 自 2026-11-01 起默认 false：该任务每日向 /v2/report 送凭空捏造的
+  # 活跃事件（上游看不到对应真实会话），是本次国内站 11140 封号排查中风险最高的可疑源；
+  # 参考实现完全不做。需要时再显式置 true（后台单账号手动入口不受本开关影响）。
   # activity_hours / travel_hours 同样按服务器本地时区整点触发；越界小时被丢弃，
   # 去重后为空（全部非法）视为关闭该类任务。
   # activity_report_count 为每号每次上报条数（<=0 归 1）。
@@ -467,7 +476,7 @@ gateway:
   workbuddy:
     checkin_enabled: true
     checkin_hours: [9, 21]
-    activity_enabled: true
+    activity_enabled: false
     activity_hours: [10]
     activity_report_count: 5
     travel_enabled: true

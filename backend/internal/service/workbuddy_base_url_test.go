@@ -224,4 +224,37 @@ func TestNormalizeWorkbuddyCredentialsRewritesBareDomain(t *testing.T) {
 		}
 		require.Error(t, NormalizeWorkbuddyCredentials(credentials))
 	})
+
+	// 两个账号级开关**不得**被当成「workbuddy 专属键」。
+	//
+	// 为什么单独钉一条：批量更新路径（BulkUpdateAccounts）是 JSONB 顶层 key 合并，
+	// 不会把库里已有的 access_token 读进 input.Credentials。若开关键进了
+	// hasWorkbuddyCredentialKeys，「只改一个开关」这种最常见的批量操作会撞上
+	// access_token/refresh_token 必非空的校验而直接 400，管理员就再也设不了开关。
+	// 2026-11-01 自查时本行被我加上去，这是一处回归。
+	t.Run("仅携带开关键时整体跳过（不报缺 token）", func(t *testing.T) {
+		t.Parallel()
+		for _, key := range []string{"usage_identity", "usageIdentity", "sanitize_fingerprints", "sanitizeFingerprints"} {
+			credentials := map[string]any{key: true}
+			require.NotPanics(t, func() { _ = NormalizeWorkbuddyCredentials(credentials) }, key)
+			require.NoError(t, NormalizeWorkbuddyCredentials(credentials),
+				"%s 不得使无 token 的增量凭据被拒（批量开关路径必须可用）", key)
+			require.Equal(t, true, credentials[key], "归一化不得改动开关值")
+		}
+	})
+
+	// 开关与真凭据同批提交时，开关值不得被 camel→snake 折叠弄丢。
+	t.Run("开关值在与 token 同批写入时保留", func(t *testing.T) {
+		t.Parallel()
+		credentials := map[string]any{
+			"access_token":          "at-1",
+			"usage_identity":        true,
+			"sanitize_fingerprints": "1",
+		}
+		require.NoError(t, NormalizeWorkbuddyCredentials(credentials))
+		account := &Account{ID: 1, Platform: PlatformWorkbuddy, Credentials: credentials}
+		creds := account.GetWorkbuddyCredentials()
+		require.True(t, creds.UsageIdentity)
+		require.True(t, creds.SanitizeFingerprints)
+	})
 }

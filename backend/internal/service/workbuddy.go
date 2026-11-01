@@ -186,6 +186,20 @@ type WorkbuddyCredentials struct {
 	ExpiresAt    int64
 	// BillingBaseURL billing 域（积分/签到）自定义覆盖；空 = 按 realm 官方默认值。
 	BillingBaseURL string
+	// UsageIdentity 账号级开关：为真时才向 chat 出站注入 X-IDE-Name/-Type/-Version 与
+	// X-Request-ID（上游用量页「使用端 / 请求 id」的读数来源）。
+	//
+	// 默认关。理由：参考实现逐个二分实测证明这几枚头**不参与任何闸门判定**（只改
+	// 显示读数），那么它就是“替账号宣称客户端身份”而不是“让请求通过”。既然无收益
+	// 只声明，就不应静默地给全部账号默认开启（2026-11-01 封号排查的结论之一）。
+	// 需要该读数的管理员可在凭据里写 usage_identity=true 显式打开。
+	UsageIdentity bool
+	// SanitizeFingerprints 账号级开关：为真时才对 messages 内容做「指纹脱敏」，
+	// 即把 Claude Code / Codex 的官方模板句逐字改写一个词以绕过上游子串审核。
+	//
+	// 默认关（2026-11-01 从默认开翻转）：那是**主动规避上游内容审核**，而上游已把
+	// 这类行为定性为会导致账号级限制（code 11140）。详见 PrepareWorkbuddyBody 注释。
+	SanitizeFingerprints bool
 }
 
 // GetWorkbuddyCredentials 从 credentials 读取 workbuddy 凭据，同时兼容 snake_case
@@ -216,6 +230,11 @@ func (a *Account) GetWorkbuddyCredentials() WorkbuddyCredentials {
 
 		BillingBaseURL: read("billing_base_url", "billingBaseUrl"),
 	}
+	// 两个账号级开关。取值形态宽容：JSON 原生 bool（true/false）优先，其次字符串
+	// "true"/"1"/"yes"/"on"（手改数据库或粘贴配置时常见）。未设置即 false——
+	// 默认不声明身份、不规避审核。
+	creds.UsageIdentity = workbuddyCredentialFlag(a, "usage_identity", "usageIdentity")
+	creds.SanitizeFingerprints = workbuddyCredentialFlag(a, "sanitize_fingerprints", "sanitizeFingerprints")
 	if raw := read("expires_at", "expiresAt"); raw != "" {
 		if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
 			creds.ExpiresAt = v
@@ -243,6 +262,47 @@ func (a *Account) GetWorkbuddyCredentials() WorkbuddyCredentials {
 		creds.UID = workbuddyJWTSubject(creds.AccessToken)
 	}
 	return creds
+}
+
+// workbuddyCredentialFlag 读一个账号凭据里的布尔开关，兼容 camelCase 别名。
+// 读取次序：原生 bool → 字符串形态（true/1/yes/on，大小写宽容）→ 其余一律 false。
+//
+// 为何不只用 GetCredential：它把 bool 归到 default 分支返回空串（见 account.go
+// GetCredential 的类型 switch），所以 JSON 里写真的 true 会被读成 false。
+// 开关的默认值语义很重要（默认关 = 不声明身份、不规避审核），必须能区分
+// 「未设置」与「设为 false」以外的写法，这里统一收敛到同一个实现避免两处不一致。
+func workbuddyCredentialFlag(a *Account, snakeKey, camelKey string) bool {
+	if a == nil {
+		return false
+	}
+	for _, key := range []string{snakeKey, camelKey} {
+		if key == "" {
+			continue
+		}
+		raw, ok := a.Credentials[key]
+		if !ok || raw == nil {
+			continue
+		}
+		switch v := raw.(type) {
+		case bool:
+			return v
+		case string:
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "true", "1", "yes", "on":
+				return true
+			}
+			return false
+		case json.Number:
+			return v.String() == "1"
+		case float64:
+			return v == 1
+		case int64:
+			return v == 1
+		case int:
+			return v == 1
+		}
+	}
+	return false
 }
 
 // workbuddyCredentialValueString 把凭据值转为字符串（兼容 JSON 反序列化的多种数字类型）。
@@ -273,6 +333,12 @@ func hasWorkbuddyCredentialKeys(credentials map[string]any) bool {
 		"enterprise_id", "enterpriseId",
 		"realm", "domain", "uid", "nickname",
 		"billing_base_url", "billingBaseUrl",
+		// 【故意**不**把 usage_identity / sanitize_fingerprints 加进本清单】
+		// 加进来会让「只配一个开关」的增量凭据（批量更新路径、API 直写）也进入下方
+		// access_token/refresh_token 必非空的校验 → 直接 400，管理员反而无法设这两个开关
+		// （批量路径是 JSONB 顶层 key 合并，不读库里的旧 token）。2026-11-01 自查时
+		// 本行曾被我加上，那是一处回归：不拉时开关键经批量路径写入是可用的。
+		// 不拉也不丢信息：读取侧 workbuddyCredentialFlag 同时接受 snake 与 camel 两种形。
 	} {
 		if v, ok := credentials[key]; ok && v != nil {
 			return true

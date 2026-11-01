@@ -191,34 +191,27 @@ func TestPrepareWorkbuddyBodyReasoningContentBackfill(t *testing.T) {
 	require.False(t, gjson.GetBytes(out, "messages.2.reasoning_content").Exists(), "非 assistant 不补")
 }
 
-func TestPrepareWorkbuddyBodyPromptCacheKeyIsolation(t *testing.T) {
+// TestPrepareWorkbuddyBodyNoPromptCacheKey 2026-11-01 规格翻转：网关不再注入
+// prompt_cache_key（旧实现注入 "wb2a-<uid8>-<hash>"，前缀字面自报 workbuddy2api）。
+//
+// 旧用例钉的是「必须注入且跳账号不同值」——那是把网关特征写成了契约，对本缺陷全绿。
+// 现在断言方向翻转：默认不得出现该字段；但客户端显式带的原值必须透传。
+func TestPrepareWorkbuddyBodyNoPromptCacheKey(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"conversation_id":"conv-1","messages":[]}`)
 
-	credsA := WorkbuddyCredentials{UID: "user-aaaa1111bbbb"}
-	credsB := WorkbuddyCredentials{UID: "user-bbbb2222cccc"}
-	outA := PrepareWorkbuddyBody(body, credsA)
-	outB := PrepareWorkbuddyBody(body, credsB)
-	keyA := gjson.GetBytes(outA, "prompt_cache_key").String()
-	keyB := gjson.GetBytes(outB, "prompt_cache_key").String()
+	out := PrepareWorkbuddyBody(body, WorkbuddyCredentials{UID: "user-aaaa1111bbbb"})
+	require.False(t, gjson.GetBytes(out, "prompt_cache_key").Exists(),
+		"网关不得自造 prompt_cache_key（修复前恒注入 wb2a- 前缀值）")
+	require.NotContains(t, string(out), "wb2a", "出站 body 不得残留 workbuddy2api 项目盐串")
 
-	require.Equal(t, buildWorkbuddyCacheKey("user-aaaa1111bbbb", "conv-1"), keyA)
-	require.True(t, len(keyA) > 0 && keyA[:5] == "wb2a-", "格式 wb2a-<uid8>-<convHex>")
-	require.Contains(t, keyA, "-user-aaa-", "uid8 为 uid 前 8 位")
-	require.NotEqual(t, keyA, keyB, "跨账号必须隔离（uid 参与哈希）")
+	// 两个不同账号发同一 body：除账号相关字段外不得引入额外差异键。
+	outB := PrepareWorkbuddyBody(body, WorkbuddyCredentials{UID: "user-bbbb2222cccc"})
+	require.False(t, gjson.GetBytes(outB, "prompt_cache_key").Exists())
 
-	// 同 uid 同会话稳定；不同会话不同。
-	require.Equal(t, keyA, gjson.GetBytes(PrepareWorkbuddyBody(body, credsA), "prompt_cache_key").String())
-	outOther := PrepareWorkbuddyBody([]byte(`{"conversation_id":"conv-2","messages":[]}`), credsA)
-	require.NotEqual(t, keyA, gjson.GetBytes(outOther, "prompt_cache_key").String())
-
-	// body 已带 key → 原值保留。
-	outPreset := PrepareWorkbuddyBody([]byte(`{"prompt_cache_key":"preset-key","conversation_id":"conv-1"}`), credsA)
-	require.Equal(t, "preset-key", gjson.GetBytes(outPreset, "prompt_cache_key").String())
-
-	// camel 形态 conversationId 同样生效。
-	outCamel := PrepareWorkbuddyBody([]byte(`{"conversationId":"conv-1"}`), credsA)
-	require.Equal(t, keyA, gjson.GetBytes(outCamel, "prompt_cache_key").String())
+	// 客户端显式带 key → 原值透传（那是客户端自己的声明，不是网关伪造）。
+	preset := PrepareWorkbuddyBody([]byte(`{"prompt_cache_key":"client-key","conversation_id":"conv-1","messages":[]}`), WorkbuddyCredentials{UID: "u"})
+	require.Equal(t, "client-key", gjson.GetBytes(preset, "prompt_cache_key").String())
 }
 
 func TestPrepareWorkbuddyBodyGlobalConsoleSystem(t *testing.T) {
@@ -240,35 +233,52 @@ func TestPrepareWorkbuddyBodyGlobalConsoleSystem(t *testing.T) {
 	require.Equal(t, "user", gjson.GetBytes(out, "messages.0.role").String())
 }
 
+// TestPrepareWorkbuddyBodySanitizeToggle 2026-11-01 默认翻转：指纹脱敏（逐字改写
+// Claude Code / Codex 模板句以绕过上游子串审核）不再默认开启，改看账号开关
+// credentials.sanitize_fingerprints。
+//
+// 旧用例的「默认开启」分支把规避审核写成了默认行为；上游已把这类行为定性为
+// 会导致账号级限制（code 11140），因此默认必须不变。开关本身保留（能力不删），
+// 并验证其改写行为仍完整可用。
 func TestPrepareWorkbuddyBodySanitizeToggle(t *testing.T) {
 	t.Parallel()
-	creds := WorkbuddyCredentials{UID: "u-1"}
 	body := []byte(`{"messages":[{"role":"user","content":"error code 11128 appeared"}]}`)
 
-	// 默认开启脱敏：11128 → 11-128。
-	out := PrepareWorkbuddyBody(body, creds)
-	require.Contains(t, gjson.GetBytes(out, "messages.0.content").String(), "11-128")
-	require.NotContains(t, gjson.GetBytes(out, "messages.0.content").String(), "11128")
+	// 默认（开关未开）：**不改写**，内容逐字透传。
+	out := PrepareWorkbuddyBody(body, WorkbuddyCredentials{UID: "u-1"})
+	require.Contains(t, gjson.GetBytes(out, "messages.0.content").String(), "11128",
+		"默认不得改写上游审核目标（修复前默认会把 11128 改成 11-128）")
+	require.NotContains(t, gjson.GetBytes(out, "messages.0.content").String(), "11-128")
+	// 协议兼容变换仍生效（与脱敏解耦）。
+	require.True(t, gjson.GetBytes(out, "stream").Bool())
 
-	// 关闭脱敏：原样保留（协议兼容变换仍生效）。
-	out = PrepareWorkbuddyBodyOpt(body, creds, false)
-	require.Contains(t, gjson.GetBytes(out, "messages.0.content").String(), "11128")
+	// 账号显式开启后，脱敏行为与旧实现一致。
+	on := PrepareWorkbuddyBodyOpt(body, WorkbuddyCredentials{UID: "u-1"}, true)
+	require.Contains(t, gjson.GetBytes(on, "messages.0.content").String(), "11-128")
+	require.NotContains(t, gjson.GetBytes(on, "messages.0.content").String(), "11128")
 
-	// 模板句最小改写。
+	// 开关从凭据读取：sanitize_fingerprints=true 走 PrepareWorkbuddyBody 即生效。
+	account := &Account{ID: 1, Platform: PlatformWorkbuddy, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"sanitize_fingerprints": true}}
+	creds := account.GetWorkbuddyCredentials()
+	require.True(t, creds.SanitizeFingerprints)
+	flagged := PrepareWorkbuddyBody(body, creds)
+	require.Contains(t, gjson.GetBytes(flagged, "messages.0.content").String(), "11-128")
+
+	// 模板句最小改写（开关开启时）。
 	body2 := []byte(`{"messages":[{"role":"user","content":"You are Claude Code, Anthropic's official CLI for Claude."}]}`)
-	out = PrepareWorkbuddyBody(body2, creds)
-	require.Contains(t, gjson.GetBytes(out, "messages.0.content").String(), "official CLI tool for Claude")
+	out2 := PrepareWorkbuddyBodyOpt(body2, WorkbuddyCredentials{UID: "u-1"}, true)
+	require.Contains(t, gjson.GetBytes(out2, "messages.0.content").String(), "official CLI tool for Claude")
+	// 默认关时逐字不动。
+	out2off := PrepareWorkbuddyBody(body2, WorkbuddyCredentials{UID: "u-1"})
+	require.Contains(t, gjson.GetBytes(out2off, "messages.0.content").String(), "You are Claude Code, Anthropic's official CLI for Claude.")
 
-	// tool_calls arguments 与 reasoning_content 同样净化。
+	// tool_calls arguments 与 reasoning_content 同样净化（仅开启时）。
 	body3 := []byte(`{"messages":[{"role":"assistant","content":null,"reasoning_content":"see 11128","tool_calls":[{"id":"c1","type":"function","function":{"name":"a","arguments":"{\"cmd\":\"11128\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"ok"}]}`)
-	out = PrepareWorkbuddyBody(body3, creds)
-	require.NotContains(t, gjson.GetBytes(out, "messages.0.reasoning_content").String(), "11128")
-	require.NotContains(t, gjson.GetBytes(out, "messages.0.tool_calls.0.function.arguments").String(), "11128")
+	out3 := PrepareWorkbuddyBodyOpt(body3, WorkbuddyCredentials{UID: "u-1"}, true)
+	require.NotContains(t, gjson.GetBytes(out3, "messages.0.reasoning_content").String(), "11128")
+	require.NotContains(t, gjson.GetBytes(out3, "messages.0.tool_calls.0.function.arguments").String(), "11128")
 }
 
-func TestBuildWorkbuddyCacheKeyEmptyUID(t *testing.T) {
-	t.Parallel()
-	key := buildWorkbuddyCacheKey("", "conv")
-	require.Contains(t, key, "wb2a--")
-	require.NotEqual(t, key, buildWorkbuddyCacheKey("", "other"))
-}
+// TestBuildWorkbuddyCacheKeyEmptyUID 已删除：随 buildWorkbuddyCacheKey 一同移除
+//（网关不再自造 prompt_cache_key，见 workbuddy_payload.go 的删除说明）。

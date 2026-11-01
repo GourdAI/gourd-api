@@ -12,7 +12,7 @@ package service
 //  5. developer → system 角色归一（上游 role 白名单不含 developer，命中即 400 code=11128）
 //  6. tool 配对修复（先 repack 再 cleanup，缺配对会让上游对之后每条消息返 400）
 //  7. deepseek 思维链注入（thinking.type=enabled + 默认档 effort + 多轮 reasoning_content 回填）
-//  8. prompt_cache_key 注入（按账号隔离的稳定前缀缓存键，费用降 ~17×）
+//  8. prompt_cache_key 注入（**2026-11-01 已移除**：官方不发该字段且前缀自报项目名）
 //  9. global realm 的 ensureConsoleSystem（首条非 system 时前置兜底 system）
 //  10. 指纹脱敏 sanitize（剥离上游内容审核黑名单模板句，可开关）
 //
@@ -20,19 +20,33 @@ package service
 // 非法 tool_choice 删除、未知模型零改动，绝不把坏 body 二次错误化。
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"regexp"
 	"strings"
 )
 
-// PrepareWorkbuddyBody 改写发往 WorkBuddy 上游的 chat 请求体，默认开启指纹脱敏
-// （与 workbuddy2api 默认 SanitizeFingerprints=true 对齐）。
-// creds 提供 realm（global 走 ensureConsoleSystem）与 uid（prompt_cache_key 隔离段）。
+// PrepareWorkbuddyBody 改写发往 WorkBuddy 上游的 chat 请求体。
+//
+// 【2026-11-01 默认变更】指纹脱敏不再默认开启：改看账号凭据开关
+// credentials.sanitize_fingerprints（缺省 false）。
+//
+// 为什么必须改默认：该功能把 "You are Claude Code, Anthropic's official CLI for
+// Claude" 等模板句逐字改写一个词，目的正是绕过上游内容审核的**子串精确匹配**。
+// 参考实现（dsh-connect-workbuddy 5.16.0）对同一条路的定性原文：「伪装…是一条
+// 军备竞赛的路，而且已经出现账号级限制（issue #98 的 code 11140）」、「这条路…
+// 不再免费」。主动规避审核是所有反代里最可能把「单次请求被拒」升级成
+// 「账号被限制使用」的行为 —— 一个静默默认开启的规避开关，等于替全部账号
+// 做了这个决定。
+//
+// 代价说清楚：默认关后，携带 Claude Code / Codex 官方 system 模板的流量会被上游
+// 内容审核拒掉（11128/11140 文案）。需要该能力的管理员在对应账号凭据里显式写
+// sanitize_fingerprints=true。
+//
+// creds 提供 realm（global 走 ensureConsoleSystem）、sanitize_fingerprints 与
+// usage_identity 两个账号级开关。
 func PrepareWorkbuddyBody(body []byte, creds WorkbuddyCredentials) []byte {
-	return PrepareWorkbuddyBodyOpt(body, creds, true)
+	return PrepareWorkbuddyBodyOpt(body, creds, creds.SanitizeFingerprints)
 }
 
 // PrepareWorkbuddyBodyOpt 单 pass 改写；sanitize=false 时行为还原为「仅协议兼容变换」
@@ -71,8 +85,9 @@ func PrepareWorkbuddyBodyOpt(src []byte, creds WorkbuddyCredentials, sanitize bo
 	injectWorkbuddyThinking(obj, "")
 	normalizeWorkbuddyReasoningEffort(obj, nil)
 	backfillWorkbuddyReasoningContent(obj)
-	// 8) prompt_cache_key 注入（按账号隔离，uid 必须参与）。
-	injectWorkbuddyPromptCacheKey(obj, creds)
+	// 8) prompt_cache_key：**不再注入**（2026-11-01，封号排查结论）。客户端自己显式
+	// 携带的 prompt_cache_key 仍原样透传（只删本仓的自造注入路径）。理由见文件下方
+	// injectWorkbuddyPromptCacheKey 的删除说明。
 	// 9) global realm 兜底 system 注入（防 console 域上游 code 11-128）。
 	if workbuddyRealmIsGlobal(creds.Realm) {
 		ensureWorkbuddyConsoleSystem(obj)
@@ -650,47 +665,21 @@ func backfillWorkbuddyReasoningContent(obj map[string]any) {
 	}
 }
 
-// injectWorkbuddyPromptCacheKey 注入上游 prompt_cache_key 字段（P0 费用优化）。
+// injectWorkbuddyPromptCacheKey / buildWorkbuddyCacheKey：**已删除**（2026-11-01）。
 //
-// 上游服务端支持 prompt_cache_key，同一段前缀命中缓存时费用降 ~17×。
-// 优先级：
-//  1. body 已带 prompt_cache_key → 原值保留（客户端自知复用哪个键）；
-//  2. body 内 conversation_id / conversationId → 用它做会话哈希源；
-//  3. 都没有 → conv 为空串（会话段仍由 uid 单独哈希，跨账号绝不碰撞）。
+// 它们曾向每个出站 body 注入 prompt_cache_key = "wb2a-<uid8>-<hash>"。为什么必须删：
+//  1. 官方客户端与参考实现**都不发**该字段（dsh-connect-workbuddy 5.16.0 全仓
+//     prompt_cache_key 零命中），所以它是一枚逐请求出现在 body 里的网关自造字段；
+//  2. 前缀 "wb2a" 是 workbuddy2api 的项目名，**字面向上游自报工具身份**；同一个盐
+//     之前也用在 X-Machine-ID 派生里，两处现已一并从出站数据中清除；
+//  3. 它的收益（前缀缓存命中降价）是本地账面上的，代价却是账号级的：上游只要按
+//     该字段聚合，一个账号池的归属关系就是现成的。
 //
-// 安全约束——按账号隔离：格式 `wb2a-<uid8>-<convHex>`，uid 是硬隔离因子
-// （跨账号复用同一 cache key 会让上游命中错账号的前缀缓存、泄露对方对话）。
-func injectWorkbuddyPromptCacheKey(obj map[string]any, creds WorkbuddyCredentials) {
-	if existing, ok := obj["prompt_cache_key"].(string); ok && strings.TrimSpace(existing) != "" {
-		return // 优先级 1：客户端已显式带 key → 绝不覆盖
-	}
-	conv := ""
-	if v, ok := obj["conversation_id"].(string); ok {
-		conv = strings.TrimSpace(v)
-	}
-	if conv == "" {
-		if v, ok := obj["conversationId"].(string); ok {
-			conv = strings.TrimSpace(v)
-		}
-	}
-	obj["prompt_cache_key"] = buildWorkbuddyCacheKey(strings.TrimSpace(creds.UID), conv)
-}
-
-// buildWorkbuddyCacheKey 生成 `wb2a-<uid8>-<convHex>` 格式的稳定 cache key。
-// uid8 = uid 前 8 字符（空则 "-"）提供账号隔离段；
-// convHex = sha256(uid + "|" + conversation) 前 16 字节的 hex（同账号同会话稳定、
-// 不同会话不同、跨账号绝不碰撞——uid 必须参与哈希）。
-func buildWorkbuddyCacheKey(uid, conversation string) string {
-	uid8 := uid
-	if len(uid8) > 8 {
-		uid8 = uid8[:8]
-	}
-	if uid8 == "" {
-		uid8 = "-"
-	}
-	sum := sha256.Sum256([]byte(uid + "|" + conversation))
-	return "wb2a-" + uid8 + "-" + hex.EncodeToString(sum[:16])
-}
+// 客户端自己显式带 prompt_cache_key 的请求仍原样透传（本仓不删也不覆盖），
+// 因为那是客户端自己的声明，不是网关伪造的。
+//
+// 【不得重新引入】若将来需要前缀缓存收益，得先拿到上游官方文档证明该字段属于
+// 客户端可自由设置的通用能力，而不是「只有某个工具有」的识别键。
 
 // ---------------------------------------------------------------------------
 // 指纹脱敏（移植自 workbuddy2api/internal/upstream/sanitize.go）

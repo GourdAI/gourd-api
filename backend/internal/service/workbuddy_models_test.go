@@ -237,7 +237,7 @@ func TestFetchWorkbuddyUpstreamModelsRequestsProductConfig(t *testing.T) {
 	require.Equal(t, "application/json, text/plain, */*", call.header.Get("Accept"))
 	require.Equal(t, "Bearer wb-access-token", call.header.Get("Authorization"))
 	require.Equal(t, "u-42", call.header.Get("X-User-Id"))
-	require.Equal(t, "WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1", call.header.Get("User-Agent"),
+	require.Equal(t, "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0", call.header.Get("User-Agent"),
 		"UA 决定上游下发哪张目录表，必须是桌面端完整形态而不是 billing 单段")
 }
 
@@ -270,7 +270,7 @@ func TestFetchWorkbuddyUpstreamModelsFallsBackToSecondUAWhenCatalogEmpty(t *test
 	require.NoError(t, err)
 	require.Equal(t, []string{"glm-5.2", "deepseek-v4.1-flash"}, ids)
 	require.Len(t, capture.all(), 2, "空目录不是成功，必须再试一次 UA")
-	require.Equal(t, "WorkBuddy/5.5.4", capture.all()[1].header.Get("User-Agent"))
+	require.Equal(t, "WorkBuddy/5.9.3", capture.all()[1].header.Get("User-Agent"))
 }
 
 func TestFetchWorkbuddyUpstreamModelsSurfacesUnauthorized(t *testing.T) {

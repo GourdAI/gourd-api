@@ -160,12 +160,14 @@ func TestForwardWorkbuddyChatCompletionsNonStreamAggregation(t *testing.T) {
 	require.Equal(t, workbuddyChatPath, result.UpstreamEndpoint)
 	require.Equal(t, workbuddyChatPath, GetActualOpenAIUpstreamEndpoint(c))
 
-	// 出站 body 已经过 workbuddy 协议变换（强制 stream、cache key 注入）。
+	// 出站 body 已经过 workbuddy 协议变换（强制 stream；cache key 注入已于 2026-11-01 剔除）。
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, workbuddyChatPath, gotPath)
 	require.True(t, gjson.Get(gotBody, "stream").Bool())
-	require.NotEmpty(t, gjson.Get(gotBody, "prompt_cache_key").String())
+	require.False(t, gjson.Get(gotBody, "prompt_cache_key").Exists(),
+		"网关不得自造 prompt_cache_key")
+	require.NotContains(t, gotBody, "wb2a")
 }
 
 // TestForwardWorkbuddyChatCompletionsStreamPassthrough 流式：规范化 SSE 逐帧透传，
