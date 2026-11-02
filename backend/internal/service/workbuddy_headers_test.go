@@ -20,7 +20,9 @@ import (
 //   - X-Product：WorkBuddy → SaaS；X-Auth-Refresh-Source：plugin → workbuddy；
 //   - 版本段：5.5.4/2.137.1 → 5.9.3/2.165.0；
 //   - Accept-Language：裸单标签 → 浏览器形状（主语言 + q 兜底）；
-//   - X-Conversation-ID 兜底：按内容派生的恒定值 → 每请求随机；
+//   - X-Conversation-ID / X-Conversation-Request-ID：同日两次修正。**终态**为「按会话/
+//     轮锚点派生稳定值，会话 ID 带横线 UUID」——中间那一版「每请求随机」已被官方
+//     一手源码推翻（翻证见 workbuddy_headers.go 的【翻证记录】），下面相应用例随之翻转；
 //   - X-IDE-* / X-Request-ID：默认关，受 usage_identity 控制。
 //
 // 【刻意保留并有断言】x-codebuddy-request、X-Agent-Purpose、X-Agent-Intent：
@@ -223,7 +225,7 @@ func TestWorkbuddyConversationHeaderFamilyInvalidTraceFallback(t *testing.T) {
 	// X-Conversation-ID 无来源 → 仍恒发（国际版渠道校验按存在性拦截，缺头即 400/11128）。
 	convID := req.Header.Get("X-Conversation-ID")
 	require.NotEmpty(t, convID, "X-Conversation-ID 必须恒发")
-	require.True(t, workbuddyValidTraceID(convID), "兜底会话 ID 必须是 32 hex")
+	require.Equal(t, 36, len(convID), "兜底会话 ID 必须是带横线 UUID（不是 32 hex）")
 	require.Equal(t, "not-a-hex-trace-id", req.Header.Get("X-Trace-ID"))
 }
 
@@ -236,7 +238,7 @@ func TestResolveWorkbuddyChatMeta(t *testing.T) {
 	c.Request.Header.Set("X-Conversation-Request-ID", "inbound-conv-req")
 	c.Request.Header.Set("X-Trace-ID", "inbound-trace")
 	c.Request.Header.Set("X-Conversation-ID", "inbound-conv")
-	meta := resolveWorkbuddyChatMeta(c, []byte(`{"conversationId":"body-conv"}`))
+	meta := resolveWorkbuddyChatMeta(c, nil, []byte(`{"conversationId":"body-conv"}`))
 	require.Equal(t, "inbound-conv-req", meta.ConversationRequestID)
 	require.Equal(t, "inbound-trace", meta.TraceID)
 	require.Equal(t, "inbound-conv", meta.ConversationID)
@@ -245,16 +247,17 @@ func TestResolveWorkbuddyChatMeta(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	c2, _ := gin.CreateTestContext(rec2)
 	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	meta2 := resolveWorkbuddyChatMeta(c2, []byte(`{"conversationId":"body-conv"}`))
+	meta2 := resolveWorkbuddyChatMeta(c2, nil, []byte(`{"conversationId":"body-conv"}`))
 	require.True(t, workbuddyValidTraceID(meta2.ConversationRequestID), "生成的聚合主键必须是 32 hex")
 	require.Equal(t, "body-conv", meta2.ConversationID)
 	require.Empty(t, meta2.TraceID)
 
 	// 无 gin 上下文也不 panic；无 body 会话字段时留空由注入层随机兜底。
-	meta3 := resolveWorkbuddyChatMeta(nil, nil)
-	require.True(t, workbuddyValidTraceID(meta3.ConversationRequestID))
-	require.Empty(t, meta3.ConversationID,
-		"派生层不再按内容折叠恒定 ID；兜底交给注入层的每请求随机值")
+	meta3 := resolveWorkbuddyChatMeta(nil, nil, nil)
+	require.True(t, workbuddyValidTraceID(meta3.ConversationRequestID),
+		"无锚点时轮级 ID 回落每请求随机 32 hex")
+	require.Len(t, meta3.ConversationID, 36,
+		"无锚点时会话 ID 也能拿到带横线 UUID 兜底（恒发，不缺头）")
 }
 
 // TestResolveWorkbuddyChatMetaConversationIDFromBodyOnly body 带显式会话标识时透传原值。
@@ -263,42 +266,115 @@ func TestResolveWorkbuddyChatMetaConversationIDFromBodyOnly(t *testing.T) {
 	rec, _ := gin.CreateTestContext(httptest.NewRecorder())
 	rec.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	body := []byte(`{"model":"gpt-6-astra","conversation_id":"client-conv","messages":[{"role":"user","content":"hello there"}]}`)
-	require.Equal(t, "client-conv", resolveWorkbuddyChatMeta(rec, body).ConversationID)
+	require.Equal(t, "client-conv", resolveWorkbuddyChatMeta(rec, nil, body).ConversationID)
 }
 
-// TestWorkbuddyConversationIDNotDerivedFromContent 2026-11-01 规格翻转的核心用例：
-// 同一会话的后续轮次**不得**再复用同一个 X-Conversation-ID。
+// TestWorkbuddyConversationIDStableAcrossTurns 官方语义：X-Conversation-ID 是会话级
+// 身份，同一个聊天窗口内跨轮**必须复用**同一个值。
 //
-// 修复前的形态（本用例反向护栏注入的就是它）：X-Conversation-ID =
-// sha256(uid + "|" + 首条 user 文本)，于是「第 2 轮」与「第 1 轮」同值。
-// 参考实现明确反对复用（"reusing one value across requests would forge a conversation
-// identity the plugin does not actually have"），而渠道闸只查存在性，稳定值换不来
-// 任何通过收益，却换来「一个会话身份被反复复用、跨号 failover 时同 cid 换票继续发」
-// 这一池化特征。
-func TestWorkbuddyConversationIDNotDerivedFromContent(t *testing.T) {
+// 【本用例是 2026-11-01 第二次修正的翻转项】上一版它叫
+// TestWorkbuddyConversationIDNotDerivedFromContent，断言两轮**不得**相等 —— 那是把
+// 我当时错误的结论（引自第三方网关架构受限下的取舍）固化成了契约。
+//
+// 现行一手依据（官方 npm 包 @tencent-ai/codebuddy-code@2.179.1 的
+// dist-server/codebuddy.js）：buildConversationHeaders(i) 逐字为
+// [CONVERSATION_ID_HEADER]: i.id —— i.id 是 session 对象的持久字段（可 resume），
+// 不是每请求现生成；而 messageId 才是 uuidv7().replace(/-/g,"")。
+// 独立印证：sub2api PR #4684（读同一官方包）、9router #4946（350 条实测拓包）。
+//
+// 反向护栏（注入旧缺陷时本用例必须 FAIL）：把会话 ID 改回每请求随机 32 hex。
+func TestWorkbuddyConversationIDStableAcrossTurns(t *testing.T) {
 	t.Parallel()
 	rec, _ := gin.CreateTestContext(httptest.NewRecorder())
 	rec.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	acct := &Account{ID: 31, Platform: PlatformWorkbuddy}
 	first := []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"hello there"}]}`)
 	followUp := []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"hello there"},{"role":"assistant","content":"hi"},{"role":"user","content":"and then?"}]}`)
 
-	// 两者都没有显式标识 → resolve 返回空，注入层每请求随机。
-	require.Empty(t, resolveWorkbuddyChatMeta(rec, first).ConversationID)
-	require.Empty(t, resolveWorkbuddyChatMeta(rec, followUp).ConversationID)
-
-	// 同一对话的两轮，注入后的头值必须不同（旧实现这里必然相等）。
-	idOf := func(body []byte) string {
+	cidOf := func(body []byte) string {
 		req := httptest.NewRequest(http.MethodPost, "https://www.workbuddy.ai/v2/chat/completions", nil)
 		applyWorkbuddyChatHeaders(req, WorkbuddyCredentials{AccessToken: "t", UID: "u-intl"},
-			&Account{ID: 31, Platform: PlatformWorkbuddy}, "global", resolveWorkbuddyChatMeta(rec, body))
+			acct, "global", resolveWorkbuddyChatMeta(rec, acct, body))
 		return req.Header.Get("X-Conversation-ID")
 	}
-	id1, id2 := idOf(first), idOf(followUp)
-	require.True(t, workbuddyValidTraceID(id1))
-	require.NotEqual(t, id1, id2, "同一会话的后续轮次不得复用同一会话 ID（旧形态正是本次剔除项）")
-	// 不同首句当然也不同。
+
+	id1, id2 := cidOf(first), cidOf(followUp)
+	require.Equal(t, id1, id2, "同一会话的后续轮次必须复用同一会话 ID（官方 session.id 语义）")
+	// 形态：带横线 UUID（对齐官方 session.id；实测 main 对话为 v4 形态）。
+	require.Len(t, id1, 36, "会话 ID 必须是标准 36 字符 UUID")
+	require.Equal(t, 4, strings.Count(id1, "-"), "会话 ID 必须带 4 个连字符（不得去横线）")
+	require.False(t, workbuddyValidTraceID(id1), "会话 ID 不再是 32 hex 形态（旧断言已翻转）")
+
+	// 不同首句 = 不同会话，必须换值。
 	other := []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"completely different"}]}`)
-	require.NotEqual(t, id1, idOf(other))
+	require.NotEqual(t, id1, cidOf(other), "不同会话不得共用同一个 cid")
+}
+
+// TestWorkbuddyConversationIDAccountScoped 派生必须含账号维度：换号 failover 不得
+// 把同一个 cid 换个 Authorization 继续发（magpie：one conversation or turn never
+// shows up under two X-User-Ids）。本用例是「稳定但丌串号」两面口径的隔离那一面。
+func TestWorkbuddyConversationIDAccountScoped(t *testing.T) {
+	t.Parallel()
+	rec, _ := gin.CreateTestContext(httptest.NewRecorder())
+	rec.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	body := []byte(`{"model":"glm","messages":[{"role":"user","content":"same prompt"}]}`)
+
+	cidOf := func(accountID int64) string {
+		acct := &Account{ID: accountID, Platform: PlatformWorkbuddy}
+		req := httptest.NewRequest(http.MethodPost, "https://copilot.tencent.com/v2/chat/completions", nil)
+		applyWorkbuddyChatHeaders(req, WorkbuddyCredentials{AccessToken: "t"},
+			acct, "cn", resolveWorkbuddyChatMeta(rec, acct, body))
+		return req.Header.Get("X-Conversation-ID")
+	}
+	require.NotEqual(t, cidOf(7), cidOf(8), "同一段对话在不同账号上不得发同一个会话 ID")
+}
+
+// TestWorkbuddyRequestIDStableWithinTurn 轮级 ID：一轮（一次 user send）内多步必须
+// 复用同一值，用户说下一句才换。上游**按 X-Conversation-Request-ID 统计一次用户发送**
+// （magpie 一手注释），每请求现生成会把一轮 tool 循环放大成 N 次计数。
+func TestWorkbuddyRequestIDStableWithinTurn(t *testing.T) {
+	t.Parallel()
+	rec, _ := gin.CreateTestContext(httptest.NewRecorder())
+	rec.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	acct := &Account{ID: 31, Platform: PlatformWorkbuddy}
+
+	idsOf := func(body string) (string, string) {
+		req := httptest.NewRequest(http.MethodPost, "https://copilot.tencent.com/v2/chat/completions", nil)
+		meta := resolveWorkbuddyChatMeta(rec, acct, []byte(body))
+		applyWorkbuddyChatHeaders(req, WorkbuddyCredentials{AccessToken: "t"}, acct, "cn", meta)
+		return req.Header.Get("X-Conversation-Request-ID"), req.Header.Get("X-Conversation-Message-ID")
+	}
+
+	// 第一轮，以及该轮的 tool 回传（末条用户发言不变）。
+	turn1a, msg1a := idsOf(`{"messages":[{"role":"user","content":"do X"}]}`)
+	turn1b, msg1b := idsOf(`{"messages":[{"role":"user","content":"do X"},{"role":"assistant","content":"calling"},{"role":"tool","tool_call_id":"1","content":"result"}]}`)
+	require.Equal(t, turn1a, turn1b, "一轮内（含 tool 回传）必须复用同一轮级 ID")
+	require.NotEqual(t, msg1a, msg1b, "消息级 ID 必须每请求新生成")
+	require.True(t, workbuddyValidTraceID(turn1a), "轮级 ID 必须是 32 位无横线 hex（官方文档强制）")
+
+	// 用户说下一句 ⇒ 轮级 ID 必须换。
+	turn2, _ := idsOf(`{"messages":[{"role":"user","content":"do X"},{"role":"assistant","content":"done"},{"role":"user","content":"now do Y"}]}`)
+	require.NotEqual(t, turn1a, turn2, "新的 user send 必须用新的轮级 ID")
+}
+
+// TestWorkbuddyTurnAnchorIgnoresToolResult 轮锚点不得取到工具回传。
+// Anthropic 形态下 tool_result 也走 role=user；若拿它做锚点，一轮内每次回传都会
+// 造出新轮级 ID（等于把本修正想修的问题又引回来）。
+func TestWorkbuddyTurnAnchorIgnoresToolResult(t *testing.T) {
+	t.Parallel()
+	pureToolResult := []byte(`{"messages":[{"role":"user","content":"go"},{"role":"assistant","content":"c"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"1","content":"ok"}]}]}`)
+	require.Equal(t, "go", workbuddyLastUserText(pureToolResult),
+		"纯 tool_result 不是用户发言，锚点应回退到上一条真实用户发言")
+
+	moreTool := []byte(`{"messages":[{"role":"user","content":"go"},{"role":"assistant","content":"c"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"2","content":"ok2"}]}]}`)
+	require.Equal(t, workbuddyLastUserText(pureToolResult), workbuddyLastUserText(moreTool),
+		"同一次发送的不同工具回传不得改变轮锚点")
+
+	// tool_result + 用户附言 ⇒ 取用户文字。
+	mixed := []byte(`{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"1"},{"type":"text","text":"extra note"}]}]}`)
+	require.Equal(t, "extra note", workbuddyLastUserText(mixed))
+
+	require.Equal(t, "", workbuddyLastUserText([]byte(`{"messages":[{"role":"tool","content":"x"}]}`)))
 }
 
 // TestWorkbuddyFirstUserText 内容提取边界（现仅供诊断，不得再用作身份值）。
@@ -325,14 +401,18 @@ func TestWorkbuddyConversationHeadersNeverDropsID(t *testing.T) {
 	require.NotEmpty(t, convID, "即使 meta 绕过 resolve 构造，三件套也不得缺项")
 	require.NotEmpty(t, req.Header.Get("X-Conversation-Request-ID"))
 	require.NotEmpty(t, req.Header.Get("X-Conversation-Message-ID"))
-	require.True(t, workbuddyValidTraceID(convID))
+	require.Equal(t, 36, len(convID), "会话 ID 兜底形态：带横线 UUID（对齐官方 session.id）")
 }
 
-// TestWorkbuddyConversationIDFallbackNotConstant 兜底不得串起整个账号池。
+// TestWorkbuddyConversationIDFallbackNotConstant 无锚点时的兜底不得串起整个账号池。
 //
-// 为什么单独一条：上一版兜底是 sha256("|") 编译期常量——一旦触发，所有账号发出同一个
-// X-Conversation-ID。只断言 NotEmpty 的用例对这种缺陷全绿（假绿），故必须直接断言
-// 「多次独立兜底彼此不同」。
+// 为什么单独一条：曾出现过兜底值是 sha256("|") 编译期常量 —— 一旦触发，所有账号
+// 发出同一个 X-Conversation-ID。只断言 NotEmpty 的用例对这种缺陷全绿（假绿），故必须
+// 直接断言「多次独立兜底彼此不同」。
+//
+// 【与稳定化的关系】本用例走的是「空 meta 直接注入」（绕过 resolve、无会话锚点）；
+// 有锚点时应当稳定复用，那由 TestWorkbuddyConversationIDStableAcrossTurns 钉住。
+// 两者不矛盾：有会话才复用，没会话就宁可每请求新随机。
 func TestWorkbuddyConversationIDFallbackNotConstant(t *testing.T) {
 	t.Parallel()
 	account := &Account{ID: 12, Platform: PlatformWorkbuddy}
@@ -342,10 +422,12 @@ func TestWorkbuddyConversationIDFallbackNotConstant(t *testing.T) {
 		applyWorkbuddyChatHeaders(req, WorkbuddyCredentials{AccessToken: "t"}, account, "global", workbuddyChatMeta{})
 		cid := req.Header.Get("X-Conversation-ID")
 		require.NotEmpty(t, cid)
-		require.True(t, workbuddyValidTraceID(cid), "兜底值必须是 32 hex")
+		require.Equal(t, 36, len(cid), "兜底值必须是带横线 UUID，不是 32 hex")
 		seen[cid] = struct{}{}
 	}
 	require.Len(t, seen, 8, "8 次独立兜底必须得到 8 个不同 ID（跨请求/跨账号隔离）")
+	require.NotEqual(t, workbuddyStableConversationID(0, "", ""), workbuddyStableConversationID(0, "", ""),
+		"无锚点分支不得退化成常量串（旧形态：sha256 空盐编译期常量）")
 }
 
 func TestWorkbuddyResolveConversationID(t *testing.T) {

@@ -268,9 +268,10 @@ func TestWorkBuddyCreditsHandlerServiceNilRejected(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	rec = httptest.NewRecorder()
+	// 活跃上报入口已封死：即使 service 全为 nil 也是 410（封死声明），而不是 400。
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/workbuddy/accounts/1/activity", nil)
 	router.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, http.StatusGone, rec.Code)
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/workbuddy/accounts/1/travel", nil)
@@ -279,7 +280,8 @@ func TestWorkBuddyCreditsHandlerServiceNilRejected(t *testing.T) {
 }
 
 // TestWorkBuddyCreditsHandlerTasksServiceNilRejected 覆盖任务服务未启用（handler 非 nil、
-// tasksService 为 nil）时的防御：两个新端点均 400 而非 panic。
+// tasksService 为 nil）时的防御：旅行端点 400 而非 panic；活跃上报端点无论 service 在
+// 不在都返回 410（封死在进 service 之前，不依赖任何依赖注入状态）。
 func TestWorkBuddyCreditsHandlerTasksServiceNilRejected(t *testing.T) {
 	t.Parallel()
 	repo := &workbuddyCreditsHandlerRepo{account: workbuddyCreditsTestAccount(107, "http://127.0.0.1:1")}
@@ -291,7 +293,7 @@ func TestWorkBuddyCreditsHandlerTasksServiceNilRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/workbuddy/accounts/107/activity", nil)
 	router.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, http.StatusGone, rec.Code)
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/workbuddy/accounts/107/travel", nil)
@@ -309,11 +311,12 @@ func newWorkBuddyTasksTestHandlerService(repo service.AccountRepository, upstrea
 	return service.NewWorkBuddyTasksService(newWorkBuddyCreditsTestService(repo, upstream), repo, cfg)
 }
 
-// TestWorkBuddyCreditsHandlerRunActivityEndToEnd 覆盖活跃上报手动入口全链路：
-// POST activity → 200 直出 service 回执（realm/reports/success/ran_at）；
-// 上游收到 /v2/report 与后续 growth 链端点；快照写入 extra（workbuddy_activity）；
-// 响应体不泄露 access_token。
-func TestWorkBuddyCreditsHandlerRunActivityEndToEnd(t *testing.T) {
+// TestWorkBuddyCreditsHandlerRunActivityEndpointGone 钉住「跑任务」手动入口已封死
+// （2026-11-01）：POST activity 必须 410 + 明确 reason，且在一个**完全可用**的
+// tasksService（指向能应答 /v2/report 的假上游）下依然做到上游零请求、零快照写入。
+// 旧用例在这里断言的是 paths[0] == "/v2/report"，等于把「伪造活跃事件」当契约钉住，
+// 所以本用例的价值全在下面两条 Empty/False 断言：把 handler 改回调用 service 必红。
+func TestWorkBuddyCreditsHandlerRunActivityEndpointGone(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -346,25 +349,21 @@ func TestWorkBuddyCreditsHandlerRunActivityEndToEnd(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/workbuddy/accounts/108/activity", nil)
 	router.ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusGone, rec.Code)
 	var envelope map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &envelope))
-	data, ok := envelope["data"].(map[string]any)
-	require.True(t, ok, "envelope data must be an object: %s", rec.Body.String())
-	require.EqualValues(t, true, data["success"])
-	require.Equal(t, "cn", data["realm"])
-	require.EqualValues(t, 1, data["reports"])
-	require.EqualValues(t, 1, data["reports_requested"])
-	require.NotNil(t, data["ran_at"])
+	require.EqualValues(t, http.StatusGone, envelope["code"])
+	reason, _ := envelope["reason"].(string)
+	require.Equal(t, "WORKBUDDY_ACTIVITY_DISABLED", reason, "必须给出可归因的 reason，而非裸 410")
+	message, _ := envelope["message"].(string)
+	require.Contains(t, message, "fabricated chat_request_send", "理由必须写明为何封禁")
 	require.NotContains(t, rec.Body.String(), "wb-access-token")
 
-	paths := upstream.requestPaths()
-	require.NotEmpty(t, paths)
-	require.Equal(t, "/v2/report", paths[0], "活跃上报必须首打 /v2/report")
+	// 核心护栏：tasksService 可用且指向能应答的上游假服务，也必须一个请求都不发。
+	require.Empty(t, upstream.requestPaths(), "封死后不得触达任何上游端点")
 
-	extra, ok := repo.snapshot(108)
-	require.True(t, ok, "activity snapshot must be persisted to account extra")
-	require.Contains(t, extra, "workbuddy_activity")
+	_, persisted := repo.snapshot(108)
+	require.False(t, persisted, "封死后不得写入 workbuddy_activity 快照")
 }
 
 // TestWorkBuddyCreditsHandlerRunTravelEndToEnd 覆盖猫猫旅行手动入口全链路：

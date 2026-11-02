@@ -91,21 +91,6 @@ export interface WorkBuddyCheckinResult {
   checked_at?: number
 }
 
-/** 活跃上报（含连登奖励链）运行结果（对应后端 WorkBuddyActivityRunResult，JSON 键为下游契约）。 */
-export interface WorkBuddyActivityRunResult {
-  success: boolean
-  realm: string
-  reports: number
-  reports_requested: number
-  streak_days: number
-  streak_checked: boolean
-  redeem_tier?: string
-  credit_granted?: number
-  lottery_drawn: boolean
-  detail?: string
-  ran_at: number
-}
-
 /** 猫猫旅行巡检运行结果（对应后端 WorkBuddyTravelRunResult，JSON 键为下游契约）。 */
 export interface WorkBuddyTravelRunResult {
   success: boolean
@@ -157,13 +142,10 @@ export async function checkinWorkBuddyAccount(id: number): Promise<WorkBuddyChec
   return data
 }
 
-/** 手动跑活跃上报任务（后端同时落 extra 快照 workbuddy_activity）。 */
-export async function runWorkBuddyActivity(id: number): Promise<WorkBuddyActivityRunResult> {
-  const { data } = await apiClient.post<WorkBuddyActivityRunResult>(
-    `/admin/workbuddy/accounts/${id}/activity`
-  )
-  return data
-}
+// 「跑活跃上报」已于 2026-11-01 移除：该任务向 billing 域 POST /v2/report 送
+// 凭空捏造的 chat_request_send 事件，上游风控视作账号异常行为（国内站 11140
+// 账号级限制）。后端 POST /admin/workbuddy/accounts/:id/activity 现无条件 410，
+// 因此这里不再保留任何调用它的函数（避免下一个入口从 api 层重新长出来）。
 
 /** 手动跑猫猫旅行巡检（后端同时落 extra 快照 workbuddy_travel）。 */
 export async function runWorkBuddyTravel(id: number): Promise<WorkBuddyTravelRunResult> {
@@ -178,6 +160,5 @@ export default {
   exchangeWorkBuddyCode,
   queryWorkBuddyCredits,
   checkinWorkBuddyAccount,
-  runWorkBuddyActivity,
   runWorkBuddyTravel,
 }

@@ -3,20 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import WorkBuddyCreditsCell from '../WorkBuddyCreditsCell.vue'
 import type { Account } from '@/types'
 
-const { queryWorkBuddyCredits, checkinWorkBuddyAccount, runWorkBuddyActivity, runWorkBuddyTravel } =
-  vi.hoisted(() => ({
-    queryWorkBuddyCredits: vi.fn(),
-    checkinWorkBuddyAccount: vi.fn(),
-    runWorkBuddyActivity: vi.fn(),
-    runWorkBuddyTravel: vi.fn()
-  }))
+const { queryWorkBuddyCredits, checkinWorkBuddyAccount, runWorkBuddyTravel } = vi.hoisted(() => ({
+  queryWorkBuddyCredits: vi.fn(),
+  checkinWorkBuddyAccount: vi.fn(),
+  runWorkBuddyTravel: vi.fn()
+}))
 
+// 注：runWorkBuddyActivity 已于 2026-11-01 从 api 层删除（mock 里也不再提供），
+// 任何试图重新引入该调用的改动会在类型层/运行层直接失败。
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     workbuddy: {
       queryWorkBuddyCredits,
       checkinWorkBuddyAccount,
-      runWorkBuddyActivity,
       runWorkBuddyTravel
     }
   }
@@ -51,7 +50,6 @@ describe('WorkBuddyCreditsCell', () => {
   beforeEach(() => {
     queryWorkBuddyCredits.mockReset()
     checkinWorkBuddyAccount.mockReset()
-    runWorkBuddyActivity.mockReset()
     runWorkBuddyTravel.mockReset()
   })
 
@@ -223,17 +221,10 @@ describe('WorkBuddyCreditsCell', () => {
     expect(queryWorkBuddyCredits).not.toHaveBeenCalled()
   })
 
-  it('runs the activity task and renders streak and report counts', async () => {
-    runWorkBuddyActivity.mockResolvedValue({
-      success: true,
-      realm: 'cn',
-      reports: 3,
-      reports_requested: 3,
-      streak_days: 7,
-      streak_checked: true,
-      lottery_drawn: false,
-      ran_at: nowSeconds()
-    })
+  // 「跑任务」入口必须彻底消失（2026-11-01）：该任务向 billing 域 POST /v2/report
+  // 送凭空捏造的 chat_request_send 事件，上游风控视作账号异常行为（国内站 11140
+  // 账号级限制）。把按钮改回来时下两条断言必红。
+  it('does not expose any manual activity-report trigger', async () => {
     const account = makeAccount(9010, {
       extra: {
         workbuddy_credits: { remain: 900, realm: 'cn', fetched_at: nowSeconds() }
@@ -242,15 +233,8 @@ describe('WorkBuddyCreditsCell', () => {
     const wrapper = mount(WorkBuddyCreditsCell, { props: { account } })
     await flushPromises()
 
-    await wrapper.get('[data-test="workbuddy-activity-run"]').trigger('click')
-    await flushPromises()
-
-    expect(runWorkBuddyActivity).toHaveBeenCalledWith(9010)
-    expect(runWorkBuddyTravel).not.toHaveBeenCalled()
-    const snapshot = wrapper.get('[data-test="workbuddy-activity-snapshot"]')
-    // 结果直接更新本地展示：连登天数与上报条数均可见。
-    expect(snapshot.text()).toContain('7')
-    expect(snapshot.text()).toContain('3')
+    expect(wrapper.find('[data-test="workbuddy-activity-run"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('admin.accounts.workbuddy.activityRun')
   })
 
   it('runs the travel task and renders the action, buddy name and reward credit', async () => {
@@ -275,7 +259,6 @@ describe('WorkBuddyCreditsCell', () => {
     await flushPromises()
 
     expect(runWorkBuddyTravel).toHaveBeenCalledWith(9011)
-    expect(runWorkBuddyActivity).not.toHaveBeenCalled()
     const snapshot = wrapper.get('[data-test="workbuddy-travel-snapshot"]')
     expect(snapshot.text()).toContain('admin.accounts.workbuddy.travelActionClaim')
     expect(snapshot.text()).toContain('奶糕')

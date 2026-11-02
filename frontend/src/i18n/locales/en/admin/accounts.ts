@@ -222,8 +222,9 @@
         checkinFailed: 'Check-in failed',
         checkinSkipped: 'Check-in unavailable',
         checkinEnterpriseTooltip: 'Enterprise member accounts have no personal check-in system; eligibility is granted by the enterprise admin console.',
-        activityRun: 'Run task',
-        activityRunTooltip: 'Run the conversation activity report now (includes the streak reward chain)',
+        // 「跑任务」（对话活跃上报）已于 2026-11-01 移除：该上报送凭空捏造的
+        // chat_request_send 事件，会触发上游账号级风控（11140）。
+        // 下方 activitySnapshot 保留：它只渲染后端写入 account.extra 的历史快照。
         travelRun: 'Travel',
         travelRunTooltip: 'Run the buddy travel check now (adopt / depart / claim)',
         activitySnapshot: 'Streak {days}d · {reports} reports',

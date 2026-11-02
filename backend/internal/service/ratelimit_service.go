@@ -1165,6 +1165,14 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 		s.handleCNProviderConcurrencyLimit403(ctx, account)
 		return true
 	}
+	// WorkBuddy 403：同一枚 code 11140 既表示「账号被限制」也表示「内容未通过安全
+	// 审核」，只有 data.displayMsg 能分流，而 extractUpstreamErrorMessage 不读 data.*
+	// ⇒ 旧实现拿到的 upstreamMsg 恒为空，直接落到兜底分支：**首打即永久 SetError**。
+	// 叠加后果：内容审核型会把好号标成账号失效（需人工重登才能救），而 failover
+	// 重放（已在 shouldFailoverOpenAIUpstreamResponse 拦住）本身又会在池内逐个烧号。
+	if account.IsWorkbuddy() {
+		return s.handleWorkbuddy403(ctx, account, responseBody)
+	}
 	// 国产供应商与 openai 同口径:HTML 403(CDN/代理拦截页)不构成账号失效证据,
 	// 且 403 在 failover 状态集里会被逐账号重放——直接 SetError 会让一个坏请求/
 	// 一层坏代理连环永久禁用整组账号。走 HTML 豁免 + N 次累计 + 临时冷却。
@@ -1180,6 +1188,44 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 	)
 	s.handleAuthError(ctx, account, msg)
 	return true
+}
+
+// handleWorkbuddy403 按 data.displayMsg 分流 WorkBuddy 的 403，避免「一个码两种语义」
+// 被当成同一种处置。
+//
+//   - account_restricted：上游已明说该账号被限制。SetError 是**事实记录**（该号确实
+//     不能再服务，继续送流量只会坐实异常行为）；文案带上申诉渠道，否则管理员只能
+//     看到一句 request illegal 无从下手。
+//   - content_moderation：内容被拒，账号本身没问题 ⇒ **不落任何账号状态**（返回
+//     false 表示不处罚）。failover 闸已单独拦住这类重放，两者叠加才能避免一次内容
+//     拒绝烧穿整池。
+//   - unknown：读不到可读文案 ⇒ 不猜测。沿用旧兜底行为（SetError）会误杀，而完全不
+//     处置又会让坏号反复被选中 —— 取中间态：临时冷却，不永久下线。
+func (s *RateLimitService) handleWorkbuddy403(ctx context.Context, account *Account, responseBody []byte) (shouldDisable bool) {
+	display := workbuddyForbiddenDisplayMessage(responseBody)
+	code := gjson.GetBytes(responseBody, "data.code").Int()
+	switch classifyWorkbuddyForbiddenBody(responseBody) {
+	case workbuddyForbiddenAccountRestricted:
+		msg := fmt.Sprintf("WorkBuddy account restricted (code %d): %s | appeal via Tencent Cloud ticket or workbuddy_ai@tencent.com (attach a conversation screenshot); code changes will NOT unblock it", code, display)
+		s.handleAuthError(ctx, account, msg)
+		return true
+	case workbuddyForbiddenContentModeration:
+		slog.Warn("workbuddy_403_content_moderation_skips_account_penalty",
+			"account_id", account.ID, "code", code, "display_msg", display)
+		return false
+	default:
+		// 不可读形态：临时冷却而非永久禁用。理由同 handleOpenAI403 的 HTML 豁免 ——
+		// 读不到证据就不能把请求级问题当成账号级结论。
+		until := time.Now().Add(time.Duration(openAI403CooldownMinutesDefault) * time.Minute)
+		reason := fmt.Sprintf("WorkBuddy 403 temporary cooldown (unclassified): %s", display)
+		s.notifyAccountSchedulingBlocked(account, until, "workbuddy_403_temp")
+		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+			slog.Warn("workbuddy_403_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+			return true
+		}
+		slog.Warn("workbuddy_403_temp_unschedulable", "account_id", account.ID, "until", until.UTC())
+		return true
+	}
 }
 
 func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {

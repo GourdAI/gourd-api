@@ -46,6 +46,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -153,6 +154,136 @@ func workbuddyMarkBizErrorOnce(c *gin.Context, accountID int64, code string) boo
 	seen[key] = struct{}{}
 	c.Set(workbuddyOpsBizErrorSeenKey, seen)
 	return true
+}
+
+// workbuddyForbiddenClass 403 错误体的分流结果（只看上游回的字面值，不做猜测）。
+type workbuddyForbiddenClass string
+
+const (
+	// workbuddyForbiddenUnknown 字典外：既不重放也不处罚（宁可不处置，不可误杀）。
+	workbuddyForbiddenUnknown workbuddyForbiddenClass = "unknown"
+	// workbuddyForbiddenAccountRestricted 账号级限制：displayMsg 写着「异常行为/已被限制
+	// 使用/restricted」，masknull、magpie #1849、mitmproxy 复盘三重印证这是账号层结论，
+	// SetError 是**事实记录**（该号确实不能再服务）。
+	workbuddyForbiddenAccountRestricted workbuddyForbiddenClass = "account_restricted"
+	// workbuddyForbiddenContentModeration 内容审核拒绝：同样的 code 11140，但
+	// displayMsg 是「内容未通过安全审核」。这是**请求内容**问题，账号没有做错任何事。
+	// 旧实现把它当账号失效：首次即 SetError（误杀好号），而 403 又在 failover 状态集
+	// 里 ⇒ 同一个坏 body 在池内逐个账号重放，每个号各烧一次 —— 一次内容拒绝足以
+	// 把整组账号打成 error（且 SetError 需人工重登才能救）。
+	workbuddyForbiddenContentModeration workbuddyForbiddenClass = "content_moderation"
+)
+
+// 上游 11140 响应体实测形状（用户提供的一手样本，2026-11-01）：
+//
+//	{"code":-32603,"message":"Internal error","data":{"statusCode":403,
+//	  "displayMsg":{"en":"Your account has been restricted due to unusual activity",
+//	              "zh":"账号存在异常行为，已被限制使用",
+//	              "zh-hant":"帳號存在異常行為，已被限制使用"},
+//	  "retry_policy":{"retry":false},"actions":["EDIT_INPUT","SUBMIT_FEEDBACK"],
+//	  "code":11140,"category":"internal"}}
+//
+// 【为什么必须读 data.* 嵌套】extractUpstreamErrorMessage（gateway_upstream_response.go:294）
+// 只认 error.message / detail / 顶层 message，**不读 data.displayMsg**；而 11128（渠道闸）
+// 与 11140（账号限制）的 msg 逐字都是 request illegal —— 只有 displayMsg 能分流。
+// 于是旧实现拿到空 upstreamMsg，直接落 handle403 兜底分支：首次即永久 SetError。
+const (
+	workbuddyCodeAccountRestricted = 11140 // 超载码：账号限制 与 内容审核 共用，靠 displayMsg 分流
+	workbuddyCodeChannelGate       = 11128 // 渠道校验（实测为 400，不在本 403 路径）
+)
+
+// workbuddyAccountRestrictedPhrases 账号级限制文案特征（小写比对，中英繁三路都读）。
+//
+// 【为何用 \u 转义而不是直接写汉字】本仓工具链（read/edit/write/bash）在多次写同一
+// 文件时会产生**肉眼不可见**的 CJK 码点漂移（实测：繁中「查 U+67E5」与「核 U+6838」
+// 在不同写入通道里不一致，导致包含关系判定静默失效）。上游文案不受我们控制，
+// 因此匹配特征一律用 \u 转义写定，不依赖任何编辑器行为。改这些短语时请用码点，
+// 不要手输汉字。
+var workbuddyAccountRestrictedPhrases = []string{
+	"\u5f02\u5e38", // 异常
+	"\u7570\u5e38", // 異常（繁）
+	"\u9650\u5236", // 限制（简繁同形）
+	"restricted due to unusual activity",
+	"unusual activity",
+	"account has been restricted",
+}
+
+// workbuddyContentModerationPhrases 内容审核文案特征。
+// 审核类词根覆盖 审/審 × 核/查 四种组合（简繁混排在上游文案里真实存在），
+// 组合全覆盖后不再依赖“写对繁体字”这件事。
+var workbuddyContentModerationPhrases = []string{
+	"\u5ba1\u6838",       // 审核
+	"\u5be9\u6838",       // 審核
+	"\u5be9\u67e5",       // 審查
+	"\u5ba1\u67e5",       // 审查
+	"\u8fdd\u89c4",       // 违规
+	"\u9055\u89c4",       // 違規（繁）
+	"\u654f\u611f",       // 敏感
+	"\u672a\u901a\u8fc7", // 未通过
+	"\u672a\u901a\u904e", // 未通過（繁）
+	"safety review",
+	"security review",
+	"content review",
+	"violat",
+	"prohibited content",
+}
+
+// classifyWorkbuddyForbiddenBody 从 403 错误体分流「账号限制 / 内容审核 / 未知」。
+//
+// 纪律：只在上游回了可读文案时才分流；读不到 code 或 displayMsg 一律 unknown。
+// 绝不按状态码猜（11140 一个码对应两种语义是实测事实，不是推测）。
+func classifyWorkbuddyForbiddenBody(body []byte) workbuddyForbiddenClass {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return workbuddyForbiddenUnknown
+	}
+	// code 优先取 data.code（实测信封），其次取顶层 code。
+	code := gjson.GetBytes(body, "data.code").Int()
+	if code == 0 {
+		code = gjson.GetBytes(body, "code").Int()
+	}
+	if code != workbuddyCodeAccountRestricted {
+		// 不是 11140：不强行分流（11128 是 400、额度类是 200+code，均不走这里）。
+		return workbuddyForbiddenUnknown
+	}
+	// 三种语言的 displayMsg 都看（上游按客户端语言回不同键）。
+	text := strings.ToLower(strings.Join([]string{
+		gjson.GetBytes(body, "data.displayMsg.zh").String(),
+		gjson.GetBytes(body, "data.displayMsg.zh-hant").String(),
+		gjson.GetBytes(body, "data.displayMsg.en").String(),
+		gjson.GetBytes(body, "data.displayTips.zh").String(),
+	}, "|"))
+	if strings.TrimSpace(text) == "" {
+		return workbuddyForbiddenUnknown
+	}
+	// 【判定顺序是刻意的】先内容、后账号：文案同时命中两类特征时归入内容审核。
+	// 理由是不对称危害 —— 把内容审核误判成账号限制会永久 SetError 一枚好号（只能
+	// 人工重登救回）；反向误判只会让已封号继续报错，且既不重放也不静默丢弃，
+	// 管理端有 warn 日志可查。**不要把这个顺序当成偶然写法改掉。**
+	for _, p := range workbuddyContentModerationPhrases {
+		if strings.Contains(text, strings.ToLower(p)) {
+			return workbuddyForbiddenContentModeration
+		}
+	}
+	for _, p := range workbuddyAccountRestrictedPhrases {
+		if strings.Contains(text, strings.ToLower(p)) {
+			return workbuddyForbiddenAccountRestricted
+		}
+	}
+	return workbuddyForbiddenUnknown
+}
+
+// workbuddyForbiddenDisplayMessage 取上游回的人类可读文案（管理端展示用）。
+// 没有则返回 ""（不编造）。
+func workbuddyForbiddenDisplayMessage(body []byte) string {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return ""
+	}
+	for _, path := range []string{"data.displayMsg.zh", "data.displayMsg.zh-hant", "data.displayMsg.en"} {
+		if v := strings.TrimSpace(gjson.GetBytes(body, path).String()); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // applyWorkbuddyErrorClass 按已解析的分类落账号状态。

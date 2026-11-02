@@ -506,7 +506,8 @@ func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 // registerWorkbuddyOAuthRoutes 注册 WorkBuddy 设备授权登录与积分/签到/任务端点：
 // auth-url 生成授权链接（上游签发 state），exchange-code 由前端轮询兑换凭据；
 // accounts/:id/credits 查询剩余积分，accounts/:id/checkin 手动签到；
-// accounts/:id/activity 手动触发活跃上报 + 连登奖励链，accounts/:id/travel 手动触发猫猫旅行巡检。
+// accounts/:id/activity 已封死（handler 无条件 410，路由暂保留以给出明确理由），
+// accounts/:id/travel 手动触发猫猫旅行巡检。
 func registerWorkbuddyOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	workbuddy := admin.Group("/workbuddy")
 	{
@@ -515,7 +516,8 @@ func registerWorkbuddyOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 积分查询与每日签到（billing 域）。
 		workbuddy.GET("/accounts/:id/credits", h.Admin.WorkBuddyCredits.QueryCredits)
 		workbuddy.POST("/accounts/:id/checkin", h.Admin.WorkBuddyCredits.Checkin)
-		// 任务三件套手动触发（活跃上报 + 连登奖励链 / 猫猫旅行）。
+		// 任务手动触发：活跃上报已在 handler 层封死（410，理由见 RunActivity 注释），
+		// 路由注册保留只为让旧前端产物/curl 拿到明确理由；旅行仍可用。
 		workbuddy.POST("/accounts/:id/activity", h.Admin.WorkBuddyCredits.RunActivity)
 		workbuddy.POST("/accounts/:id/travel", h.Admin.WorkBuddyCredits.RunTravel)
 	}

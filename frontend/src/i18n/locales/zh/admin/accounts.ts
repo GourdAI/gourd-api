@@ -426,8 +426,9 @@
         checkinFailed: '签到失败',
         checkinSkipped: '不支持签到',
         checkinEnterpriseTooltip: '企业成员账号无个人签到体系，签到资格由企业管理后台分配。',
-        activityRun: '跑任务',
-        activityRunTooltip: '立即执行对话活跃上报（含连登奖励链）',
+        // 「跑任务」（对话活跃上报）已于 2026-11-01 移除：该上报送凭空捏造的
+        // chat_request_send 事件，会触发上游账号级风控（11140）。
+        // 下方 activitySnapshot 保留：它只渲染后端写入 account.extra 的历史快照。
         travelRun: '旅行',
         travelRunTooltip: '立即执行猫猫旅行巡检（领养 / 派出 / 领奖）',
         activitySnapshot: '连登 {days} 天 · 已发 {reports} 条',

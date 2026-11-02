@@ -18,7 +18,9 @@ package service
 // 另一类真正的修正是**值的形式**而不是有无：
 //   - X-Product：WorkBuddy → SaaS（多个一手来源收敛为官方实测值）；
 //   - 版本段：5.5.4/2.137.1 → 5.9.3/2.165.0（陈旧两代且全池同值）；
-//   - X-Conversation-ID 兜底：删除「按 uid+首句」的跨轮恒定派生，改为每请求新生成；
+//   - X-Conversation-ID / X-Conversation-Request-ID：同日两次修正，终态为「会话级/
+//     轮级稳定派生 + 带横线 UUID 形态」（第一次改成「每请求随机」已被官方一手源码
+//     推翻，翻证记录见本文件 workbuddyStableConversationID 上方）；
 //   - X-IDE-* / X-Request-ID：收进账号级开关 usage_identity（默认关）。
 //
 // 【关于 11140 的关键事实（影响所有修复预期）】11140 +「账号存在异常行为」是
@@ -223,61 +225,187 @@ func applyWorkbuddyCommonHeaders(req *http.Request, creds WorkbuddyCredentials, 
 // workbuddyChatMeta 一次 chat 出站的会话头族元数据（后台按 X-Conversation-Request-ID
 // 聚合请求；同一次 user send 内的 tool call/重试/换号复用同一个 ID）。
 type workbuddyChatMeta struct {
-	ConversationID        string // X-Conversation-ID：入站透传或 body 提取值，两者都无则留空，由注入层每请求新生成随机值（恒发）
+	ConversationID        string // X-Conversation-ID：入站头 → body 显式值 → 会话级稳定派生（带横线 UUID）；无锚点时由注入层每请求新生成
 	ConversationRequestID string // X-Conversation-Request-ID / X-Root-Request-ID：聚合主键，必发
 	TraceID               string // X-Trace-ID：入站透传值，空则回落 conversationRequestID
 }
 
 // resolveWorkbuddyChatMeta 组装会话头族元数据：入站头透传优先（客户端给什么用什么），
-// 缺省按请求新生成（sub2api 无粘性会话键，每请求独立聚合主键；调用方可复用返回的
-// meta 使同一次发送的多次出站共享聚合 ID）。
+// 其次 body 显式值，两者都没有时按「账号 + 客户端区分因子 + 内容锚点」派生稳定值。
 //
-// 【2026-11-01 变更】uid 形参已移除：它此前只服务于「按 uid+首句派生会话 ID」，
-// 而该派生正是本次封号排查判定要剔除的复用形态（见 workbuddyDeriveConversationID）。
-func resolveWorkbuddyChatMeta(c *gin.Context, body []byte) workbuddyChatMeta {
+// 【2026-11-01 二次修正：撤销「每请求随机」口径】同日第一次修正把派生值改成每请求
+// 随机，依据是第三方网关的自述；本轮拿到官方一手源码后该依据被推翻（详见下方
+// workbuddyStableConversationID 的翻证记录）。现在按官方三层生命周期分别取锚点：
+//   - ConversationID：会话级，锚点=**首条**用户发言（一个聊天窗口一个值）
+//   - ConversationRequestID：轮级，锚点=**末条**用户发言（一次 user send 一个值）
+//
+// account 参与派生是**隔离**用途而非恒定用途：换号 failover 时 cid/reqID 必须随之改变
+// （magpie 一手注释：one conversation or turn never shows up under two X-User-Ids），
+// 与同仓 OpenAI 路径 isolateOpenAIUpstreamSessionID 把 session 钉在账号命名空间上同口径。
+func resolveWorkbuddyChatMeta(c *gin.Context, account *Account, body []byte) workbuddyChatMeta {
 	meta := workbuddyChatMeta{}
 	if c != nil && c.Request != nil {
 		meta.ConversationRequestID = strings.TrimSpace(c.Request.Header.Get("X-Conversation-Request-ID"))
 		meta.TraceID = strings.TrimSpace(c.Request.Header.Get("X-Trace-ID"))
 		meta.ConversationID = strings.TrimSpace(c.Request.Header.Get("X-Conversation-ID"))
 	}
-	if meta.ConversationRequestID == "" {
-		meta.ConversationRequestID = workbuddyNewMessageID()
-	}
 	if meta.ConversationID == "" {
 		meta.ConversationID = workbuddyResolveConversationID(body)
 	}
+	var accountID int64
+	if account != nil {
+		accountID = account.ID
+	}
+	disc := workbuddyClientDiscriminator(c)
+	if meta.ConversationID == "" {
+		meta.ConversationID = workbuddyStableConversationID(accountID, disc, workbuddyFirstUserText(body))
+	}
+	if meta.ConversationRequestID == "" {
+		meta.ConversationRequestID = workbuddyStableRequestID(accountID, disc, workbuddyLastUserText(body))
+	}
 	// 【恒发兜底】国际版渠道校验要求会话头三件套齐全，缺 X-Conversation-ID 即拦
-	// （400/11128）。这里刻意保持为空，由注入层用**每请求随机**值补齐：不在派生层
-	// 做任何按内容折叠，避免把「多轮复用同一个会话身份」重新引回来。
+	// （400/11128）。上面两个派生函数在无锚点时各自回落随机值，因此这里保证非空，
+	// 但不保证跨请求恒定 —— 无锚点就没有会话可标识，此时宁可每请求新随机，
+	// 也不能退化成「账号级恒定值」把整号流量聚成一个会话。
 	return meta
 }
 
-// workbuddyDeriveConversationID 已删除（2026-11-01，账号封禁排查的直接结论）。
-//
-// 它把 X-Conversation-ID 派生成 sha256(uid + "|" + 首条 user 文本)，即「同一对话的
-// 每一轮、每一次重试、每一次换号都发同一个会话 ID」。参考实现明确反对这种复用，
-// 原文：
-//
-//	"reusing one value across requests would forge a conversation identity the plugin
-//	 does not actually have, and the first thing that would break is the upstream's
-//	 own correlation of a session it is being told about twice under one id"
-//
-// 而官方客户端是**每次调用现生成**会话身份（其注释：官方 CLI 也是每次现生成一组
-// 会话 UUID）。
-//
-// 为什么这是风控信号而不是优化点：渠道闸只查三件套的**存在性**（不查值是否注册过），
-// 所以稳定 ID 换不来任何通过收益；代价却是「一个会话身份被反复复用，且跨账号
-// failover 时同一个 cid 换一个 Authorization 继续发」——后者是典型的池化/中转特征。
-// 11128 的正确修法是「恒发」，不是「恒发同一个值」。
+// workbuddyClientDiscriminator 客户端区分因子：IP + 归一化 UA + API Key ID。
+// 与 Claude 伪装路径 sessionContextDiscriminator 同口径，作用是避免不同终端用户的
+// 相同首条消息派生出同一个会话 ID（跨用户串会话）。
+func workbuddyClientDiscriminator(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	ua := ""
+	if c.Request.Header != nil {
+		ua = c.Request.Header.Get("User-Agent")
+	}
+	return c.ClientIP() + ":" + NormalizeSessionUserAgent(ua) + ":" + strconv.FormatInt(getAPIKeyIDFromContext(c), 10)
+}
 
-// workbuddyFirstUserText 提取 messages 中首条 role=user 的纯文本内容。
+// workbuddyStableConversationID 会话级 X-Conversation-ID：**带横线 UUIDv4**。
 //
-// 【用途变更（2026-11-01）】原先只服务于会话 ID 派生（已删除）。现在仅供诊断与
-// 既有单测使用：**不得**再用它的返回值生成任何发往上游的身份值 —— 按内容折叠出
-// 恒定 ID 就是本次排查剔除的那个形态。content 支持 string 与 OpenAI multipart
-// 数组（只拼 type=text 段）两种载体；无 user 消息或解析失败时返回 ""。
-func workbuddyFirstUserText(body []byte) string {
+// 形态依据：官方 session.id 就是带横线 UUID；9router #4946 拓包原文「main 对话的会话
+// id 实际是 **v4**、辅助请求是 v7，两者都被接受」⇒ 主对话用 v4 形态与官方一致。
+//
+// 不复用仓内 generateSessionUUID：它用 `%x-…` 格式化，每段会丢前导零（bytes[0]=0x0a
+// 输出 "a" 而非 "0a"），导致长度不是稳定 36 字符 —— 那本身就是一处非官方形态。
+// 也不伪造成 v7：v7 高 48 位是毫秒时间戳，拿 sha256 摘要置上 version nibble 会得到
+// 「时间前缀落在无意义时刻」的值，比 v4 更像伪造（上游不校版本位，无收益）。
+//
+// 无锚点时每请求新随机，不得退化成账号级恒定值。
+func workbuddyStableConversationID(accountID int64, discriminator, sessionAnchor string) string {
+	anchor := strings.TrimSpace(sessionAnchor)
+	if anchor == "" {
+		return workbuddyNewConversationID()
+	}
+	sum := sha256.Sum256([]byte("workbuddy-conv:" + strconv.FormatInt(accountID, 10) + "::" + discriminator + "::" + anchor))
+	return workbuddyFormatUUID(sum[:16])
+}
+
+// workbuddyStableRequestID 轮级 X-Conversation-Request-ID：32 位小写无横线 hex，对齐
+// 官方文档强制形态（「小写、无连字符的 32 位 UUIDv7」；实测版本位不校验，sha256 摘要即可）。
+func workbuddyStableRequestID(accountID int64, discriminator, turnAnchor string) string {
+	anchor := strings.TrimSpace(turnAnchor)
+	if anchor == "" {
+		return workbuddyNewMessageID()
+	}
+	sum := sha256.Sum256([]byte("workbuddy-turn:" + strconv.FormatInt(accountID, 10) + "::" + discriminator + "::" + anchor))
+	return hex.EncodeToString(sum[:16])
+}
+
+// workbuddyNewConversationID 生成全新的带横线 UUIDv4（无会话锚点时的会话级兜底）。
+// crypto/rand 失败（理论上不可能）时回落时间摘要，保证恒为合法 36 字符 UUID。
+func workbuddyNewConversationID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("workbuddy-conv:%d", time.Now().UnixNano())))
+		copy(b, sum[:16])
+	}
+	return workbuddyFormatUUID(b)
+}
+
+// workbuddyFormatUUID 把字节格式化为标准 36 字符小写 UUID，并置 UUIDv4 版本位与
+// RFC 4122 变体位。与 generateSessionUUID 同构，但用 %02x 零填充修复其丢前导零
+// （generateSessionUUID 服务于 Claude 伪装路径、上游不校验其形态，本轮不动它以免
+// 扰动既有断言）。不足 16 字节时零填充，不 panic。
+func workbuddyFormatUUID(src []byte) string {
+	var b [16]byte
+	copy(b[:], src)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])
+}
+
+// 【翻证记录 2026-11-01：为什么同日第一次修正的「每请求随机」是错的】
+//
+// 第一次修正在此处删除了「按 uid+首句派生会话 ID」，其两条依据本轮均被官方一手
+// 源码推翻，登记如下以免日后又被改回去：
+//
+//  1. 原声明「官方客户端每次调用现生成会话身份」——错。官方 npm 包
+//     @tencent-ai/codebuddy-code@2.179.1 的 dist-server/codebuddy.js（未混淆）里
+//     buildConversationHeaders 逐字为：
+//         let n = (0,I.nH)().replace(/-/g,"");            // I.nH === uuidv7
+//         [CONVERSATION_ID_HEADER]:         i.id,        // ★ session.id 原值，不是随机
+//         [CONVERSATION_REQUEST_ID_HEADER]: getEffectiveConversationRequestId(i)||"",
+//         [CONVERSATION_MESSAGE_ID_HEADER]: n,
+//         [REQUEST_ID_HEADER]:              n
+//     官方对 messageId 显式去横线、对 session.id 不去 ⇒ 「会话 ID 带横线、请求/消息 ID
+//     不带」是有意区分的两种形态。session 创建点 `let n=(0,eL.nH)();
+//     sessionManager.create({id:n, meta:{sessionId:n}})` 全程未去横线，且该 id 可
+//     resume/持久化（官方 SDK 文档）。
+//  2. 原引用的两处「反对复用」——dsh-connect-workbuddy 与 9router wb_proxy——都是
+//     第三方网关**自身架构受限下的取舍**（9router 自述理由是按账号派生会在多池/多
+//     设备场景撞 id），不是官方形态观测。口径应当是：目标是「过闸门」的项目可以
+//     牺牲保真度，目标是「像官方」的我们不行。
+//
+// 【独立交叉印证（方向一致）】
+//   - sub2api PR #4684（读同一个官方 npm 包）：「the official client sends
+//     X-Conversation-ID = currentSession.id on every model request, while
+//     X-Conversation-Request-ID / -Message-ID / X-Request-ID rotate」；
+//   - 9router #4946（5.8.4 静态解包 + mitmproxy ~350 条流量）：「会话 id 是带连字符的
+//     UUID，请求/消息 id 是 32 位无连字符 hex」，且实测 v4/v7 都被接受 ⇒ 版本位不校验；
+//   - 官方 ACP 文档对 request-id 强制「小写、无连字符的 32 位 UUIDv7」，并说明同一值
+//     会写入本轮 PromptResponse._meta / JSONL providerData / 模型请求头 ⇒ 一次 user
+//     send 一个值；
+//   - magpie 插件一手注释：上游**按 X-Conversation-Request-ID 计一次用户发送**；
+//   - wild-work R116：「旧实现四个头绑成同一个值且每请求现生成 —— 等于把一次多轮
+//     对话拆成上千个一次性会话，在上游按 Request-ID 计 send 的口径下直接放大限流命中面」。
+//
+// 【每请求随机真实代价】一个账号每天发出海量「只含 1 次请求、零历史深度」的全新
+// 会话，与「单会话 ID 复用上万次」是同一枚硬币的两面，两者都是机器特征；同时
+// 用量明细被拆碎、限流计数被放大。稳定化换不来通过率（四处独立实测：值不校验，
+// 非 UUID 字符串也放行），收益是计数/归并口径正确 + 更像官方。
+//
+// 【必须保留的正确结论】派生值不能跨账号复用 —— 故种子含账号 ID，换号 failover
+// 自然得到不同 cid/reqID（magpie：one conversation or turn never shows up under two
+// X-User-Ids）。11128 的正解仍是「恒发」，只是现在发的值与官方语义一致。
+
+// workbuddyFirstUserText 提取 messages 中首条「用户自己说的」纯文本，作为**会话级**锚点
+// （一个聊天窗口的第一句话，跨轮不变）。
+//
+// 【用途恢复（2026-11-01 二次修正）】同日第一次修正曾禁止它参与身份派生，理由是
+// 把「按内容折叠出恒定 ID」当成池化特征；官方一手源码证明会话 ID 本就跨轮复用，
+// 故恢复派生用途（见 workbuddyStableConversationID 一节的翻证记录）。
+// 与 workbuddyLastUserText 共用 workbuddyUserTextAt，两条口径必须一致。
+func workbuddyFirstUserText(body []byte) string { return workbuddyUserTextAt(body, true) }
+
+// workbuddyLastUserText 提取 messages 中**末条**「用户自己说的」纯文本，作为**轮级**锚点。
+//
+// 官方语义：一次 user send 对应一个 X-Conversation-Request-ID；一轮内的 tool 调用回传
+// 追加的是 assistant/tool 消息，末条用户发言不变 ⇒ 同一轮多次出站复用同一值；用户说
+// 下一句时末条改变 ⇒ 自然换新值（wild-work R116 与 magpie turnKey 同口径）。
+func workbuddyLastUserText(body []byte) string { return workbuddyUserTextAt(body, false) }
+
+// workbuddyUserTextAt 按方向提取用户发言文本（fromFirst=true 取首条，false 取末条）。
+//
+// 「用户自己说的」判定：role 必须是 user（排除 role=tool 的工具结果回传），且当
+// content 为 part 数组时不得是纯 tool_result（Anthropic 形态的工具结果也走 user 角色，
+// 它不是用户发言；若同时带文字则取文字，视为用户的附加说明）。content 支持 string
+// 与 OpenAI multipart 数组两种载体；无匹配消息或解析失败返回 ""。
+func workbuddyUserTextAt(body []byte, fromFirst bool) string {
 	if len(body) == 0 {
 		return ""
 	}
@@ -290,31 +418,50 @@ func workbuddyFirstUserText(body []byte) string {
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return ""
 	}
-	for _, msg := range obj.Messages {
+	for i := range obj.Messages {
+		idx := i
+		if !fromFirst {
+			idx = len(obj.Messages) - 1 - i
+		}
+		msg := obj.Messages[idx]
 		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
 			continue
 		}
-		var text string
-		if err := json.Unmarshal(msg.Content, &text); err == nil {
+		if text, ok := workbuddyUserContentText(msg.Content); ok {
 			return text
 		}
-		// multipart：[{"type":"text","text":"..."}, {"type":"image_url",...}]
-		var parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(msg.Content, &parts); err == nil {
-			var sb strings.Builder
-			for _, p := range parts {
-				if p.Type == "text" {
-					sb.WriteString(p.Text)
-				}
-			}
-			return sb.String()
-		}
-		return ""
 	}
 	return ""
+}
+
+// workbuddyUserContentText 把一条 user 消息的 content 归一为用户发言文本。
+// ok=false 表示该消息不是用户自己的发言（纯工具结果回传）或无法解析。
+func workbuddyUserContentText(content json.RawMessage) (string, bool) {
+	var text string
+	if err := json.Unmarshal(content, &text); err == nil {
+		return text, true
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &parts); err == nil {
+		var sb strings.Builder
+		sawToolResult := false
+		for _, p := range parts {
+			switch p.Type {
+			case "text":
+				sb.WriteString(p.Text)
+			case "tool_result":
+				sawToolResult = true
+			}
+		}
+		if sb.Len() == 0 && sawToolResult {
+			return "", false
+		}
+		return sb.String(), true
+	}
+	return "", false
 }
 
 // workbuddyResolveConversationID 从请求体提取会话 ID（metadata 优先、snake 优先于
@@ -411,11 +558,12 @@ func applyWorkbuddyChatHeaders(req *http.Request, creds WorkbuddyCredentials, ac
 
 // applyWorkbuddyConversationHeaders 注入官方客户端会话头族。
 // 头族分层（三件套的存在性是国际版渠道闸 11128 的实测判据，缺一不可）：
-//   - X-Conversation-ID：会话级。入站/body 显式值优先透传；两者都没有时**每请求
-//     新生成**随机 32 hex，恒发。不再按「uid+首条 user」派生跨轮恒定值——那种复用
-//     正是 2026-11-01 封号排查判定要剔除的形态（见文件内 workbuddyDeriveConversationID
-//     的删除说明）。
-//   - X-Conversation-Request-ID：对话轮级聚合主键，必发（空值兜底新生成 32 hex）。
+//   - X-Conversation-ID：会话级（= 官方 session.id）。优先级：入站头 → body 显式值 →
+//     按「账号 ID + 客户端区分因子 + 首条用户发言」派生的带横线 UUID；无锚点时由
+//     注入层每请求新生成带横线 UUID。同一聊天窗口跨轮复用同一个值（对齐官方），
+//     换号 failover 因账号 ID 参与派生而自然得到不同值。
+//   - X-Conversation-Request-ID：轮级（= 一次 user send），必发。锚点=**末条**用户
+//     发言（tool 回传不算），32 位小写无横线 hex；一轮内多次出站复用同一值。
 //   - X-Conversation-Message-ID：消息级，每条独立（32 hex）；X-Request-ID 与之同值，
 //     但仅在 usage_identity 开启时发（它只是上游用量页的请求 id 读数，非闸门）。
 //   - X-Root-Request-ID：= conversationRequestID（根请求追踪）。
@@ -432,16 +580,17 @@ func applyWorkbuddyConversationHeaders(req *http.Request, meta workbuddyChatMeta
 		convReqID = workbuddyNewMessageID()
 	}
 	messageID := workbuddyNewMessageID()
-	// 恒发：调用方（resolveWorkbuddyChatMeta）已保证显式值优先；这里仍做 trim 与兜底，
-	// 防止未来新增绕过 resolve 的直接构造点又把头丢掉（11128 那次故障的确切形态）。
+	// 恒发：调用方（resolveWorkbuddyChatMeta）已保证显式值优先与锚点派生；这里仍做
+	// trim 与兜底，防止未来新增绕过 resolve 的直接构造点又把头丢掉（11128 那次故障的
+	// 确切形态）。
 	//
-	// 兜底一律**每请求随机**。禁止改回按内容/uid 派生：那会造出跨轮复用的会话身份
-	//（本次 11140 排查判定为池化特征）；极端形态下「sha256("|") 这类编译期常量」
-	// 更会让全部账号发出同一个 X-Conversation-ID —— 比「缺头被拦」更糟，因为串号
-	// 不可观察、不可归因。宁可牺牲会话稳定性，也不能牺牲账号隔离。
+	// 兜底形态：**带横线 UUID**（与官方 session.id 同形）。禁止改回 32 hex 无横线 ——
+	// 那与官方两种形态有意区分的结论相反（见上方翻证记录）。禁止改成「按账号派生的
+	// 恒定值」：那会把一个账号的全部历史流量聚成一个会话（masknull 实测形态：单会话
+	// ID 复用 18615 次被判定为网关池化）。无锚点 ⇒ 无真实会话可标识 ⇒ 宁可每请求新随机。
 	cid := strings.TrimSpace(meta.ConversationID)
 	if cid == "" {
-		cid = workbuddyNewMessageID()
+		cid = workbuddyNewConversationID()
 	}
 	req.Header.Set("X-Conversation-ID", cid)
 	req.Header.Set("X-Conversation-Request-ID", convReqID)

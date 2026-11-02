@@ -79,30 +79,10 @@
         </svg>
         {{ t('admin.accounts.workbuddy.checkin') }}
       </button>
-      <button
-        type="button"
-        data-test="workbuddy-activity-run"
-        class="inline-flex items-center gap-0.5 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-4 text-indigo-600 transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-indigo-400 dark:hover:bg-indigo-900/30"
-        :disabled="activityLoading"
-        :title="t('admin.accounts.workbuddy.activityRunTooltip')"
-        @click="handleRunActivity()"
-      >
-        <svg
-          v-if="activityLoading"
-          class="h-2.5 w-2.5 animate-spin"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-          />
-        </svg>
-        {{ t('admin.accounts.workbuddy.activityRun') }}
-      </button>
+      <!-- 「跑任务」按钮已于 2026-11-01 移除：该任务向 billing 域 POST /v2/report 送
+           凭空捏造的 chat_request_send 事件，上游风控视作账号异常行为（国内站已出现
+           11140 账号级限制）。对应后端端点也已无条件 410。下方「连登 N 天 · 已发 M 条」
+           仍为只读快照（来自 account.extra），不会发起任何上报。 -->
       <button
         type="button"
         data-test="workbuddy-travel-run"
@@ -148,7 +128,6 @@
         data-test="workbuddy-activity-snapshot"
         class="text-[10px] leading-4"
         :class="activityStatusClass"
-        :title="activityStatusDetail || undefined"
       >
         {{ activityStatusLabel }}
       </span>
@@ -172,15 +151,9 @@
       {{ truncatedError }}
     </div>
 
-    <!-- 任务运行失败行（截断 80 字符，与查询错误行同风格）。 -->
-    <div
-      v-if="activityError"
-      data-test="workbuddy-activity-error"
-      class="truncate text-[10px] leading-4 text-red-600 dark:text-red-400"
-      :title="activityError"
-    >
-      {{ truncatedActivityError }}
-    </div>
+    <!-- 旅行运行失败行（截断 80 字符，与查询错误行同风格）。
+         活跃上报的错误行已随 RunActivity 入口一同移除（手动端点 410、定时任务默认关），
+         下方只读的 workbuddy_activity 快照仍保留：它是后端写入 account.extra 的历史记录。 -->
     <div
       v-if="travelError"
       data-test="workbuddy-travel-error"
@@ -196,11 +169,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type {
-  WorkBuddyActivityRunResult,
-  WorkBuddyCreditsResult,
-  WorkBuddyTravelRunResult
-} from '@/api/admin/workbuddy'
+import type { WorkBuddyCreditsResult, WorkBuddyTravelRunResult } from '@/api/admin/workbuddy'
 import type { Account } from '@/types'
 
 const props = defineProps<{
@@ -213,19 +182,17 @@ const visible = computed(() => props.account.platform === 'workbuddy')
 
 const loading = ref(false)
 const checkinLoading = ref(false)
-const activityLoading = ref(false)
 const travelLoading = ref(false)
 const error = ref<string | null>(null)
 const checkinError = ref<string | null>(null)
-const activityError = ref<string | null>(null)
 const travelError = ref<string | null>(null)
 const data = ref<WorkBuddyCreditsResult | null>(null)
 
 // 签到结果的本地覆盖（本次操作后优先于 extra 快照显示）。
 const localCheckinStatus = ref('')
 
-// 任务运行结果的本地覆盖（本次跑任务/旅行后优先于 extra 快照显示）。
-const localActivityStatus = ref<WorkBuddyActivityRunResult | null>(null)
+// 旅行运行结果的本地覆盖（本次跑旅行后优先于 extra 快照显示）。
+// 活跃上报无本地覆盖：手动入口已封死（后端 410），只展示 extra 里的历史快照。
 const localTravelStatus = ref<WorkBuddyTravelRunResult | null>(null)
 
 // 快照过期窗口（与 CNProviderQuotaCell 同口径）。
@@ -379,11 +346,13 @@ const snapshotTravel = computed<WorkBuddyTravelSnapshotExtra | null>(() => {
 })
 
 // 今日活跃上报展示文案：「连登 N 天 · 已发 M 条」。
+// 只读：数据源仅为后端写入 account.extra 的 workbuddy_activity 快照（定时任务已默认关、
+// 手动入口已 410），本组件不对该字段发起任何写请求。
 const activityStatusLabel = computed(() => {
-  const streak = localActivityStatus.value?.streak_days ?? snapshotActivity.value?.streak_days
-  const reports = localActivityStatus.value?.reports ?? snapshotActivity.value?.reports
-  const fresh = localActivityStatus.value !== null || snapshotActivity.value !== null
-  if (!fresh) return ''
+  const snap = snapshotActivity.value
+  if (!snap) return ''
+  const streak = snap.streak_days
+  const reports = snap.reports
   if (typeof streak !== 'number' && typeof reports !== 'number') return ''
   return t('admin.accounts.workbuddy.activitySnapshot', {
     days: typeof streak === 'number' ? streak : '-',
@@ -391,18 +360,11 @@ const activityStatusLabel = computed(() => {
   })
 })
 
-// 今日活跃上报状态色：失败红、其余绿。
+// 今日活跃上报快照状态色：历史失败红、其余绿。
 const activityStatusClass = computed(() => {
-  const failed = localActivityStatus.value
-    ? !localActivityStatus.value.success
-    : snapshotActivity.value?.ok === false
-  return failed ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'
-})
-
-const activityStatusDetail = computed(() => {
-  if (localActivityStatus.value?.detail) return localActivityStatus.value.detail
-  if (activityError.value) return activityError.value
-  return undefined
+  return snapshotActivity.value?.ok === false
+    ? 'text-red-600 dark:text-red-400'
+    : 'text-emerald-600 dark:text-emerald-400'
 })
 
 // 旅行动作 → i18n 文案（与后端 action 取值逐字对应）。
@@ -522,13 +484,6 @@ const truncatedError = computed(() => {
   return error.value.length > 80 ? `${error.value.slice(0, 80)}...` : error.value
 })
 
-const truncatedActivityError = computed(() => {
-  if (!activityError.value) return ''
-  return activityError.value.length > 80
-    ? `${activityError.value.slice(0, 80)}...`
-    : activityError.value
-})
-
 const truncatedTravelError = computed(() => {
   if (!travelError.value) return ''
   return travelError.value.length > 80 ? `${travelError.value.slice(0, 80)}...` : travelError.value
@@ -598,24 +553,9 @@ const handleCheckin = async () => {
   }
 }
 
-// 手动跑「对话活跃上报」任务：结果直接覆盖本地展示（与 localCheckinStatus 同模式）。
-const handleRunActivity = async () => {
-  if (activityLoading.value) return
-  activityLoading.value = true
-  activityError.value = null
-  try {
-    const result = await adminAPI.workbuddy.runWorkBuddyActivity(props.account.id)
-    localActivityStatus.value = result
-    if (!result.success) {
-      activityError.value = result.detail || t('common.error')
-    }
-  } catch (e) {
-    localActivityStatus.value = null
-    activityError.value = extractErrorMessage(e)
-  } finally {
-    activityLoading.value = false
-  }
-}
+// 「对话活跃上报」手动触发已于 2026-11-01 移除：它向 billing 域 POST /v2/report 送
+// 凭空捏造的 chat_request_send 事件（上游看不到对应真实会话），国内站已因此出现
+// 11140 账号级限制；后端 POST /admin/workbuddy/accounts/:id/activity 现无条件 410。
 
 // 手动跑「猫猫旅行巡检」任务：结果直接覆盖本地展示（与 localCheckinStatus 同模式）。
 const handleRunTravel = async () => {
@@ -643,13 +583,10 @@ watch(
     error.value = null
     loading.value = false
     checkinLoading.value = false
-    activityLoading.value = false
     travelLoading.value = false
     checkinError.value = null
-    activityError.value = null
     travelError.value = null
     localCheckinStatus.value = ''
-    localActivityStatus.value = null
     localTravelStatus.value = null
   }
 )

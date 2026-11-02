@@ -380,8 +380,12 @@ func NewWorkBuddyTasksService(credits *WorkBuddyCreditsService, accountRepo Acco
 // 经 mitmproxy 抓包复盘的封号归因是「通道可识别 + 设备指纹缺失 + 机器行为画像」
 // 三者叠加，而凭空捏造的活跃记录恰好是第三类中最不像人类的那一个。
 //
-// 手动入口不受本开关影响（RunActivity 仍可在后台单账号触发）：需要该能力时
-// 可显式跑一次，而不是每日自动跑。
+// 手动入口同样已封死（2026-11-01）：POST /admin/workbuddy/accounts/:id/activity 在
+// handler 层无条件返回 410，不读 tasksService，遂不能绕开本开关触发单账号上报。
+// 注：下面的 RunActivity 生产调用方为零（仅单测直达）；定时批次走 runActivityFlight
+// → runActivityForAccount，**不经过 RunActivity**，两者只共用同一 singleflight key。
+// 本开关仍是活的上游上报入口（翻 true 后批次照旧跑），要彻底断开上报必须同时保持
+// 本开关为 false。需恢复手动能力时把 handler 里的调用改回来即可。
 func workbuddyActivityTaskEnabled(cfg *config.Config) bool {
 	return cfg != nil && cfg.Gateway.Workbuddy.ActivityEnabled
 }
@@ -1092,7 +1096,12 @@ func (s *WorkBuddyTasksService) workbuddyTravelClaim(ctx context.Context, accoun
 	return resp.RewardCredit, nil
 }
 
-// RunActivity 手动触发指定账号的活跃上报 + 连登奖励链（管理端点入口）。
+// RunActivity 触发指定账号的活跃上报 + 连登奖励链。
+// 【2026-11-01：原管理端点入口已封死】handler 不再调用本方法（返回 410），
+// 生产调用方为零，仅单测直达；每日自动上报走 runActivityOnce → runBatch →
+// runActivityFlight → runActivityForAccount（不经过本方法），
+// 受 gateway.workbuddy.activity_enabled 门控。保留本方法是为了不丢 singleflight
+// 语义与已有用例覆盖，便于后续恢复或重新审计。
 // 同一账号并发调用被 singleflight 合并；账号不存在/平台不对返回 infraerrors；
 // 上游失败回填 result.Detail 不返 Go error（对齐积分服务口径）。
 func (s *WorkBuddyTasksService) RunActivity(ctx context.Context, accountID int64) (*WorkBuddyActivityRunResult, error) {

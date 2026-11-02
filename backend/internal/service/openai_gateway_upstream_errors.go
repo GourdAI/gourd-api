@@ -260,6 +260,15 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(account *Acc
 	if isOpenAIContextWindowError(upstreamMsg, upstreamBody) {
 		return false
 	}
+	// WorkBuddy 11140 内容审核型：同一个 code 也用于「账号被限制」，只有 displayMsg 能
+	// 分流。内容被拒是**请求属性**，与凭据无关；而通用规则里 403 恒属于 failover 状态集
+	//（shouldFailoverUpstreamError），会把同一个坏 body 在池内逐号重放，每个号各撞一次，
+	// 且每号各进一次账号处置（旧形态首次即永久 SetError）。不重放、不处罚，直接把
+	// 上游拒答回写客户端。与 detectOpenAICyberPolicy（OpenAI 侧同构做法）同口径。
+	if account != nil && account.IsWorkbuddy() && statusCode == http.StatusForbidden &&
+		classifyWorkbuddyForbiddenBody(upstreamBody) == workbuddyForbiddenContentModeration {
+		return false
+	}
 	if isOpenAIHTTPUpstreamAccessStateError(statusCode, upstreamMsg, upstreamBody) {
 		return true
 	}

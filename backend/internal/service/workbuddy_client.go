@@ -183,9 +183,10 @@ func (s *OpenAIGatewayService) sendWorkbuddyUpstreamRequest(ctx context.Context,
 	}
 	targetURL := strings.TrimRight(validatedBase, "/") + workbuddyChatPath
 
-	// 会话头族元数据：入站透传优先；本函数内多次出站（401 重试）复用同一聚合主键。
-	// 【2026-11-01】不再传 uid：会话 ID 的跨轮派生已删除，缺标识时每请求新生成随机值。
-	meta := resolveWorkbuddyChatMeta(c, prepared)
+	// 会话头族元数据：入站透传优先 → body 显式值 → 按会话/轮锚点派生稳定值。
+	// 本函数内多次出站（401 重试）复用同一份 meta ⇒ 会话/轮身份不轮换。
+	// account 参与派生只为账号隔离（换号得到不同 cid），不是为了恒定。
+	meta := resolveWorkbuddyChatMeta(c, account, prepared)
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
