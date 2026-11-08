@@ -30,6 +30,11 @@ const (
 	qoderModelListPath = "/algo/api/v2/model/list?Encode=1"
 	// qoderJobTokenPath PAT → securityOauthToken 交换端点。
 	qoderJobTokenPath = "/algo/api/v3/user/jobToken?Encode=1"
+	// qoderDeviceTokenRefreshPath 设备流 drt- 刷新令牌换新 token pair 的端点
+	// （openapi 域，明文 JSON，无 COSY 签名）。与 PAT 家族的 jobToken 端点互不相通：
+	// 设备授权登录产出的 dt-/drt- 必须走这里，塞进 jobToken 端点会被上游以
+	// "personal token is invalid" 拒绝（2026-11 线上签到 TOKEN_EXPIRE 的根因）。
+	qoderDeviceTokenRefreshPath = "/api/v1/deviceToken/refresh"
 	// qoderUserinfoPath 设备令牌身份信息端点（openapi 域）。
 	qoderUserinfoPath = "/api/v1/userinfo"
 	// qoderPlanPath 套餐信息端点（openapi 域）。
@@ -99,6 +104,9 @@ func resolveQoderEndpoints(realm, baseURL string) qoderEndpoints {
 	endpoints.UserinfoURL = endpoints.OpenAPIBase + qoderUserinfoPath
 	endpoints.PlanURL = endpoints.OpenAPIBase + qoderPlanPath
 	endpoints.QuotaURL = endpoints.OpenAPIBase + qoderQuotaPath
+	// 设备流刷新与 deviceToken/poll 同属 openapi 域（无 COSY 签名），不受
+	// credentials.base_url 中转覆盖（后者只代理 algo 系列签名接口）。
+	endpoints.DeviceTokenRefreshURL = endpoints.OpenAPIBase + qoderDeviceTokenRefreshPath
 	// 活动端点：CampaignsURL 是状态查询；CampaignClaimBase 用于拼 /{campaignId}/claim。
 	endpoints.CampaignsURL = endpoints.OpenAPIBase + qoderCampaignsPath
 	endpoints.CampaignClaimBase = endpoints.OpenAPIBase + qoderCampaignsPath
@@ -119,6 +127,8 @@ type qoderEndpoints struct {
 	CampaignClaimBase string
 	DeviceLoginBase   string
 	PollEndpoint      string
+	// DeviceTokenRefreshURL 设备流 drt- 刷新端点（openapi 域，明文 JSON）。
+	DeviceTokenRefreshURL string
 	// AlgoBase / Algo2Base / CenterBase / OpenAPIBase 是四个上游域根（自定义
 	// 中转覆盖前三者；OpenAPIBase 恒官方，承载无签名直连接口与 OAuth 轮询）。
 	AlgoBase    string

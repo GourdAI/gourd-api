@@ -37,15 +37,20 @@ package service
 // 并发：同一账号的查询/领取分别由 singleflight 合并（列表页自动探测、手动连点、
 // 定时任务三方并发时只打一次上游）。
 //
-// 令牌自愈（2026-10-27）：上游对过期凭据回 HTTP 401 {"code":"TOKEN_EXPIRE"}。
-// 本域原只有「access_token 为空才做 jobToken 交换」一条路——token 过期（非空但
-// 失效）后签到/领取/余额永久报 TOKEN_EXPIRE，21 点兜底窗口同样救不回（实测线上
-// 报障）。现补齐 WorkBuddy 同构三件套中的两件（见 qoderOpenAPIRequestWithAuthRetry）：
-//   - openapi 调用撞 401 → 强制重交换 jobToken → 重试一次；claim 的幂等性只对
+// 令牌自愈（2026-10-27 建立，2026-11-08 修正凭据家族分派）：上游对过期凭据回
+// HTTP 401 {"code":"TOKEN_EXPIRE"}。本域原只有「access_token 为空才做 jobToken
+// 交换」一条路——token 过期（非空但失效）后签到/领取/余额永久报 TOKEN_EXPIRE，
+// 21 点兜底窗口同样救不回（实测线上报障）。现补齐 WorkBuddy 同构三件套中的两件
+// （见 qoderOpenAPIRequestWithAuthRetry）：
+//   - openapi 调用撞 401 → 按凭据家族重换令牌 → 重试一次；claim 的幂等性只对
 //     「同一轮重复领取」有一手依据（replayed=true），**跨令牌重试未取证**，
 //     接受重试的理由与边界见 qoderClaimCampaignWithAuthRetry 的注释；403 是资格
 //     问题（PAT 交换本身被拒），不重试；
-//   - 仅持 dt-（无 pt-/drt-）的账号确实不可自愈：Detail 给出「需重新登录」明确
+//   - 重换按 refresh_token 前缀分派（见 ensureQoderJobToken）：drt- 设备流走
+//     openapi /api/v1/deviceToken/refresh；pt-/jrt- PAT 家族走 center jobToken。
+//     2026-11 线上 4 个账号全是 dt-/drt- 设备授权登录、无 pt-，旧逻辑把 drt-
+//     塞进 PAT 端点恒回 "personal token is invalid"，是本次「还是有问题」的根因；
+//   - 无可刷新凭据（既无 pt-/jrt- 也无 drt-）时 Detail 给出「需重新登录」明确
 //     提示，而不是裸上游报文。
 
 import (
@@ -769,9 +774,10 @@ func (s *QoderCreditsService) refreshQoderCreditsAfterCheckin(ctx context.Contex
 // ---------------------------------------------------------------------------
 
 // qoderCampaignToken 解析可直接用于 openapi 业务接口的 Bearer 令牌与端点集合。
-// dt- 设备令牌直用；access_token 为空且持 pt-/drt- 时先做一次 jobToken 交换。
+// dt- 设备令牌 / securityOauthToken 直用；access_token 为空且持 pt-/drt- 时先做
+// 一次换票（按凭据家族分派，见 ensureQoderJobToken）。
 // 令牌过期（非空但 401）不在这里处理——由 qoderOpenAPIRequestWithAuthRetry 撞 401
-// 后强制重交换兜底（dt- 失效没有刷新端点，只能重新 OAuth 登录）。
+// 后强制重换兜底（无可刷新凭据的账号只能重新 OAuth 登录）。
 func (s *QoderCreditsService) qoderCampaignToken(ctx context.Context, account *Account) (string, qoderEndpoints, error) {
 	endpoints := s.campaignEndpoints(account)
 	creds := account.GetQoderCredentials()
@@ -796,19 +802,21 @@ func (s *QoderCreditsService) campaignEndpoints(account *Account) qoderEndpoints
 	return resolveQoderEndpoints(account.GetQoderRealm(), account.GetQoderBaseURL())
 }
 
-// qoderRenewCampaignTokenAfter401 openapi 调用撞 401 TOKEN_EXPIRE 后的令牌重交换：
+// qoderRenewCampaignTokenAfter401 openapi 调用撞 401 TOKEN_EXPIRE 后的令牌重换：
 // 以刚失效的 expiredToken 为双检基准调 ensureQoderJobToken——锁内若 AccessToken 已被
 // 他人改写则直接采纳新值（不重复换票），仍等于 expiredToken 则真正重换一次。
-// 返回值 ok=false 表示不可自愈：账号只持 dt-（无 pt-/drt- 可换）、交换失败，或换回
-// 的仍是同一个失效 token。调用方此时应保留原始 401 错误并附 reloginHint，不得用
-// 交换错误顶掉真实上游报文。
+// 换票协议由 ensureQoderJobToken 按 refresh_token 前缀分派（drt- 设备流 /
+// pt- PAT 家族），本函数只负责「是否有可刷新凭据 + 换回的是否是新令牌」。
+// 返回值 ok=false 表示不可自愈：账号无任何刷新凭据、换票失败，或换回的仍是同一个
+// 失效 token。调用方此时应保留原始 401 错误并附 reloginHint，不得用换票错误顶掉
+// 真实上游报文。
 func (s *QoderCreditsService) qoderRenewCampaignTokenAfter401(ctx context.Context, account *Account, expiredToken string) (string, bool) {
 	creds := account.GetQoderCredentials()
 	if strings.TrimSpace(creds.PersonalToken) == "" && strings.TrimSpace(creds.RefreshToken) == "" {
 		return "", false
 	}
 	if err := s.ensureQoderJobToken(ctx, account, expiredToken); err != nil {
-		slog.Warn("qoder openapi 401: jobToken re-exchange failed",
+		slog.Warn("qoder openapi 401: token re-exchange failed",
 			"account_id", account.ID, "error", err)
 		return "", false
 	}
@@ -819,9 +827,9 @@ func (s *QoderCreditsService) qoderRenewCampaignTokenAfter401(ctx context.Contex
 	return token, true
 }
 
-// qoderCampaignReloginHint 仅持 dt-（或交换救不回）时的处置口径：Qoder 没有设备
-// 令牌刷新端点，只能重新 OAuth 登录（与 qoder_client.go 文件头口径一致）。
-const qoderCampaignReloginHint = "qoder token expired and not self-healable (no pt-/drt- credential to exchange a new jobToken; re-login required)"
+// qoderCampaignReloginHint 无可刷新凭据（或换票救不回）时的处置口径：必须重新
+// OAuth 登录（设备流重新授权 / PAT 家族重新导入），与 qoder_client.go 文件头口径一致。
+const qoderCampaignReloginHint = "qoder token expired and not self-healable (no usable pt-/drt- refresh credential, or re-exchange failed; re-login required)"
 
 // qoderIsTokenExpiredError 报告 err 是否为 HTTP 401（上游 {"code":"TOKEN_EXPIRE"}
 // 令牌过期的实测形态）。不复用 qoderIsUnauthorizedError（其含 403）：403 在活动域
@@ -849,6 +857,16 @@ func (s *QoderCreditsService) ensureQoderJobToken(ctx context.Context, account *
 		return nil // 他人已完成交换
 	}
 	creds := account.GetQoderCredentials()
+	endpoints := s.campaignEndpoints(account)
+	// 【凭据家族分派（2026-11 线上签到 TOKEN_EXPIRE 修复）】refresh_token 前缀
+	// 决定续期协议，不能用「PAT 是否存在」或「access_token 是否为空」代替：
+	//   - drt-（设备授权登录）→ openapi /api/v1/deviceToken/refresh，明文 JSON，
+	//     返回新 dt-/drt- pair；送进 jobToken 端点会被拒（personal token is invalid）；
+	//   - 其它（pt-/jrt-，PAT 家族）→ center jobToken 端点，COSY Encode 换票。
+	// 线上 4 个账号全部是 dt-/drt- 设备流且无 pt-，旧逻辑走后者导致永久 401。
+	if strings.HasPrefix(strings.TrimSpace(creds.RefreshToken), qoderDeviceRefreshTokenPrefix) {
+		return s.exchangeQoderDeviceToken(ctx, account, creds, endpoints)
+	}
 	token := strings.TrimSpace(creds.PersonalToken)
 	if token == "" {
 		token = strings.TrimSpace(creds.RefreshToken)
@@ -856,7 +874,6 @@ func (s *QoderCreditsService) ensureQoderJobToken(ctx context.Context, account *
 	if token == "" {
 		return fmt.Errorf("qoder account %d has no personal token or refresh token", account.ID)
 	}
-	endpoints := s.campaignEndpoints(account)
 	resp, err := QoderExchangeJobToken(qoderGatewayTransport(s.httpUpstream), endpoints, qoderFingerprintSeed(creds.UID, token), token)
 	if err != nil {
 		return err
@@ -871,6 +888,27 @@ func (s *QoderCreditsService) ensureQoderJobToken(ctx context.Context, account *
 	}
 	if resp.UserType != "" {
 		next["user_type"] = resp.UserType
+	}
+	return persistAccountCredentials(ctx, s.accountRepo, account, next)
+}
+
+// exchangeQoderDeviceToken 设备流家族的换票与写回（锁内调用，双检已由调用方完成）。
+// 必须成对写回轮换后的 refresh_token：只写 access_token 会让下一次续期拿着作废的
+// 旧 drt- 打上游，账号再次变成不可自愈。
+func (s *QoderCreditsService) exchangeQoderDeviceToken(ctx context.Context, account *Account, creds QoderCredentials, endpoints qoderEndpoints) error {
+	resp, err := QoderRefreshDeviceToken(ctx, qoderGatewayTransport(s.httpUpstream), endpoints, creds.RefreshToken)
+	if err != nil {
+		return err
+	}
+	next := shallowCopyMap(account.Credentials)
+	next["access_token"] = resp.AccessToken()
+	next["refresh_token"] = strings.TrimSpace(resp.RefreshToken)
+	// device_token 与 access_token 同源，同步刷新避免两条路径读到不同代次。
+	if strings.TrimSpace(qoderCredentialValueString(next["device_token"])) != "" {
+		next["device_token"] = resp.AccessToken()
+	}
+	if exp := resp.ExpiresAtUnix(); exp > 0 {
+		next["expires_at"] = exp
 	}
 	return persistAccountCredentials(ctx, s.accountRepo, account, next)
 }
